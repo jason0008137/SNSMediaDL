@@ -89,10 +89,23 @@ backend 直出的網頁，**無建置步驟、無 npm、無 CDN**（離線可用
 | 檔案 | 用途 |
 |------|------|
 | `start.bat` | 一鍵啟動伺服器 + GUI（extension 按「送出並下載」即入庫並下載）|
+| `update.bat` | 一鍵更新到最新版 |
 | `status.bat` | 看佇列狀態 |
 
 > `.bat` 本身是純 ASCII，實際邏輯在 `scripts/*.ps1`。
 > 原因：cmd.exe 用系統 ANSI codepage 解析 `.bat`，中文寫在裡面會被拆成亂碼指令。
+
+## 更新
+
+雙擊 **`update.bat`**。它會抓最新版、需要時才裝套件、schema 有變才跑 migration。
+
+**不會動到你的資料**——DB、`config.toml`、`downloads/` 都不在版控裡，git 碰不到它們；
+schema 真的有變時會先把 DB 複製成 `.bak-<時間戳>` 再 migrate。
+
+需要 [git](https://git-scm.com/download/win)。如果當初是下載 ZIP 解壓縮的，
+第一次跑會問要不要就地接上更新來源（你的資料一樣不會動，但**自己改過的程式碼會被覆蓋**）。
+
+有自己改過程式碼的話 `update.bat` 會停下來並列出改了什麼，不會無聲蓋掉。
 
 ## 手動安裝
 
