@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "SNSMediaDL - X Collector",
+  "version": "0.8.0",
+  "description": "Collect media from x.com account pages and send them to the local SNSMediaDL backend. Only posts by the account you are viewing are collected. Read-only on x.com.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://x.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*"
+      ],
+      "js": [
+        "inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://x.com/*"
+      ],
+      "js": [
+        "bar.js",
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SNSMediaDL"
+  }
+}

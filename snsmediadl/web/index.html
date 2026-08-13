@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SNSMediaDL</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div id="safeBanner" class="safe-banner">工作安全模式：已排除 R18 內容</div>
+
+<header>
+  <div class="brand">SNSMediaDL</div>
+
+  <nav class="tabs">
+    <button class="tab active" data-view="media">媒體</button>
+    <button class="tab" data-view="fetch">抓取 <span id="fetchBadge" class="badge hidden">0</span></button>
+    <button class="tab" data-view="accounts">帳號</button>
+    <button class="tab" data-view="creators">Creators</button>
+    <button class="tab" data-view="problems">問題 <span id="errBadge" class="badge hidden">0</span></button>
+  </nav>
+
+  <div class="queue" id="queue" title="佇列狀態"></div>
+
+  <label class="dl-toggle" id="dlToggleWrap"
+         title="背景自動下載：每 5 秒自己撿 pending 的媒體來抓。&#10;extension 的「送出並下載」是明確觸發（/api/queue/run），不受這個開關影響。">
+    <input type="checkbox" id="autoDownload">
+    <span id="dlLabel">背景下載：關</span>
+  </label>
+
+  <label class="safe-toggle">
+    <input type="checkbox" id="safeMode" checked>
+    <span>工作安全模式</span>
+  </label>
+</header>
+
+<!-- ── 媒體 ── -->
+<section id="view-media" class="view">
+  <div class="filters">
+    <select id="fAccount"><option value="">全部帳號</option></select>
+    <select id="fCreator"><option value="">全部 creator</option></select>
+    <select id="fRating">
+      <option value="">全部分級</option>
+      <option value="sfw">sfw</option>
+      <option value="r18">r18</option>
+    </select>
+    <select id="fContent">
+      <option value="">全部類型</option>
+      <option value="illust">illust</option>
+      <option value="irl">irl</option>
+      <option value="mod">mod</option>
+      <option value="ai">ai</option>
+      <option value="3d">3d</option>
+      <option value="photograph">photograph</option>
+      <option value="other">other</option>
+    </select>
+    <select id="fKind">
+      <option value="">全部媒體</option>
+      <option value="photo">photo</option>
+      <option value="video">video</option>
+      <option value="animated_gif">animated_gif</option>
+    </select>
+    <select id="fStatus">
+      <option value="">全部狀態</option>
+      <option value="done">done</option>
+      <option value="pending">pending</option>
+      <option value="failed">failed</option>
+    </select>
+    <button id="fReset" class="ghost">清除篩選</button>
+    <button id="refresh" class="ghost" title="重新載入目前檢視（保留篩選與頁碼）">⟳ 重新整理</button>
+    <button id="selectMode" class="ghost">選取模式</button>
+    <span class="spacer"></span>
+    <span id="mediaCount" class="muted"></span>
+  </div>
+
+  <div id="selBar" class="sel-bar hidden">
+    <span id="selInfo">已選 0 個媒體</span>
+    <button id="selAll" class="ghost">全選本頁</button>
+    <button id="selNone" class="ghost">清除選取</button>
+    <span class="spacer"></span>
+    <select id="bulkRating">
+      <option value="">分級…</option>
+      <option value="sfw">sfw</option>
+      <option value="r18">r18</option>
+      <option value="__clear__">（清除）</option>
+    </select>
+    <select id="bulkContent">
+      <option value="">類型…</option>
+      <option value="illust">illust</option>
+      <option value="irl">irl</option>
+      <option value="mod">mod</option>
+      <option value="ai">ai</option>
+      <option value="3d">3d</option>
+      <option value="photograph">photograph</option>
+      <option value="other">other</option>
+      <option value="__clear__">（清除）</option>
+    </select>
+    <button id="bulkApply">套用</button>
+    <span id="bulkConfirm" class="confirm hidden">
+      <b id="bulkConfirmText"></b>
+      <button id="bulkYes">確定</button>
+      <button id="bulkNo" class="ghost">取消</button>
+    </span>
+    <span id="bulkMsg" class="muted"></span>
+  </div>
+
+  <div id="grid" class="grid"></div>
+
+  <div class="pager">
+    <button id="prevPage" class="ghost">← 上一頁</button>
+    <span id="pageInfo" class="muted"></span>
+    <button id="nextPage" class="ghost">下一頁 →</button>
+  </div>
+</section>
+
+<!-- ── 帳號 ── -->
+<!-- ── 抓取 ── -->
+<section id="view-fetch" class="view hidden">
+  <div class="fetch-grid">
+    <div class="fetch-box">
+      <h2>貼網址批次抓</h2>
+      <p class="hint">
+        一行一個帳號網址（misskey.io / baraag.net / pixiv）。空白行與 <code>#</code> 開頭會略過。<br>
+        其他 Fediverse 站台可用 <code>misskey|https://站台/@someone</code> 指定平台。<br>
+        <b>X 不能由 backend 抓</b>（公開 API 已關），那要用 Chrome extension。
+      </p>
+      <textarea id="fetchUrls" rows="8" spellcheck="false"
+        placeholder="https://misskey.io/@someone&#10;https://baraag.net/@artist/media&#10;https://www.pixiv.net/users/12345"></textarea>
+      <div class="filters">
+        <button id="parseUrls">解析</button>
+        <button id="submitUrls" class="primary" disabled>送出</button>
+        <span class="spacer"></span>
+        <label class="chk"><input type="checkbox" id="fetchDownload" checked> 抓完就下載</label>
+        <label class="chk" title="不因碰到已抓過的貼文就停。用於補抓中間漏掉的">
+          <input type="checkbox" id="fetchFull"> 完整重掃
+        </label>
+      </div>
+      <div id="parseResult" class="parse-result"></div>
+    </div>
+
+    <div class="fetch-box">
+      <h2>一鍵更新</h2>
+      <p class="hint">
+        把資料庫裡<b>追蹤中</b>的帳號各跑一次增量 —— 只抓還沒抓過的。
+        已經跟上的帳號通常只發 1 個請求。
+      </p>
+      <div class="filters">
+        <button id="refreshAll" class="primary">一鍵更新</button>
+        <label class="chk" title="pixiv 節流很慢（1.8 秒一個請求、併發 1），一個帳號可能跑很久">
+          <input type="checkbox" id="includePixiv"> 包含 pixiv
+        </label>
+      </div>
+      <div id="refreshResult" class="parse-result"></div>
+    </div>
+  </div>
+
+  <h2>抓取佇列</h2>
+  <div class="filters">
+    <span id="fetchQueueSummary" class="muted">—</span>
+    <span class="spacer"></span>
+    <button id="clearFetchQueue" class="ghost">清空未開始的</button>
+    <button id="clearRateLimit" class="ghost hidden">解除限速標記</button>
+  </div>
+  <p class="hint">佇列只在記憶體裡 —— backend 重啟就沒了。重跑的成本很低（增量），需要時再貼一次即可。</p>
+  <div id="fetchQueue" class="fetch-jobs"></div>
+</section>
+
+<section id="view-accounts" class="view hidden">
+  <p class="hint">設定帳號預設分級後，<b>只影響之後 ingest 的新貼文</b>，不會回溯既有貼文。要回溯請按「重標」。</p>
+  <div id="accountList" class="cards"></div>
+</section>
+
+<!-- ── Creators ── -->
+<section id="view-creators" class="view hidden">
+  <div class="filters">
+    <input id="newCreator" placeholder="新 creator 名稱">
+    <button id="addCreator">建立</button>
+    <span class="spacer"></span>
+    <span class="muted">同一位作者的跨平台帳號與小帳都掛在同一個 creator 底下</span>
+  </div>
+  <div id="creatorList" class="cards"></div>
+</section>
+
+<!-- ── 問題 ── -->
+<section id="view-problems" class="view hidden">
+  <div class="filters">
+    <button id="retryAll">重試全部失敗</button>
+    <span class="spacer"></span>
+    <select id="logLevel">
+      <option value="">全部等級</option>
+      <option value="ERROR">ERROR</option>
+      <option value="WARNING">WARNING</option>
+      <option value="INFO">INFO</option>
+    </select>
+    <button id="refreshLogs" class="ghost">重新整理日誌</button>
+  </div>
+
+  <h2>下載失敗</h2>
+  <div id="errorList" class="errors"></div>
+
+  <h2>伺服器日誌</h2>
+  <pre id="logs" class="logs"></pre>
+</section>
+
+<!-- ── 詳情面板 ── -->
+<aside id="detail" class="detail hidden">
+  <button id="closeDetail" class="close">×</button>
+  <div id="detailBody"></div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

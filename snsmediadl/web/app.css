@@ -1,0 +1,279 @@
+:root {
+  --bg: #0e1621;
+  --panel: #15202b;
+  --line: #2f3b47;
+  --text: #e7e9ea;
+  --muted: #8b98a5;
+  --accent: #1d9bf0;
+  --ok: #00ba7c;
+  --warn: #ff7a00;
+  --err: #f4212e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, "Noto Sans TC", sans-serif;
+}
+
+/* ── 工作安全模式色帶 ──
+   不能只靠一個容易被忘記的 checkbox：誤以為在安全模式而其實不是，
+   代價不對稱。開啟時整個頁面頂端都要看得見。 */
+.safe-banner {
+  display: none;
+  background: var(--ok);
+  color: #06281c;
+  text-align: center;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 3px;
+  letter-spacing: .04em;
+}
+body.safe .safe-banner { display: block; }
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex-wrap: wrap;
+}
+
+.brand { font-weight: 700; font-size: 15px; }
+
+.tabs { display: flex; gap: 4px; }
+.tab {
+  background: none; border: 0; color: var(--muted);
+  padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+.tab:hover { background: #1c2b38; color: var(--text); }
+.tab.active { background: var(--accent); color: #fff; }
+
+.badge {
+  display: inline-block; min-width: 18px; padding: 0 5px;
+  border-radius: 9px; background: var(--err); color: #fff;
+  font-size: 11px; font-weight: 700; text-align: center;
+}
+.hidden { display: none !important; }
+
+.queue { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.pill {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: #1c2b38; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.pill.done { color: var(--ok); }
+.pill.pending { color: var(--accent); }
+.pill.failed { background: var(--err); color: #fff; font-weight: 700; }
+
+.safe-toggle, .dl-toggle {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; cursor: pointer; user-select: none;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
+}
+body.safe .safe-toggle { border-color: var(--ok); color: var(--ok); }
+
+/* 背景下載會自己對外發請求 —— 開著的時候要一眼看得出來 */
+.dl-toggle.on { border-color: var(--warn); color: var(--warn); }
+
+/* ── 選取模式 ── */
+.sel-bar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  background: #1c2b38; border: 1px solid var(--accent);
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;
+}
+.cell .pick {
+  position: absolute; top: 6px; right: 6px; width: 20px; height: 20px;
+  border-radius: 4px; border: 2px solid #fff; background: rgba(0,0,0,.5);
+  display: none; align-items: center; justify-content: center;
+  font-size: 13px; color: #fff; font-weight: 700;
+}
+body.selecting .cell .pick { display: flex; }
+body.selecting .cell { cursor: copy; }
+.cell.picked { outline: 3px solid var(--accent); outline-offset: -3px; }
+.cell.picked .pick { background: var(--accent); border-color: var(--accent); }
+
+/* 行內確認。不用 confirm() —— 那會擋住整個分頁，而且長得很醜 */
+.confirm { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.confirm b { color: var(--warn); }
+#bulkMsg.ok { color: var(--ok); }
+#bulkMsg.err { color: var(--err); }
+.card-msg { font-size: 11px; margin-left: 4px; }
+.card-msg.ok { color: var(--ok); }
+.card-msg.err { color: var(--err); }
+
+.view { padding: 14px 16px 40px; }
+
+.filters {
+  display: flex; gap: 8px; align-items: center;
+  flex-wrap: wrap; margin-bottom: 14px;
+}
+.spacer { flex: 1; }
+
+select, input, button {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 10px; font-size: 13px; font-family: inherit;
+}
+button { cursor: pointer; background: var(--accent); border-color: var(--accent); color: #fff; }
+button:hover { filter: brightness(1.1); }
+button.ghost { background: none; color: var(--muted); border-color: var(--line); }
+button.ghost:hover { color: var(--text); }
+/* 破壞性操作要看起來就不一樣，不要跟「重標既有」長得一模一樣 */
+button.danger { color: #d9534f; border-color: #d9534f; }
+button.danger:hover { background: #d9534f; color: #fff; }
+button.danger { background: var(--err); border-color: var(--err); }
+
+.muted { color: var(--muted); font-size: 12px; }
+.hint {
+  background: #1c2b38; border-left: 3px solid var(--accent);
+  padding: 8px 12px; border-radius: 0 8px 8px 0;
+  font-size: 12px; color: var(--muted); margin: 0 0 14px;
+}
+
+/* ── 媒體格線 ── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+.cell {
+  position: relative; aspect-ratio: 1;
+  background: var(--panel); border-radius: 8px; overflow: hidden;
+  cursor: pointer; border: 1px solid var(--line);
+}
+.cell:hover { border-color: var(--accent); }
+.cell img, .cell video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cell .tag {
+  position: absolute; top: 4px; left: 4px;
+  font-size: 10px; padding: 1px 6px; border-radius: 6px;
+  background: rgba(0,0,0,.72); color: #fff;
+}
+.cell .tag.r18 { background: var(--err); }
+.cell .kind {
+  position: absolute; bottom: 4px; right: 4px;
+  font-size: 10px; padding: 1px 6px; border-radius: 6px;
+  background: rgba(0,0,0,.72); color: #fff;
+}
+.cell .missing {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%; color: var(--err); font-size: 12px; text-align: center;
+}
+.cell.st-pending { opacity: .55; }
+.cell.st-failed { border-color: var(--err); }
+
+.pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 18px; }
+
+/* ── 卡片（帳號 / creator）── */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px;
+}
+.card h3 { margin: 0 0 4px; font-size: 14px; }
+.card .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.card select, .card input { padding: 4px 8px; font-size: 12px; }
+.card button { padding: 4px 10px; font-size: 12px; }
+
+/* ── 問題 ── */
+h2 { font-size: 14px; margin: 22px 0 10px; color: var(--muted); font-weight: 600; }
+.errors { display: flex; flex-direction: column; gap: 8px; }
+.err-row {
+  background: var(--panel); border: 1px solid var(--err);
+  border-radius: 8px; padding: 10px 12px;
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+}
+.err-row .msg { color: var(--err); font-family: ui-monospace, monospace; font-size: 12px; }
+.logs {
+  background: #08101a; border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; max-height: 380px; overflow: auto;
+  font: 11px/1.6 ui-monospace, monospace; color: var(--muted);
+  white-space: pre-wrap; word-break: break-all; margin: 0;
+}
+.logs .ERROR { color: var(--err); }
+.logs .WARNING { color: var(--warn); }
+
+/* ── 詳情面板 ── */
+.detail {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 94vw);
+  background: var(--panel); border-left: 1px solid var(--line);
+  padding: 44px 16px 20px; overflow-y: auto; z-index: 30;
+  box-shadow: -8px 0 24px rgba(0,0,0,.4);
+}
+.detail .close {
+  position: absolute; top: 8px; right: 10px;
+  background: none; border: 0; color: var(--muted); font-size: 22px; padding: 4px 10px;
+}
+.detail img, .detail video { width: 100%; border-radius: 8px; background: #000; }
+.detail dl { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; margin: 14px 0; font-size: 12px; }
+.detail dt { color: var(--muted); }
+.detail dd { margin: 0; word-break: break-all; }
+.detail a { color: var(--accent); }
+.src-note { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.detail .row { display: flex; gap: 6px; align-items: center; }
+.saved { font-size: 11px; color: var(--muted); min-width: 84px; }
+.saved.ok { color: var(--ok); }
+.saved.err { color: var(--err); }
+
+/* ── 批次抓取 ── */
+.fetch-grid {
+  display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 20px;
+}
+@media (max-width: 900px) { .fetch-grid { grid-template-columns: 1fr; } }
+
+.fetch-box {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px;
+}
+.fetch-box h2 { margin: 0 0 8px; font-size: 15px; }
+.fetch-box textarea {
+  width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  font: 13px/1.6 ui-monospace, "Cascadia Code", monospace; resize: vertical;
+}
+.fetch-box code {
+  background: var(--bg); padding: 1px 4px; border-radius: 4px;
+  font-family: ui-monospace, monospace;
+}
+
+label.chk {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--muted); cursor: pointer;
+}
+label.chk input { width: auto; }
+
+button.primary:disabled { opacity: .4; cursor: default; filter: none; }
+
+.parse-result { margin-top: 10px; }
+.good { color: var(--ok); font-size: 12px; }
+.bad { color: var(--err); font-size: 12px; }
+
+.parse-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+.parse-table td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+.parse-table td:first-child {
+  font-family: ui-monospace, monospace; color: var(--muted);
+  max-width: 320px; overflow-wrap: anywhere;
+}
+.parse-table tr.bad td { color: var(--err); }
+.parse-table tr.muted td { color: var(--muted); }
+
+.fetch-jobs { display: flex; flex-direction: column; gap: 4px; }
+.job {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 6px 10px; border-radius: 8px; background: var(--panel);
+  border-left: 3px solid var(--line); font-size: 13px;
+}
+.job b { min-width: 220px; }
+.job span { font-size: 12px; color: var(--muted); }
+.job.done { border-left-color: var(--ok); }
+.job.failed { border-left-color: var(--err); }
+.job.skipped { border-left-color: var(--warn); }
+/* 正在跑的那一筆要一眼看得出來 —— 序列佇列一次只會有一筆 */
+.job.running { border-left-color: var(--accent); background: #1c2b38; }

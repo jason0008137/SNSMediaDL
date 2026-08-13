@@ -1,0 +1,54 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+env/
+
+# ---- 本專案的資料，絕不進 git ----
+# DB 裝的是下載歷史，含帳號與貼文 metadata
+*.db
+*.db-wal
+*.db-shm
+# migration 前的備份。`*.db` 匹配不到 `snsmediadl.db.bak-20260812-195020`
+*.db.bak*
+
+# 下載下來的媒體檔
+/downloads/
+
+# 本機設定（可能含個人路徑）
+/config.toml
+
+# extension 倒出的採集資料 —— 未塗改的原始回應含帳號與貼文內容
+/userBridge/
+
+# 打包產物
+*.zip
+
+# ---- 參考實作 ----
+# RefRepo/ 是唯讀參考，不是本專案程式碼，要用請自己 clone：
+#   https://github.com/Spark-NF/twitter_media_downloader
+/RefRepo/
+
+# ---- 抓包原始資料 ----
+# 未塗改的抓包一律不進 git（含 cookie / bearer token）
+**/captures/raw/
+*.har
+
+# ---- 本機 / 個人設定，絕不進 git ----
+# 這些含憑證檔路徑、電腦名稱、其他私人專案路徑
+**/settings.local.json
+**/.mcp.json
+**/mcp.json
+
+# ---- 作業系統 ----
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,92 @@
+# SNSMediaDL 設定範例
+#
+# 用法：複製這個檔案成 config.toml（同一層），改成你要的值。
+#   config.toml 已被 gitignore，不會進版控。
+#
+# 優先序：環境變數 > config.toml > 內建預設。
+# 每一項都可以省略，省略就用內建預設值。
+#
+# ⚠️ Windows 路徑請用「單引號」：TOML 的雙引號字串會把 \ 當跳脫字元，
+#    "D:\SNS\media" 裡的 \S 是無效跳脫序列，載入時會直接報錯。
+#    要用雙引號的話得寫成 "D:\\SNS\\media"。
+
+
+# ── 下載位置 ──────────────────────────────────────────────
+
+# 新下載的檔案放哪。目錄結構是 <output_root>/<平台>/<帳號>/<檔名>。
+# 沒設定的話是專案底下的 downloads/。
+#
+# 改這一項**不會搬移既有檔案**：DB 存的是絕對路徑，舊檔留在原處、
+# 記錄依然有效，只有之後下載的才會落到新位置。
+output_root = 'D:\SNS_Media'
+
+# 額外允許在 GUI 開啟的媒體目錄。
+#
+# 什麼時候需要：改過 output_root 之後，舊檔案不在新目錄底下，
+# GUI 會以「不在允許的媒體目錄內」拒絕提供（那道檢查是用來擋任意檔案讀取的）。
+# 把舊目錄列在這裡，舊檔就繼續看得到。
+#
+# 匯入進來的既有媒體庫也放這裡。
+extra_media_roots = [
+  'D:\OldMedia\twitter',
+]
+
+# 檔名格式。可用 token：
+#   %date% %post_id% %ordinal% %ext% %platform% %user_screen_name% %kind%
+# filename_format = "[%date%] %post_id%_%ordinal%.%ext%"
+
+# 是否依 <平台>/<帳號> 分資料夾。false 會全部平鋪在 output_root 底下。
+# group_by_account = true
+
+
+# ── 伺服器 ────────────────────────────────────────────────
+
+# 本機單機前提：預設只綁 loopback。改成 0.0.0.0 等於把下載歷史對外開放，
+# 而且本專案刻意不做認證 —— 改之前請先看 README 的「使用前提」。
+# host = "127.0.0.1"
+# port = 8765
+
+# db_path = 'D:\SNS_Media\snsmediadl.db'
+
+
+# ── 下載節流 ──────────────────────────────────────────────
+# X 超速會鎖整個帳號約一天，預設值刻意保守。
+
+# concurrency = 4
+# download_delay_seconds = 1.0
+# timeout_seconds = 60.0
+# max_attempts = 3
+
+# 啟動時是否自動把佇列裡的媒體抓下來。
+# 預設關閉 —— 會自己對外發請求的東西，預設應該是關的。
+# GUI 的開關可以即時切換，不必改這裡也不用重啟。
+# auto_download = false
+# poll_interval_seconds = 5.0
+
+
+# ── Fediverse / 批次抓取 ──────────────────────────────────
+
+# fetch_delay_seconds = 1.0
+# fetch_page_size = 40
+# 上限保護：第一次對大帳號抓會抓到天亮。撞到上限會明講，不會假裝抓完了。
+# fetch_max_pages = 20
+# fetch_batch_size = 20
+
+
+# ── 憑證 ──────────────────────────────────────────────────
+#
+# ⚠️ 這一段是憑證。config.toml 已 gitignore，但仍請確認不要貼進
+#    測試 fixture、筆記或任何會進版控的地方。
+#
+# 各 Fediverse instance 的 access token（公開內容不需要）：
+# instance_tokens = { "baraag.net" = "<token>" }
+#
+# 各平台的登入憑證。目前只有 pixiv 需要（值是 PHPSESSID）：
+# platform_credentials = { pixiv = "<PHPSESSID>" }
+
+
+# ── 開發用 ────────────────────────────────────────────────
+
+# extension 偵測到檔案變動就自己 reload。正式使用時設 false
+# （開著會一直輪詢版本端點）。
+# dev_reload = true

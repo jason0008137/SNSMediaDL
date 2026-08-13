@@ -1,0 +1,16 @@
+SNSMediaDL
+Copyright 2026 jason0008137
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes design and code adapted from:
+
+  twitter_media_downloader
+  Copyright Spark-NF
+  Licensed under the Apache License, Version 2.0
+  https://github.com/Spark-NF/twitter_media_downloader
+
+  Adapted portions: the filename format token system (%post_id%, %date%,
+  %ext%, ... — see snsmediadl/naming.py, adapted from src/mapper.py) and
+  the module separation concept (parser / mapper / downloader kept as
+  independent layers).

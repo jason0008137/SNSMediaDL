@@ -1,0 +1,70 @@
+[
+  {
+    "createdAt": "Thu Jul 03 15:10:25 +0000 2025",
+    "isRetweet": false,
+    "media": [
+      {
+        "bitrate": 0,
+        "kind": "animated_gif",
+        "thumb": "https://pbs.twimg.com/tweet_video_thumb/SAMPLEGIF000002.jpg",
+        "url": "https://video.twimg.com/tweet_video/SAMPLEGIF000002.mp4"
+      }
+    ],
+    "postId": "1000000000000000006",
+    "userId": "2000000000000000002"
+  },
+  {
+    "createdAt": "Thu Jul 03 16:38:22 +0000 2025",
+    "isRetweet": false,
+    "media": [
+      {
+        "bitrate": 832000,
+        "durationMs": 4736,
+        "kind": "video",
+        "thumb": "https://pbs.twimg.com/amplify_video_thumb/1000000000000000103/img/SAMPLETHUMB0002.jpg",
+        "url": "https://video.twimg.com/amplify_video/1000000000000000103/vid/avc1/480x360/SAMPLEVIDEO0004.mp4?tag=14"
+      }
+    ],
+    "postId": "1000000000000000005",
+    "userId": "2000000000000000002"
+  },
+  {
+    "createdAt": "Tue Jul 08 11:28:31 +0000 2025",
+    "isRetweet": false,
+    "media": [
+      {
+        "kind": "photo",
+        "orig": "https://pbs.twimg.com/media/SAMPLEPHOTO0003.jpg?name=orig",
+        "url": "https://pbs.twimg.com/media/SAMPLEPHOTO0003.jpg"
+      }
+    ],
+    "postId": "1000000000000000004",
+    "userId": "2000000000000000002"
+  },
+  {
+    "createdAt": "Tue Jul 08 11:43:52 +0000 2025",
+    "isRetweet": false,
+    "media": [
+      {
+        "kind": "photo",
+        "orig": "https://pbs.twimg.com/media/SAMPLEPHOTO0004.jpg?name=orig",
+        "url": "https://pbs.twimg.com/media/SAMPLEPHOTO0004.jpg"
+      },
+      {
+        "bitrate": 832000,
+        "durationMs": 4783,
+        "kind": "video",
+        "thumb": "https://pbs.twimg.com/amplify_video_thumb/1000000000000000102/img/OxSUPMHUG5XFf1jY.jpg",
+        "url": "https://video.twimg.com/amplify_video/1000000000000000102/vid/avc1/480x360/SAMPLEVIDEO0005.mp4?tag=14"
+      },
+      {
+        "bitrate": 0,
+        "kind": "animated_gif",
+        "thumb": "https://pbs.twimg.com/tweet_video_thumb/SAMPLEGIF000003.jpg",
+        "url": "https://video.twimg.com/tweet_video/SAMPLEGIF000003.mp4"
+      }
+    ],
+    "postId": "1000000000000000003",
+    "userId": "2000000000000000002"
+  }
+]

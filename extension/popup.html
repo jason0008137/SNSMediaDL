@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 340px; margin: 0; padding: 12px; font: 13px/1.5 system-ui, sans-serif;
+           background: #15202b; color: #e7e9ea; }
+    h1 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #536471; flex: none; }
+    .dot.on { background: #00ba7c; }
+    .dot.off { background: #f4212e; }
+    .stat { display: flex; justify-content: space-between; align-items: baseline;
+            padding: 4px 0; border-bottom: 1px solid #2f3b47; }
+    .stat b { font-variant-numeric: tabular-nums; }
+    .big { font-size: 24px; font-weight: 700; color: #00ba7c; }
+    .warn b { color: #ff7a00; }
+    .row { display: flex; gap: 8px; margin-top: 10px; }
+    button { flex: 1; padding: 6px; border: 0; border-radius: 6px; cursor: pointer;
+             background: #1d9bf0; color: #fff; font-size: 12px; }
+    button.sec { background: #2f3b47; color: #e7e9ea; }
+    input { width: 100%; box-sizing: border-box; margin-top: 8px; padding: 5px 7px;
+            border: 1px solid #2f3b47; border-radius: 6px; background: #0e1621;
+            color: #e7e9ea; font-size: 12px; font-family: ui-monospace, monospace; }
+    label { font-size: 11px; color: #8b98a5; }
+    #msg { margin-top: 8px; font-size: 11px; color: #8b98a5; min-height: 15px;
+           word-break: break-all; }
+    #msg.err { color: #f4212e; }
+    .box { margin-top: 12px; padding: 10px; border: 1px solid #2f3b47; border-radius: 8px; }
+    .box-title { font-size: 12px; color: #8b98a5; margin-bottom: 6px; }
+    .box-title b { color: #e7e9ea; }
+    .note { font-size: 11px; color: #8b98a5; }
+    .note.warn { color: #ff7a00; }
+    select { flex: 1; padding: 5px; border: 1px solid #2f3b47; border-radius: 6px;
+             background: #0e1621; color: #e7e9ea; font-size: 12px; }
+    label { display: block; font-size: 11px; color: #8b98a5; margin-top: 8px; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1><span class="dot" id="dot"></span><span id="conn">檢查連線中…</span></h1>
+
+  <div class="stat"><span>已同步媒體</span><b class="big" id="syncedMedia">0</b></div>
+  <div class="stat"><span>已同步貼文</span><b id="syncedPosts">0</b></div>
+  <div class="stat warn"><span>待送出</span><b id="pending">0</b></div>
+  <div class="stat"><span>最後同步</span><b id="lastSync">—</b></div>
+
+  <!--
+    帳號編輯區已移除（2026-08-12）。
+    它用全域的 lastUserId 判斷「目前帳號」，會被其他分頁蓋掉，而該區塊能改
+    預設分級與 creator 歸屬 —— 設錯就是資料汙染，不只是顯示錯。
+    面板（bar）用網址判斷，是唯一正確的真相來源。
+  -->
+  <div class="row">
+    <button id="sync">送出全部帳號</button>
+    <button id="reset" class="sec">清空</button>
+  </div>
+  <div class="note">
+    平常在 x.com 頁面右下角的面板送出（一次一個帳號、標籤看得見）。
+    這裡是給「切走的帳號還有殘留」用的出口 ——
+    逐帳號各送一次，各自套用該帳號記住的標籤。
+  </div>
+
+  <label for="backend">Backend URL</label>
+  <input id="backend" placeholder="http://127.0.0.1:8765">
+
+  <div id="msg"></div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
