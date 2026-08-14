@@ -206,7 +206,8 @@ def create_app(
     )
 
     from . import (
-        creators, deletion, devtools, fetch, files, ingest, logbuf, query, tagging,
+        creators, deletion, devtools, fetch, files, ingest, logbuf, prefs, query,
+        tagging,
     )
 
     logbuf.install()
@@ -216,6 +217,7 @@ def create_app(
     app.include_router(query.router)
     app.include_router(creators.router)
     app.include_router(tagging.router)
+    app.include_router(prefs.router)
     app.include_router(files.router)
     app.include_router(devtools.router)
     app.include_router(deletion.router)

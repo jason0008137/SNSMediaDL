@@ -43,6 +43,19 @@ def _check(column: str, enum_cls, nullable: bool = True) -> CheckConstraint:
     return CheckConstraint(expr, name=f"ck_{column}")
 
 
+def _stars_check(table: str) -> CheckConstraint:
+    """五星評分的值域。NULL = 未評分，**不是** 0 分。
+
+    ⚠️ 刻意放在 `mapped_column()` 的參數位置（欄位層）而不是 `__table_args__`
+    （表層）：migration 用 `ALTER TABLE ... ADD COLUMN ... CHECK (...)` 加欄位，
+    那是行內約束。兩邊要渲染出同一段 SQL，`create_all` 的開發機與跑過
+    migration 的正式庫才不會長出不同的表。
+    """
+    return CheckConstraint(
+        "stars IS NULL OR (stars BETWEEN 1 AND 5)", name=f"ck_{table}_stars"
+    )
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -101,6 +114,16 @@ class Account(Base):
     default_rating: Mapped[str | None] = mapped_column(String(8), default=None)
     default_content_type: Mapped[str | None] = mapped_column(String(16), default=None)
 
+    # 個人偏好。與 default_rating 無關 —— 分級是內容的性質、會繼承給貼文，
+    # 這兩個純粹是「我多喜歡這個帳號」，不繼承、不回溯、沒有來源概念。
+    is_favorite: Mapped[bool] = mapped_column(
+        default=False, server_default="0", nullable=False
+    )
+    # NULL = 未評分。1–5。accounts 是小表，不加索引。
+    stars: Mapped[int | None] = mapped_column(
+        Integer, _stars_check("accounts"), default=None
+    )
+
     creator: Mapped[Creator | None] = relationship(back_populates="accounts")
     posts: Mapped[list[Post]] = relationship(back_populates="account")
 
@@ -149,6 +172,7 @@ class Media(Base):
         UniqueConstraint("post_id", "ordinal", name="uq_media_post_ordinal"),
         Index("ix_media_status", "status"),
         Index("ix_media_hash", "file_hash"),
+        Index("ix_media_stars", "stars"),
         _check("kind", MediaKind, nullable=False),
         _check("status", MediaStatus, nullable=False),
     )
@@ -173,5 +197,12 @@ class Media(Base):
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     meta_json: Mapped[str | None] = mapped_column(Text, default=None)
+
+    # 五星評分。掛在 media 不掛 post —— rating（sfw/r18）是**貼文內容**的性質，
+    # 同一則的四張圖不會一張 sfw 一張 r18；stars 是**對單張圖的偏好**，
+    # 同一則裡有張特別好是常態。GUI 的瀏覽單位也是 media。
+    stars: Mapped[int | None] = mapped_column(
+        Integer, _stars_check("media"), default=None
+    )
 
     post: Mapped[Post] = relationship(back_populates="media")

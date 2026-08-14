@@ -32,6 +32,48 @@ async function api(path, options) {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// ── 五星評分元件 ───────────────────────────────────────
+// ⚠️ 這是「評分」，與 rating（sfw / r18 分級）是**兩件事**。
+// 後端欄位叫 stars，前端也一律用 stars，不要混用 rating 這個字。
+
+/** 五顆星的 HTML。`value` 為 null 代表未評分（不是 0 分）。 */
+function starsHtml(value, cls = '') {
+  const stars = [1, 2, 3, 4, 5].map((n) =>
+    `<button type="button" class="star${value && n <= value ? ' on' : ''}" data-n="${n}"
+             aria-label="${n} 星">★</button>`).join('');
+  return `<span class="stars ${cls}" data-stars="${value ?? ''}"
+                title="點星星評分；再點同一顆可清除">${stars}</span>`;
+}
+
+function paintStars(root, value) {
+  root.dataset.stars = value ?? '';
+  root.querySelectorAll('.star').forEach((b) => {
+    b.classList.toggle('on', value !== null && Number(b.dataset.n) <= value);
+  });
+}
+
+/** 綁定五星元件。`onSet(value|null)` 要回傳 Promise；失敗會還原畫面。 */
+function wireStars(root, onSet, onError) {
+  root.querySelectorAll('.star').forEach((btn) => {
+    btn.addEventListener('click', async (ev) => {
+      // 帳號卡與媒體格子本身都有 click handler，不擋的話會順便開詳情／切換選取
+      ev.stopPropagation();
+      ev.preventDefault();
+      const before = root.dataset.stars ? Number(root.dataset.stars) : null;
+      const n = Number(btn.dataset.n);
+      // 再點同一顆 = 清除。這是唯一的清除方式，所以元件的 title 要寫出來。
+      const next = before === n ? null : n;
+      paintStars(root, next);
+      try {
+        await onSet(next);
+      } catch (e) {
+        paintStars(root, before);   // 還原，不要顯示一個沒存進去的值
+        if (onError) onError(e);
+      }
+    });
+  });
+}
+
 const fmtBytes = (n) => {
   if (!n) return '—';
   const u = ['B', 'KB', 'MB', 'GB'];
@@ -76,6 +118,7 @@ function mediaQuery() {
   p.set('limit', PAGE);
   p.set('offset', state.offset);
   if (safeMode) p.set('exclude_rating', 'r18');
+  p.set('sort', $('fSort').value);
   const map = {
     account_id: $('fAccount').value,
     creator_id: $('fCreator').value,
@@ -83,6 +126,7 @@ function mediaQuery() {
     content_type: $('fContent').value,
     kind: $('fKind').value,
     status: $('fStatus').value,
+    min_stars: $('fMinStars').value,
   };
   for (const [k, v] of Object.entries(map)) if (v) p.set(k, v);
   return p.toString();
@@ -101,9 +145,11 @@ function cellHtml(m) {
     ? `<span class="tag ${m.rating === 'r18' ? 'r18' : ''}">${esc(m.rating)}</span>`
     : '';
   const kind = m.kind === 'photo' ? '' : `<span class="kind">${esc(m.kind)}</span>`;
+  // 只在有評分時顯示。空的星星角標會讓每一格都變吵。
+  const stars = m.stars ? `<span class="star-badge">${'★'.repeat(m.stars)}</span>` : '';
 
   return `<div class="cell st-${esc(m.status)}" data-id="${m.id}" data-post="${m.post_id}">
-    ${body}${rating}${kind}<span class="pick">✓</span>
+    ${body}${rating}${kind}${stars}<span class="pick">✓</span>
   </div>`;
 }
 
@@ -212,16 +258,32 @@ function buildBulkBody() {
   return body;
 }
 
+/** 批次評分的 body，或 null（沒選）。
+ *
+ *  與分級的關鍵差別：**stars 掛在 media，不掛 post**，所以送的是 media_ids
+ *  而不是去重過的 post_ids。選了同則貼文的三張圖就是改三張，不會波及第四張。 */
+function buildBulkStarsBody() {
+  const s = $('bulkStars').value;
+  if (!s) return null;
+  return { media_ids: [...state.picked], stars: s === '__clear__' ? null : Number(s) };
+}
+
 $('bulkApply').addEventListener('click', () => {
   const body = buildBulkBody();
-  if (!body.post_ids.length) return;
-  if (!('rating' in body) && !('content_type' in body)) {
-    bulkMsg('請先選擇要套用的分級或類型。', 'err');
+  const starsBody = buildBulkStarsBody();
+  if (!state.picked.size) return;
+  const hasTags = 'rating' in body || 'content_type' in body;
+  if (!hasTags && !starsBody) {
+    bulkMsg('請先選擇要套用的分級、類型或評分。', 'err');
     return;
   }
-  // 行內確認，不用 confirm()：那會擋住整個分頁
-  $('bulkConfirmText').textContent =
-    `套用到 ${body.post_ids.length} 則貼文（${state.picked.size} 個媒體）？`;
+  // 行內確認，不用 confirm()：那會擋住整個分頁。
+  // 兩種作用範圍不同，必須分開講 —— 使用者只選了 3 張圖卻改到 1 則貼文的
+  // 分級，那是他該事先知道的事。
+  const parts = [];
+  if (hasTags) parts.push(`分級／類型 → ${body.post_ids.length} 則貼文`);
+  if (starsBody) parts.push(`評分 → ${state.picked.size} 個媒體`);
+  $('bulkConfirmText').textContent = `${parts.join('；')}？`;
   $('bulkConfirm').classList.remove('hidden');
   $('bulkApply').disabled = true;
   bulkMsg('');
@@ -234,22 +296,39 @@ $('bulkNo').addEventListener('click', () => {
 
 $('bulkYes').addEventListener('click', async () => {
   const body = buildBulkBody();
+  const starsBody = buildBulkStarsBody();
+  const hasTags = 'rating' in body || 'content_type' in body;
   $('bulkConfirm').classList.add('hidden');
   bulkMsg('套用中…');
   try {
-    const res = await api('/api/posts/bulk-tags', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const done = [];
+    if (hasTags) {
+      const res = await api('/api/posts/bulk-tags', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      done.push(`${res.updated} 則貼文的分級`);
+    }
+    if (starsBody) {
+      const res = await api('/api/media/bulk-stars', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(starsBody),
+      });
+      done.push(`${res.updated} 個媒體的評分`);
+    }
     state.picked.clear();
     state.lastPickIndex = null;
     $('bulkRating').value = '';
     $('bulkContent').value = '';
+    $('bulkStars').value = '';
     await loadMedia();
-    bulkMsg(`已更新 ${res.updated} 則貼文`, 'ok');
+    bulkMsg(`已更新 ${done.join(' 與 ')}`, 'ok');
   } catch (e) {
-    bulkMsg(`批次標記失敗：${e.message}`, 'err');
+    // 兩個請求是分開送的，前一個可能已經成功了 —— 不要回報成整批失敗
+    bulkMsg(`批次套用失敗：${e.message}（部分變更可能已生效，請重新整理確認）`, 'err');
+    await loadMedia();
   } finally {
     $('bulkApply').disabled = false;
   }
@@ -257,11 +336,20 @@ $('bulkYes').addEventListener('click', async () => {
 
 $('refresh').addEventListener('click', () => loadMedia());
 
-['fAccount', 'fCreator', 'fRating', 'fContent', 'fKind', 'fStatus'].forEach((id) =>
+const MEDIA_FILTERS = ['fAccount', 'fCreator', 'fRating', 'fContent', 'fKind', 'fStatus', 'fMinStars'];
+
+MEDIA_FILTERS.forEach((id) =>
   $(id).addEventListener('change', () => { state.offset = 0; loadMedia(); }));
 
+$('fSort').addEventListener('change', () => {
+  localStorage.setItem('mediaSort', $('fSort').value);
+  state.offset = 0;
+  loadMedia();
+});
+
 $('fReset').addEventListener('click', () => {
-  ['fAccount', 'fCreator', 'fRating', 'fContent', 'fKind', 'fStatus'].forEach((id) => { $(id).value = ''; });
+  // 排序不是篩選 —— 「清除篩選」不該把使用者選的排序也一起打掉
+  MEDIA_FILTERS.forEach((id) => { $(id).value = ''; });
   state.offset = 0;
   loadMedia();
 });
@@ -315,6 +403,11 @@ async function showDetail(mediaId) {
       <select id="dContent">${opts(CONTENTS, p.content_type)}</select>
       <span id="dSaved" class="saved"></span>
     </div>
+    <div class="row">
+      ${starsHtml(m.stars, 'dStars')}
+      <span class="muted small">評分只影響這一個媒體，不影響同則貼文的其他張</span>
+      <span id="dStarSaved" class="saved"></span>
+    </div>
     <div class="src-note" id="dSource">目前來源：${esc(p.rating_source || '未標記')}${
       p.rating_source === 'auto' ? '（機器猜測，尚未人工確認）' : ''}</div>
     <dl>
@@ -358,6 +451,30 @@ async function showDetail(mediaId) {
     }
   };
 
+  wireStars(
+    $('detailBody').querySelector('.dStars'),
+    async (stars) => {
+      const flash = $('dStarSaved');
+      flash.textContent = '儲存中…';
+      flash.className = 'saved';
+      await api(`/api/media/${m.id}/stars`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ stars }),
+      });
+      m.stars = stars;
+      flash.textContent = '已儲存';
+      flash.className = 'saved ok';
+      setTimeout(() => { flash.textContent = ''; }, 1600);
+      // 格線上的星星角標要跟著更新；若正在依評分排序，順序也會變
+      loadMedia();
+    },
+    (e) => {
+      $('dStarSaved').textContent = `儲存失敗：${e.message}`;
+      $('dStarSaved').className = 'saved err';
+    },
+  );
+
   const ratingEl = $('dRating');
   const contentEl = $('dContent');
   let lastRating = ratingEl.value;
@@ -378,16 +495,47 @@ async function showDetail(mediaId) {
 $('closeDetail').addEventListener('click', () => $('detail').classList.add('hidden'));
 
 // ── 帳號 ───────────────────────────────────────────────
+
+/** 媒體頁的「全部帳號」下拉。**必須是未經篩選的完整清單** ——
+ *  跟帳號頁共用一次請求的話，帳號頁一搜尋，媒體頁的下拉就跟著少一半。 */
+async function loadAccountOptions() {
+  state.accounts = await api('/api/accounts?sort=name');
+  $('fAccount').innerHTML = '<option value="">全部帳號</option>'
+    + state.accounts.map((a) =>
+        `<option value="${a.id}">${esc(a.screen_name || a.platform_user_id)}</option>`).join('');
+}
+
+function accountQuery() {
+  const p = new URLSearchParams();
+  p.set('sort', $('aSort').value);
+  const q = $('aSearch').value.trim();
+  if (q) p.set('q', q);
+  if ($('aFavOnly').checked) p.set('favorite', 'true');
+  if ($('aMinStars').value) p.set('min_stars', $('aMinStars').value);
+  return p.toString();
+}
+
+const fmtWhen = (iso) => (iso ? String(iso).slice(0, 10) : '—');
+
 async function loadAccounts() {
-  const list = await api('/api/accounts');
-  state.accounts = list;
+  const list = await api(`/api/accounts?${accountQuery()}`);
+  $('accountCount').textContent = `${list.length} 個帳號`;
   const creatorOpts = ['<option value="">（未歸屬）</option>']
     .concat(state.creators.map((c) => `<option value="${c.id}">${esc(c.display_name)}</option>`)).join('');
 
   $('accountList').innerHTML = list.map((a) => `
     <div class="card" data-id="${a.id}">
-      <h3>${esc(a.screen_name || a.platform_user_id)}</h3>
+      <div class="card-head">
+        <button type="button" class="fav${a.is_favorite ? ' on' : ''}"
+                title="我的最愛">${a.is_favorite ? '♥' : '♡'}</button>
+        <h3>${esc(a.screen_name || a.platform_user_id)}</h3>
+        ${starsHtml(a.stars, 'aStars')}
+      </div>
       <div class="muted">${esc(a.platform)} · id ${esc(a.platform_user_id)}</div>
+      <div class="muted small">
+        ${a.post_count} 則貼文 · ${a.media_count} 個媒體 ·
+        最後發文 ${fmtWhen(a.last_post_at)} · 最後採集 ${fmtWhen(a.last_ingest_at)}
+      </div>
       <div class="row">
         <select class="aRating">${opts(RATINGS, a.default_rating)}</select>
         <select class="aContent">${opts(CONTENTS, a.default_content_type)}</select>
@@ -419,6 +567,41 @@ async function loadAccounts() {
       msg.className = `card-msg ${cls || ''}`;
       if (cls === 'ok') setTimeout(() => { if (msg.textContent === text) msg.textContent = ''; }, 3500);
     };
+
+    // ♥ 與 ★ 立即送出，且**刻意不重新載入清單** —— 排序若是「我的最愛」，
+    // reload 會讓剛按下的卡片瞬間跳到別的位置，滑鼠停在原處的使用者
+    // 會以為自己點錯了。順序等下次切分頁或改條件時才更新。
+    const fav = card.querySelector('.fav');
+    fav.addEventListener('click', async () => {
+      const next = !a.is_favorite;
+      fav.classList.toggle('on', next);
+      fav.textContent = next ? '♥' : '♡';
+      try {
+        await api(`/api/accounts/${a.id}/prefs`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ is_favorite: next }),
+        });
+        a.is_favorite = next;
+      } catch (e) {
+        fav.classList.toggle('on', a.is_favorite);
+        fav.textContent = a.is_favorite ? '♥' : '♡';
+        say(`失敗：${e.message}`, 'err');
+      }
+    });
+
+    wireStars(
+      card.querySelector('.aStars'),
+      async (stars) => {
+        await api(`/api/accounts/${a.id}/prefs`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ stars }),
+        });
+        a.stars = stars;
+      },
+      (e) => say(`評分失敗：${e.message}`, 'err'),
+    );
 
     card.querySelector('.aSaveDefaults').addEventListener('click', async () => {
       try {
@@ -487,6 +670,20 @@ async function loadAccounts() {
     });
   });
 }
+
+// 搜尋做 debounce：不 debounce 的話打「heikala」是 7 個請求，
+// 而且回應順序沒有保證 —— 慢的那個後到就會蓋掉正確結果。
+let accountSearchTimer = null;
+$('aSearch').addEventListener('input', () => {
+  clearTimeout(accountSearchTimer);
+  accountSearchTimer = setTimeout(loadAccounts, 250);
+});
+
+['aSort', 'aFavOnly', 'aMinStars'].forEach((id) =>
+  $(id).addEventListener('change', () => {
+    if (id === 'aSort') localStorage.setItem('accountSort', $('aSort').value);
+    loadAccounts();
+  }));
 
 // ── Creators ───────────────────────────────────────────
 async function loadCreators() {
@@ -803,11 +1000,13 @@ $('clearRateLimit').addEventListener('click', async () => {
 // ── 啟動 ───────────────────────────────────────────────
 async function init() {
   applySafeMode();
+  // 排序偏好記住。GUI 預設 favorite，而 API 預設是 id（= 舊行為，extension 靠它）
+  $('aSort').value = localStorage.getItem('accountSort') || 'favorite';
+  $('fSort').value = localStorage.getItem('mediaSort') || 'newest';
   await loadSettings();
   await loadCreators();
+  await loadAccountOptions();
   await loadAccounts();
-  $('fAccount').innerHTML = '<option value="">全部帳號</option>'
-    + state.accounts.map((a) => `<option value="${a.id}">${esc(a.screen_name || a.platform_user_id)}</option>`).join('');
   await loadMedia();
   await refreshQueue();
   await refreshFetchQueue();

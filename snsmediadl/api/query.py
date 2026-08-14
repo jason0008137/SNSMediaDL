@@ -46,6 +46,7 @@ def _account_dict(a: Account) -> dict:
     return {
         "id": a.id,
         "platform": a.platform,
+        "instance_host": a.instance_host,
         "platform_user_id": a.platform_user_id,
         "screen_name": a.screen_name,
         "is_tracked": a.is_tracked,
@@ -53,6 +54,10 @@ def _account_dict(a: Account) -> dict:
         "role": a.role,
         "default_rating": a.default_rating,
         "default_content_type": a.default_content_type,
+        # 個人偏好。與 default_rating 無關 —— 那是會繼承給貼文的分級，
+        # 這兩個只是「我多喜歡這個帳號」。
+        "is_favorite": a.is_favorite,
+        "stars": a.stars,
     }
 
 
@@ -84,21 +89,139 @@ def _media_dict(m: Media) -> dict:
         "status": m.status,
         "error": m.error,
         "attempt_count": m.attempt_count,
+        "stars": m.stars,
     }
+
+
+def _like_pattern(q: str) -> str:
+    """把使用者輸入的子字串轉成安全的 LIKE pattern。
+
+    `_` 與 `%` 在 LIKE 裡是萬用字元，必須跳脫。這裡不是理論上的潔癖 ——
+    帳號名稱含底線是常態（`heikala_art`），不跳脫的話搜 `heikala_art`
+    會連 `heikalaXart` 一起撈出來，而使用者只會覺得「搜尋怪怪的」。
+    """
+    esc = q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%"
 
 
 @router.get("/accounts")
 def list_accounts(
     platform: str | None = None,
     creator_id: int | None = None,
+    q: str | None = Query(
+        default=None, description="子字串搜尋，比對 screen_name 與 platform_user_id，不分大小寫"
+    ),
+    favorite: bool | None = Query(default=None, description="true 時只回我的最愛"),
+    min_stars: int | None = Query(default=None, ge=1, le=5),
+    sort: str = Query(
+        default="id",
+        description="favorite / stars / name / last_post / last_ingest / media / posts / created / id",
+    ),
+    order: str | None = Query(default=None, description="asc 或 desc，覆寫該排序的預設方向"),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    stmt = select(Account)
+    """帳號清單。
+
+    **回傳形狀刻意維持 list，不改成分頁 dict** —— `extension/bar.js` 直接把它
+    當陣列跑 `.map`，換成 dict 不會拋錯，只會靜默變成空的下拉選單。
+
+    `sort` 預設 `id`（= 這個功能加入之前的行為）。GUI 自己傳 `sort=favorite`。
+    """
+    # 聚合欄一次算完。做成 N+1（每個帳號各查一次）在 1,880 個帳號上就是
+    # 1,881 個 query。
+    post_agg = (
+        select(
+            Post.account_id.label("account_id"),
+            func.count(Post.id).label("post_count"),
+            func.max(Post.posted_at).label("last_post_at"),
+            func.max(Post.ingested_at).label("last_ingest_at"),
+        )
+        .group_by(Post.account_id)
+        .subquery()
+    )
+    media_agg = (
+        select(
+            Post.account_id.label("account_id"),
+            func.count(Media.id).label("media_count"),
+        )
+        .join(Media, Media.post_id == Post.id)
+        .group_by(Post.account_id)
+        .subquery()
+    )
+
+    name_key = func.lower(func.coalesce(Account.screen_name, Account.platform_user_id))
+    # (排序鍵, 預設是否 DESC)
+    sorts = {
+        "favorite": (Account.is_favorite, True),
+        "stars": (Account.stars, True),
+        "name": (name_key, False),
+        "last_post": (post_agg.c.last_post_at, True),
+        "last_ingest": (post_agg.c.last_ingest_at, True),
+        "media": (func.coalesce(media_agg.c.media_count, 0), True),
+        "posts": (func.coalesce(post_agg.c.post_count, 0), True),
+        "created": (Account.created_at, True),
+        "id": (Account.id, False),
+    }
+    if sort not in sorts:
+        # 不默默退回預設 —— 那會讓「參數打錯」看起來像「排序功能壞了」。
+        raise HTTPException(422, f"sort 必須是 {sorted(sorts)} 之一")
+    if order is not None and order not in ("asc", "desc"):
+        raise HTTPException(422, "order 必須是 asc 或 desc")
+
+    stmt = (
+        select(
+            Account,
+            post_agg.c.post_count,
+            post_agg.c.last_post_at,
+            post_agg.c.last_ingest_at,
+            media_agg.c.media_count,
+        )
+        .outerjoin(post_agg, post_agg.c.account_id == Account.id)
+        .outerjoin(media_agg, media_agg.c.account_id == Account.id)
+    )
+
     if platform:
         stmt = stmt.where(Account.platform == platform)
     if creator_id is not None:
         stmt = stmt.where(Account.creator_id == creator_id)
-    return [_account_dict(a) for a in session.scalars(stmt)]
+    if q:
+        pattern = _like_pattern(q)
+        stmt = stmt.where(
+            func.lower(func.coalesce(Account.screen_name, "")).like(pattern, escape="\\")
+            | func.lower(Account.platform_user_id).like(pattern, escape="\\")
+        )
+    if favorite:
+        stmt = stmt.where(Account.is_favorite.is_(True))
+    if min_stars is not None:
+        # NULL（未評分）不算 0 分，要被濾掉 —— SQL 的 `stars >= 1` 本來就會
+        # 排除 NULL，這裡只是講明白這是刻意的。
+        stmt = stmt.where(Account.stars >= min_stars)
+
+    key, default_desc = sorts[sort]
+    desc = default_desc if order is None else order == "desc"
+    # ⚠️ SQLite 把 NULL 當最小值，DESC 時會排到**最前面** —— 未評分的帳號
+    # 會壓在五星前面。所有可為 NULL 的鍵一律 nullslast。
+    primary = (key.desc() if desc else key.asc()).nullslast()
+    # 「我的最愛」只有兩個值，沒有次要鍵的話組內順序等於隨機。
+    tiebreak: list = []
+    if sort == "favorite":
+        tiebreak = [Account.stars.desc().nullslast(), name_key.asc()]
+    elif sort == "stars":
+        tiebreak = [name_key.asc()]
+    # id 收尾：所有鍵都相同時，順序至少要在多次請求間穩定，否則分頁會跳。
+    stmt = stmt.order_by(primary, *tiebreak, Account.id.asc())
+
+    out = []
+    for account, post_count, last_post_at, last_ingest_at, media_count in session.execute(stmt):
+        d = _account_dict(account)
+        d.update(
+            post_count=post_count or 0,
+            media_count=media_count or 0,
+            last_post_at=last_post_at.isoformat() if last_post_at else None,
+            last_ingest_at=last_ingest_at.isoformat() if last_ingest_at else None,
+        )
+        out.append(d)
+    return out
 
 
 @router.get("/posts")
@@ -151,10 +274,17 @@ def list_media(
     account_id: int | None = None,
     creator_id: int | None = None,
     platform: str | None = None,
+    min_stars: int | None = Query(
+        default=None, ge=1, le=5,
+        description="只回 ≥ N 星。⚠️ 這是五星評分，與 rating（sfw/r18 分級）無關",
+    ),
+    sort: str = Query(default="newest", description="newest / oldest / stars"),
     limit: int = Query(default=60, le=500),
     offset: int = 0,
     session: Session = Depends(get_session),
 ) -> dict:
+    if sort not in ("newest", "oldest", "stars"):
+        raise HTTPException(422, "sort 必須是 newest / oldest / stars 之一")
     stmt = select(Media)
     needs_post = any(
         [rating, exclude_rating, content_type, account_id, creator_id, platform]
@@ -179,8 +309,16 @@ def list_media(
         stmt = stmt.where((Post.rating.is_(None)) | (Post.rating != exclude_rating))
     if content_type:
         stmt = stmt.where(Post.content_type == content_type)
+    if min_stars is not None:
+        stmt = stmt.where(Media.stars >= min_stars)
 
-    stmt = stmt.order_by(Media.id.desc())
+    if sort == "stars":
+        # nullslast：未評分不能壓在五星前面。id 收尾讓同星等內順序穩定。
+        stmt = stmt.order_by(Media.stars.desc().nullslast(), Media.id.desc())
+    elif sort == "oldest":
+        stmt = stmt.order_by(Media.id.asc())
+    else:
+        stmt = stmt.order_by(Media.id.desc())
     return _paged(session, stmt, limit, offset, _media_dict)
 
 

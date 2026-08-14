@@ -3,6 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 本頁的配色**本來就是深色**，不需要任何人再幫忙轉換一次。
+
+       darkreader-lock 是 Dark Reader 擴充功能的正式退出宣告。沒有它的話，
+       Dark Reader 會在已經是深色的頁面上再跑一輪反轉，實測結果是整份色票
+       被壓成兩色：--accent (#1d9bf0)、body 背景 (#0e1621)、卡片背景
+       (#15202b) 全部變成同一個 rgb(35,35,34)，金色星星、粉紅愛心、藍色
+       強調則全部變成同一種白灰 —— 也就是說任何「用顏色區分狀態」的設計
+       都會失效。
+
+       color-scheme 則是給瀏覽器本身看的，讓捲軸與原生表單控制項跟著深色。 -->
+  <meta name="darkreader-lock">
+  <meta name="color-scheme" content="dark">
   <title>SNSMediaDL</title>
   <link rel="stylesheet" href="app.css">
 </head>
@@ -67,6 +79,19 @@
       <option value="pending">pending</option>
       <option value="failed">failed</option>
     </select>
+    <select id="fMinStars" title="五星評分，與 sfw/r18 分級無關">
+      <option value="">全部評分</option>
+      <option value="5">★★★★★</option>
+      <option value="4">★★★★ 以上</option>
+      <option value="3">★★★ 以上</option>
+      <option value="2">★★ 以上</option>
+      <option value="1">★ 以上（= 已評分）</option>
+    </select>
+    <select id="fSort" title="排序">
+      <option value="newest">最新加入</option>
+      <option value="oldest">最早加入</option>
+      <option value="stars">評分高到低</option>
+    </select>
     <button id="fReset" class="ghost">清除篩選</button>
     <button id="refresh" class="ghost" title="重新載入目前檢視（保留篩選與頁碼）">⟳ 重新整理</button>
     <button id="selectMode" class="ghost">選取模式</button>
@@ -95,6 +120,15 @@
       <option value="photograph">photograph</option>
       <option value="other">other</option>
       <option value="__clear__">（清除）</option>
+    </select>
+    <select id="bulkStars" title="五星評分掛在媒體上，選幾個就改幾個（不像分級會影響整則貼文）">
+      <option value="">評分…</option>
+      <option value="5">★★★★★</option>
+      <option value="4">★★★★</option>
+      <option value="3">★★★</option>
+      <option value="2">★★</option>
+      <option value="1">★</option>
+      <option value="__clear__">（清除評分）</option>
     </select>
     <button id="bulkApply">套用</button>
     <span id="bulkConfirm" class="confirm hidden">
@@ -167,7 +201,36 @@
 </section>
 
 <section id="view-accounts" class="view hidden">
-  <p class="hint">設定帳號預設分級後，<b>只影響之後 ingest 的新貼文</b>，不會回溯既有貼文。要回溯請按「重標」。</p>
+  <div class="filters">
+    <input id="aSearch" type="search" placeholder="搜尋帳號名稱或 ID…" spellcheck="false">
+    <select id="aSort" title="排序方式">
+      <option value="favorite">我的最愛 → 評分</option>
+      <option value="stars">評分高到低</option>
+      <option value="name">名稱</option>
+      <option value="last_post">最後發文</option>
+      <option value="last_ingest">最後採集</option>
+      <option value="media">媒體數</option>
+      <option value="posts">貼文數</option>
+      <option value="created">建檔時間</option>
+      <option value="id">加入順序</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="aFavOnly"> 只看 ♥</label>
+    <select id="aMinStars">
+      <option value="">全部評分</option>
+      <option value="5">★★★★★</option>
+      <option value="4">★★★★ 以上</option>
+      <option value="3">★★★ 以上</option>
+      <option value="2">★★ 以上</option>
+      <option value="1">★ 以上（= 已評分）</option>
+    </select>
+    <span class="spacer"></span>
+    <span id="accountCount" class="muted"></span>
+  </div>
+  <p class="hint">
+    ♥ 與 ★ 點了<b>立即生效</b>，不用按存檔。<br>
+    設定帳號預設分級後，<b>只影響之後 ingest 的新貼文</b>，不會回溯既有貼文。要回溯請按「重標」。<br>
+    「最後發文」是作者最新一則貼文的時間，「最後採集」是我最近一次抓到東西的時間 —— 兩者常常不同。
+  </p>
   <div id="accountList" class="cards"></div>
 </section>
 

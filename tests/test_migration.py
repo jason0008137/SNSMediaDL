@@ -136,6 +136,49 @@ def test_migration_preserves_existing_rows(tmp_path):
     assert violations == [], f"migration 留下孤兒列：{violations}"
 
 
+@pytest.mark.slow
+def test_migrated_db_enforces_the_stars_check(tmp_path):
+    """CHECK 是 schema 比對的盲區，只能用行為測。
+
+    `_schema_snapshot` 比的是欄位 / 唯一鍵 / 索引 —— SQLAlchemy 的 SQLite
+    dialect **不反射 CHECK constraint**，所以 migration 把約束漏掉的話，
+    `test_alembic_matches_models` 一樣是綠的。要等到有人存了 `stars=99`
+    才會發現，而那時候資料已經髒了。
+    """
+    db = tmp_path / "checks.db"
+    r = _alembic(db, "upgrade", "head")
+    assert r.returncode == 0, r.stderr
+
+    con = sqlite3.connect(db)
+    con.executescript(
+        """
+        INSERT INTO accounts (id, platform, instance_host, platform_user_id,
+                              is_tracked, created_at, is_favorite)
+        VALUES (1, 'x', '', 'u1', 1, '2026-01-01 00:00:00', 0);
+
+        INSERT INTO posts (id, platform, instance_host, platform_post_id,
+                           account_id, is_retweet, ingested_at)
+        VALUES (1, 'x', '', 'p1', 1, 0, '2026-01-01 00:00:00');
+
+        INSERT INTO media (id, post_id, ordinal, kind, source_url, status,
+                           attempt_count)
+        VALUES (1, 1, 0, 'photo', 'https://example.invalid/a.jpg', 'done', 0);
+        """
+    )
+
+    # 0 也要被擋 —— 清除評分的表示法是 NULL，不是 0
+    for table in ("media", "accounts"):
+        for bad in (0, 6, -1):
+            with pytest.raises(sqlite3.IntegrityError):
+                con.execute(f"UPDATE {table} SET stars = {bad}")
+
+    con.execute("UPDATE media SET stars = 5")
+    con.execute("UPDATE accounts SET stars = 1")
+    con.execute("UPDATE media SET stars = NULL")
+    con.commit()
+    con.close()
+
+
 def test_migration_creates_expected_tables(tmp_path):
     db = tmp_path / "m.db"
     subprocess.run(

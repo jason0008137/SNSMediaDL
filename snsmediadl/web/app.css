@@ -8,6 +8,10 @@
   --ok: #00ba7c;
   --warn: #ff7a00;
   --err: #f4212e;
+  --star: #f7b500;        /* 已評分 */
+  --star-off: #6b7783;    /* 未評分。要看得見 —— 它是按鈕，不是裝飾 */
+  --star-dim: #b8891a;    /* hover 預覽 */
+  --fav: #f91880;
 }
 
 * { box-sizing: border-box; }
@@ -169,7 +173,48 @@ button.danger { background: var(--err); border-color: var(--err); }
 .cell.st-pending { opacity: .55; }
 .cell.st-failed { border-color: var(--err); }
 
+/* 只在有評分時才會出現在 DOM 裡。放右上角，避開左上的分級 tag
+   與右下的 kind 標籤。 */
+.cell .star-badge {
+  position: absolute; top: 4px; right: 4px;
+  font-size: 10px; padding: 1px 5px; border-radius: 6px;
+  background: rgba(0,0,0,.72); color: var(--star);
+  letter-spacing: -1px;
+}
+
 .pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 18px; }
+
+/* ── 五星評分與我的最愛 ──
+   ⚠️ 這是「評分」（stars），與 sfw/r18 分級（rating）是兩件事。 */
+.stars { display: inline-flex; gap: 1px; white-space: nowrap; }
+.stars .star {
+  background: none; border: 0; padding: 0 1px; margin: 0;
+  font-size: 18px; line-height: 1;
+  /* ⚠️ 未點亮**不能**設成接近背景色。第一版用了 --line（#2f3b47）對上
+     卡片的 #15202b，結果是：新資料庫裡每個帳號都未評分 = 整排星星隱形,
+     使用者根本找不到可以評分的地方。看不見的控制項等於不存在。 */
+  color: var(--star-off);
+  cursor: pointer;
+}
+.stars .star:hover { color: var(--star-dim); }
+.stars .star.on { color: var(--star); }
+/* 滑過時預覽「點下去會變幾星」：先讓整排變暗金色，再把游標右邊的
+   後續兄弟節點壓回去 —— 剩下亮著的就是游標那顆與它左邊的。純 CSS，
+   不必為了 hover 效果寫 JS。 */
+.stars:hover .star { color: var(--star-dim); }
+.stars .star:hover ~ .star { color: var(--star-off); }
+
+.fav {
+  background: none; border: 0; padding: 0 2px; margin: 0;
+  font-size: 19px; line-height: 1; color: var(--muted); cursor: pointer;
+}
+.fav:hover { color: var(--fav); }
+.fav.on { color: var(--fav); }
+
+.card-head { display: flex; align-items: center; gap: 6px; }
+.card-head h3 { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.muted.small { font-size: 11px; margin-top: 3px; }
+#aSearch { min-width: 200px; }
 
 /* ── 卡片（帳號 / creator）── */
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
