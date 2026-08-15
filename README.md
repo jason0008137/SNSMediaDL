@@ -1,296 +1,243 @@
 # SNSMediaDL
 
-SNS 媒體下載器。**本機單機**運作 —— backend 只綁 `127.0.0.1`，不做認證，不對外開放。
+把你追蹤的創作者作品，從 X / Misskey / Mastodon / pixiv 抓下來，
+統一收進一個能瀏覽、篩選、標記的本機圖庫。
+
+- **全程在自己電腦上跑** —— 不上傳、不註冊、不需要 API 金鑰
+- **重跑不會重抓** —— 只補新的
+- **附網頁介面** —— 縮圖牆、分級與類型標記、五星評分、我的最愛，
+  還能把同一位作者散在各平台的帳號合起來一次看完
+
+| 平台 | 怎麼抓 | 要登入嗎 |
+|------|--------|----------|
+| X（Twitter）| Chrome 擴充功能 | 要 —— 直接用你瀏覽器裡現有的登入 |
+| Misskey | 在介面貼網址 | 不用（公開內容）|
+| Mastodon（baraag.net 等）| 在介面貼網址 | 不用（公開內容）|
+| pixiv | 在介面貼網址 | 要 —— 需自己填一組 `PHPSESSID` |
+
+目前只在 Windows 10 / 11 上實際使用過。
+
+---
 
 ## ⚠ 使用前提
 
-讀完再決定要不要用：
+裝之前先讀完這四點：
 
-- **這是個人存檔工具，不是服務。** backend 綁 loopback 且**刻意不做認證** ——
-  任何能連到那個 port 的東西都能讀你的完整下載歷史、也能叫它去下載。
-  把 `host` 改成 `0.0.0.0` 或往外做 port forwarding 等於把這些直接公開，別做。
-- **抓取行為的責任在你。** 各平台的服務條款、著作權、以及你抓下來的東西怎麼用，
-  都由使用者自負。本專案不提供繞過付費牆或存取權限的手段，也不會去碰非公開內容
-  以外的東西 —— 它讀的是「你已經登入的瀏覽器本來就看得到的回應」。
-- **限速預設值請不要調高。** X 超速會鎖整個帳號約一天，被鎖的是你的帳號。
-  見下方「下載限速」。
-- **憑證不要進 git。** `config.toml` 已在 `.gitignore` 裡；pixiv 的 `PHPSESSID`
-  寫在那個檔案裡，不要貼到別處。
+- **這是個人存檔工具，不是服務。** 程式只聽 `127.0.0.1`（也就是只有你自己這台
+  電腦連得到），而且**刻意不做帳號密碼** —— 任何連得到那個 port 的東西都能看你
+  完整的下載歷史、也能叫它去下載。把它改成對外開放或做 port forwarding，
+  等於把這些直接公開，別做。
+- **抓取行為的責任在你。** 各平台的服務條款、著作權、以及抓下來的東西怎麼用，
+  都由使用者自負。本專案不提供繞過付費牆或存取權限的手段 ——
+  它讀的只是「你已經登入的瀏覽器本來就看得到的內容」。
+- **速度上限不要調高。** X 抓太快會鎖帳號，被鎖的是你的帳號。見下方
+  「慢慢抓，不要貪快」。
+- **憑證不要外流。** pixiv 的 `PHPSESSID` 寫在 `config.toml` 裡，那個檔案不會被
+  上傳到任何地方，但也請不要自己把內容貼給別人。
 
-## 架構
+---
 
-三層，職責切得很死：
+## 一、事前準備
+
+三樣東西，安裝時全部用預設值就好：
+
+| | 哪裡拿 | 備註 |
+|--|--------|------|
+| **Python 3.10 以上** | <https://www.python.org/downloads/> | 安裝畫面**務必勾選「Add Python to PATH」** |
+| **Git** | <https://git-scm.com/download/win> | 一鍵更新要用它 |
+| **Google Chrome** | <https://www.google.com/chrome/> | 只有要抓 X 才需要 |
+
+---
+
+## 二、安裝
+
+### 1. 把程式抓下來
+
+開「命令提示字元」或 PowerShell，切到你想放的位置（例如 `D:\`），執行：
 
 ```
-Chrome Extension  跑在已登入的 x.com 頁面內 —— 攔網站自己的 GraphQL 回應，
-       │           抽出媒體 URL + metadata，POST 給 backend。不存檔、不記歷史。
-       │ HTTP (localhost)
-Backend           FastAPI + SQLite —— 去重、排隊、實際抓檔、命名、存檔。
-       │           DB 是歷史的唯一真實來源。
-Web GUI           瀏覽歷史、管理帳號與 creator、監控佇列。backend 直出。
+git clone https://github.com/jason0008137/SNSMediaDL.git
+cd SNSMediaDL
 ```
 
-**採集與下載分離**是核心決定：extension 只做「必須在登入頁面內才做得到」的事，
-因為 `chrome.downloads` 控制不了檔名、丟不進指定目錄、也無法後處理；而多數平台的
-媒體 URL（`pbs.twimg.com`、`video.twimg.com`）不帶認證就能抓，pixiv 只需要
-`Referer` header —— 這些 backend 自己來就好。
+> 不想裝 git 也可以到 GitHub 頁面按 **Code → Download ZIP** 解壓縮，
+> 但這樣就沒有一鍵更新（之後可以補接上，見「更新」一節）。
 
-推論：**backend 不依賴 extension 也能獨立運作**。已知 URL 的下載、重試、
-misskey / mastodon / pixiv 的直抓、GUI 上的一切操作，都不需要瀏覽器開著。
+### 2. 啟動
 
-平台是 **adapter 化**的（`snsmediadl/adapters/`）：核心流程（列舉貼文 → 抽媒體 URL →
-命名 → 下載 → 記錄）共用，新增平台不動核心。
+在資料夾裡**雙擊 `start.bat`**。
 
-## 現況
+第一次會自動安裝需要的套件，大約幾分鐘；之後每次啟動只要幾秒。
+看到這行就代表起來了：
 
-| 元件 | 狀態 |
-|------|------|
-| Chrome extension（X 採集）| 可用，在帳號頁滑動即採集 → 選標籤 → 送出並下載，`extension/` |
-| Backend（DB / API / 下載）| 可用 |
-| Web GUI | 可用，`http://127.0.0.1:8765/` |
-| 平台 | X（extension 採集）；misskey / mastodon（backend 直抓，實機驗證過）；pixiv（已實作，尚未對真站驗證） |
+```
+  API 文件   http://127.0.0.1:8765/docs
+```
 
-> 版號規則：backend（`pyproject.toml`，0.1.0）與 extension（`extension/manifest.json`）
-> **各自獨立演版**，不對齊數字 —— extension 的版號跟著 manifest 走。
+**那個黑色視窗要一直開著** —— 它就是程式本體，關掉等於關掉程式。
+要停止按 `Ctrl + C`。
 
-## GUI
+### 3. 打開介面
 
-backend 直出的網頁，**無建置步驟、無 npm、無 CDN**（離線可用是刻意設計）。
+瀏覽器開 **<http://127.0.0.1:8765/>**，這就是主畫面。
 
-| 分頁 | 功能 |
-|------|------|
-| 媒體 | 縮圖牆、篩選、**選取模式批次標記**、重新整理、點開看詳情與標記 |
-| 抓取 | **貼一堆網址批次抓**（先預覽再送出）、**一鍵更新**已有帳號、佇列進度 |
-| 帳號 | 設定預設分級、掛到 creator（含 main / alt / r18_alt 角色）|
-| Creators | 建立、瀏覽該作者跨平台跨帳號的全部作品 |
-| 問題 | 下載失敗清單與原因、一鍵重試、伺服器日誌 |
+### 4. 裝 Chrome 擴充功能（只有要抓 X 才需要）
 
-**背景下載開關**在頂部，預設關閉 —— 會自己對外發請求的東西預設應該是關的。
-切換即時生效，不用重啟。
+1. Chrome 網址列輸入 `chrome://extensions`
+2. 右上角打開「**開發人員模式**」
+3. 按「**載入未封裝項目**」，選這個專案裡的 **`extension`** 資料夾
+4. 網址列右側的拼圖圖示 → 把 SNSMediaDL 釘選出來
 
-**選取模式**支援點選、Shift 範圍選取、全選本頁。選取列會同時顯示
-「N 個媒體（M 則貼文）」—— 分級掛在 post 不掛 media，選了同一貼文的多張圖
-只會影響一則，不講清楚會讓人誤判影響範圍。
+裝好後點一下它的圖示，看到綠點「backend 已連線」就完成了。
+（顯示紅點的話，多半是 `start.bat` 沒開。）
 
-格線**不會自動重載**（避免捲動位置亂跳），下載完成後按「⟳ 重新整理」更新狀態。
-
-**工作安全模式預設開啟** —— 排除所有 R18，且頁面頂端有綠色色帶標示。
-不做成一個容易被忘記的 checkbox，是因為「以為在安全模式而其實不是」的代價不對稱。
-
-未做縮圖產生（不引入 Pillow），直接給原圖讓瀏覽器縮放；影片用
-`<video preload="metadata">` 不自動播放。媒體量大時這是已知取捨。
-
-## 快速開始（Windows）
-
-雙擊 **`start.bat`** —— 會自動檢查 Python、缺套件才安裝、跑 DB migration，然後啟動伺服器。
-
-然後開瀏覽器到 **http://127.0.0.1:8765/** 就是 GUI。
+### 資料夾裡的三個 `.bat`
 
 | 檔案 | 用途 |
 |------|------|
-| `start.bat` | 一鍵啟動伺服器 + GUI（extension 按「送出並下載」即入庫並下載）|
-| `update.bat` | 一鍵更新到最新版 |
-| `status.bat` | 看佇列狀態 |
+| `start.bat` | 啟動程式（平常只會用到這個）|
+| `update.bat` | 更新到最新版 |
+| `status.bat` | 快速看一眼還有多少東西等著下載 |
 
-> `.bat` 本身是純 ASCII，實際邏輯在 `scripts/*.ps1`。
-> 原因：cmd.exe 用系統 ANSI codepage 解析 `.bat`，中文寫在裡面會被拆成亂碼指令。
+---
 
-## 更新
+## 三、怎麼用
 
-雙擊 **`update.bat`**。它會抓最新版、需要時才裝套件、schema 有變才跑 migration。
+### 抓 X
 
-**不會動到你的資料**——DB、`config.toml`、`downloads/` 都不在版控裡，git 碰不到它們；
-schema 真的有變時會先把 DB 複製成 `.bak-<時間戳>` 再 migrate。
+1. 確認 `start.bat` 開著
+2. Chrome 開 `https://x.com/<帳號名>/media`
+3. 畫面**右下角會出現一顆小圓鈕**，點開面板（面板可拖曳，位置會記住）
+4. **往下滑** —— 面板上的數字會自己往上跳，滑到你要的深度為止
+5. 需要的話，在面板上選「分級」與「類型」，這批貼文就會帶著這個標籤入庫
+6. 按「**送出並下載 N 則**」，面板會顯示進度直到歸零
 
-需要 [git](https://git-scm.com/download/win)。如果當初是下載 ZIP 解壓縮的，
-第一次跑會問要不要就地接上更新來源（你的資料一樣不會動，但**自己改過的程式碼會被覆蓋**）。
+幾件值得先知道的事：
 
-有自己改過程式碼的話 `update.bat` 會停下來並列出改了什麼，不會無聲蓋掉。
+- **只收你正在看的那個帳號**。側欄推薦、首頁時間軸剛好滑過的東西不會混進來。
+- **一次只送一個帳號**。想抓下一位就切過去、再滑、再按一次。
+- **`start.bat` 沒開也照樣採集**，資料先留在瀏覽器裡，等程式起來後按送出就會補上。
+- 已經看過的頁面走瀏覽器快取，可能滑了也沒有新資料 —— 重新整理一次再滑。
 
-## 手動安裝
+### 抓 Misskey / Mastodon / pixiv
 
-```bash
-python -m pip install -e ".[dev]"
-python -m alembic upgrade head
-```
+網頁介面 →「**抓取**」分頁 → 把網址貼進去（**一行一個**）→
+先看解析預覽 → 確認沒問題再送出。
 
-Python 3.10+。
-
-## 用法
-
-### 從 extension 倒出的 JSON 匯入並下載
-
-```bash
-python -m snsmediadl.cli import path/to/capture.json --screen-name someone
-```
-
-**重跑不會重抓** —— 增量是預設行為。已存在的貼文整則跳過，檔案還在且 hash
-相符就不重新下載。
-
-### 從 Misskey / Mastodon / pixiv 直接抓（不經 extension）
-
-```bash
-python -m snsmediadl.cli fetch <帳號> --platform misskey --host misskey.io
-python -m snsmediadl.cli fetch <帳號> --platform mastodon --host baraag.net
-python -m snsmediadl.cli fetch <數字id> --platform pixiv     # 需要 PHPSESSID，見 config
-```
-
-公開內容免認證。增量是預設行為：碰到已抓過的貼文就停。
-
-### 批次抓 / 一鍵更新
-
-```bash
-# 一行一個網址的檔案（或 - 讀 stdin）。預設是預演，--yes 才真的抓
-python -m snsmediadl.cli fetch-urls urls.txt
-python -m snsmediadl.cli fetch-urls urls.txt --yes
-
-# 把 DB 裡追蹤中的帳號各跑一次增量
-python -m snsmediadl.cli refresh --yes
-```
-
-網址吃這些形式（認不得的一律報錯，**不猜**）：
+吃這些形式：
 
 ```
 https://misskey.io/@someone
-https://baraag.net/@artist/media
+https://baraag.net/@artist
 https://www.pixiv.net/users/12345
 @artist@baraag.net
-misskey|https://misskey.design/@someone     # 表裡沒有的 instance 這樣指定
 ```
 
-- **X 的網址會被拒絕**並說明要用 extension —— backend 抓不動它
-- 一鍵更新用**平台 user id** 解析，所以帳號改過名也更新得到
-- 抓不動 / 沒追蹤 / 缺憑證的帳號會**逐類列出來**，不會靜默跳過
-- 佇列**一次跑一個帳號**：併發列舉同一個站台就是自己把自己打成 429
+- **X 的網址會被擋下來** —— 那個要用擴充功能抓
+- 認不出來的網址會直接說看不懂，不會亂猜
 
-### 其他指令
+**補新作品**：同一頁按「**一鍵更新**」，所有追蹤中的帳號各跑一次，只抓沒抓過的。
 
-```bash
-python -m snsmediadl.cli download        # 把佇列裡待下載的抓完
-python -m snsmediadl.cli status          # 佇列統計
-python -m snsmediadl.cli serve           # 啟動 API（預設 127.0.0.1:8765）
-python -m snsmediadl.cli delete-account <id>   # 刪帳號記錄（預設預演，--yes 才動手；不刪檔案）
-```
+### 瀏覽與整理
 
-維護用：
+**「媒體」分頁** —— 縮圖牆。可依平台、帳號、分級、類型、五星、我的最愛篩選；
+點縮圖看大圖與詳情。開「選取模式」可以框一批一次標記
+（支援 Shift 範圍選取、全選本頁）。
 
-```bash
-python -m snsmediadl.cli backup          # 線上備份 API，跑著的時候也能備
-python -m snsmediadl.cli check-db        # 完整性檢查。只回報，不自動修
-python -m snsmediadl.cli analyze         # 更新 query planner 的統計（匯入大量資料後跑一次）
-python -m snsmediadl.cli recount-accounts          # 檢查帳號的貼文／媒體計數是否與真值一致
-python -m snsmediadl.cli recount-accounts --fix    # 不一致才重算寫回
-```
+**「帳號」分頁** —— 設定每個帳號的預設分級，以及把同一位作者的多個帳號
+（跨平台、小帳都算）掛在同一位「創作者」底下。掛好之後就能一次看完他的全部作品。
 
-`recount-accounts` 預設**只檢查**，發現不一致就列出來並以 exit code 1 結束 ——
-不會默默修正。計數對不上代表某個維護點漏了，那才是要修的東西。
+**右上角 ⚙** —— 三個常用開關：
 
-API 文件在 `http://127.0.0.1:8765/docs`。
+| 項目 | 預設 | 說明 |
+|------|------|------|
+| 背景下載 | **關** | 打開後會自己把待下載的東西慢慢抓完 |
+| 工作安全模式 | **開** | 媒體頁不顯示標為 R18 的內容，頁首有綠色色帶提醒 |
+| 問題與日誌 | — | 下載失敗清單、失敗原因、一鍵重試 |
 
-## 設定
+---
 
-優先序：環境變數 > `config.toml` > 內建預設。
+## 四、檔案下載到哪裡
+
+預設放在專案底下的 `downloads\`，結構是 `downloads\平台\帳號\檔名`。
+
+**要改到別的硬碟**：把 `config.toml.example` 複製一份、改名成 `config.toml`
+（放在同一層），找到這一行改成你要的位置：
 
 ```toml
-# config.toml
-output_root = "D:/media"
-concurrency = 4
-download_delay_seconds = 1.0
-filename_format = "[%date%] %post_id%_%ordinal%.%ext%"
-group_by_account = true
+output_root = 'D:\SNS_Media'
 ```
 
-### ⚠ 下載限速
+> Windows 路徑請用**單引號**。用雙引號的話 `\` 會被當成跳脫字元而報錯。
 
-X 超速會**鎖整個帳號約一天**。預設值刻意保守，取自 WFDownloader 的設定：
+改完重開 `start.bat` 生效。
 
-| 設定 | 預設 | 意義 |
-|------|------|------|
-| `concurrency` | 4 | 同時下載數 |
-| `download_delay_seconds` | 1.0 | 任兩次下載「開始」的最小間隔 |
+⚠️ **改路徑不會搬走舊檔案** —— 舊檔留在原地、記錄照樣有效，
+但要讓介面裡繼續看得到它們，得把舊資料夾也列進 `extra_media_roots`
+（範例檔裡有寫在哪、怎麼寫）。
 
-只有併發限制是不夠的 —— 四個並行工作一完成就立刻抓下一批，實際速率只受頻寬限制。
-兩個都要。
+`config.toml` 裡還可以調檔名格式、下載速度、pixiv 的 `PHPSESSID` 等等，
+每一項旁邊都有說明，不需要的直接留著註解不管它。
 
-**收到 HTTP 429 時會立刻停止該輪下載**，該媒體標回 `pending`（不是 `failed` ——
-檔案沒壞，只是現在不能抓），並在 GUI 的問題頁記一筆 ERROR。
-**刻意不自動重試** —— 只有你知道帳號現在的狀態。
+---
 
-環境變數加前綴 `SNSMEDIADL_`，例如 `SNSMEDIADL_OUTPUT_ROOT`。
+## 五、更新
 
-輸出路徑為 `<output_root>/<平台>/<帳號>/<檔名>`（`group_by_account = false` 則平鋪）。
+**雙擊 `update.bat`。** 它會抓最新版、需要時才裝套件、資料庫結構有變才更新結構。
 
-### 檔名 token
+**你的資料不會被動到** —— 下載的檔案、資料庫、`config.toml` 都不在更新範圍內。
+結構真的有變時，會先自動複製一份資料庫備份再動手。
 
-`%post_id%`、`%date%`、`%ordinal%`、`%kind%`、`%filename%`、`%ext%`、
-`%user_id%`、`%user_screen_name%`、`%platform%`
+- 訊息說「**Chrome 擴充功能也有更新**」：程式跑起來後它通常會自己重載，
+  沒反應就到 `chrome://extensions` 按它的重新整理鈕
+- 當初是**下載 ZIP** 的：第一次跑會問要不要就地接上更新來源，答 `y` 即可
+  （資料一樣不動，但你自己改過的程式碼會被覆蓋）
+- 說「**有還沒存檔的改動**」：代表你改過程式碼。不想留就照它印出來的指令做
 
-> 預設 format 帶 `%post_id%` 是刻意的：不同貼文可能用到同名檔案。
+---
 
-## 分類
+## 六、慢慢抓，不要貪快
 
-兩個**正交**欄位，不是單一 tag：
+**X 抓太快會鎖整個帳號大約一天。** 預設值是刻意保守的
+（同時 4 個、每次間隔 1 秒），沒有把握不要調高。
 
-| 欄位 | 值 |
-|------|-----|
-| `rating` | `sfw` / `r18` / `NULL`（未知）|
-| `content_type` | `illust` / `irl` / `mod` / `ai` / `other` / `NULL` |
+真的被限速時，程式會**馬上停下那一輪**，把還沒抓到的標回「待下載」，
+並在「問題與日誌」記一筆。**不會自動重試** ——
+什麼時候可以再開始，只有你自己知道。
 
-拆開才表達得出「AI 生的 R18」「R18 mod」，且「避開所有 R18」永遠是
-`?exclude_rating=r18` 一個條件。
+---
 
-**`NULL` 代表未知，不是 sfw。** 沒有線索時不猜 —— 猜錯的方向不對稱。
+## 七、遇到問題
 
-`rating_source` 記錄是誰標的（`manual` / `account_default` / `auto`），
-讓機器猜的值不會和人工確認的混在一起。
+| 症狀 | 怎麼處理 |
+|------|----------|
+| 雙擊 `start.bat` 閃一下就關掉 | Python 沒裝，或安裝時沒勾「Add Python to PATH」。重裝一次 |
+| 網頁打不開 | `start.bat` 的黑視窗還開著嗎？ |
+| 擴充功能顯示紅點「backend 離線」| 同上；或點圖示確認位址是 `http://127.0.0.1:8765` |
+| 滑了半天面板數字不動 | 確認在 `/媒體` 帳號頁（首頁不收）。頁面走快取時重新整理再滑一次 |
+| 面板紅字說對不出帳號 | 重新整理該分頁 |
+| 送出成功但檔案沒出現 | 面板通常會講原因；也可到 ⚙ →「問題與日誌」看 |
+| 抓一抓停住 | 多半是被限速，日誌會寫。等一陣子再按重試 |
 
-改帳號預設值**不會回溯**既有貼文；要回溯呼叫 `POST /api/accounts/{id}/retag`，
-且預設不覆蓋人工標記。
+⚙ →「**問題與日誌**」是第一個該看的地方，失敗原因都會記在那裡。
 
-## Creators
+---
 
-同一位創作者的多個帳號掛在同一個 `creator` 底下 —— 跨平台，也包含**同平台小帳**：
+## 八、目前做不到的事
 
-```
-creator: 某畫師
-  ├─ x     @artist       role=main
-  ├─ x     @artist_r18   role=r18_alt
-  ├─ pixiv 12345         role=main
-  └─ misskey @artist     role=main
-```
+- **沒有排程／自動輪詢** —— 要抓就是自己按
+- **pixiv 要自己填 `PHPSESSID`**（`config.toml.example` 裡有位置），
+  而且還沒對真站做過大量驗證
+- X 影片只抓得到有 mp4 的；純串流格式的會跳過並記一筆
+- 不做轉檔、影音合併、EXIF 寫入
+- 刪掉帳號記錄後重新抓，既有檔案會多出 `xxx (1).jpg` 這種副本
+- 縮圖牆在媒體量很大時會比較吃力
 
-`GET /api/creators/{id}/media` 一次撈完跨平台跨帳號的全部媒體。
-
-## 測試
-
-```bash
-python -m pytest
-```
-
-**測試完全不打網路** —— 下載層走 `httpx.MockTransport`，且 `conftest.py`
-有 autouse fixture 攔截真實網路請求，忘記塞 mock 會直接失敗。
-
-extension 那側是 Node 跑的（載入原始碼本體，不複製一份），清單見
-`extension/README.md`：
-
-```bash
-node extension/test_extract.mjs
-```
+---
 
 ## 授權
 
-Apache-2.0（見 `LICENSE`）。檔名 token 系統與模組切分概念改作自
+Apache-2.0，見 `LICENSE`。
+檔名格式與模組切分概念改作自
 [twitter_media_downloader](https://github.com/Spark-NF/twitter_media_downloader)
 （Spark-NF，Apache-2.0），歸屬聲明見 `NOTICE`。
-
-## 已知限制
-
-- X 的 `platform_media_key` extension 未送出，媒體識別暫時走
-  `(post_id, ordinal)`（misskey / mastodon / pixiv 有送）
-- pixiv adapter 尚未對真站驗證（測試 fixture 是依 PixivBatchDownloader
-  的分析手寫的）
-- 不做影片 muxing / 轉檔 / EXIF 寫入；只有 m3u8（無 mp4 variant）的
-  X 影片會略過並記 error log
-- 沒有排程與自動輪詢
-- 刪除帳號記錄後重新採集，既有檔案會被下載成 `xxx (1).jpg` 副本
-  （刪除時會明確告知；掃描磁碟回填 DB 是未實作的獨立功能）
