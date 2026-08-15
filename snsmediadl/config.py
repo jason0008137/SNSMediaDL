@@ -67,6 +67,12 @@ class Config:
     # Mastodon 官方預設是 300 req / 5 分鐘，1 秒一頁很安全。
     fetch_delay_seconds: float = 1.0
     fetch_page_size: int = 40
+    # 帳號與帳號之間的間隔。`fetch_delay_seconds` 只管同一個帳號的翻頁，
+    # 管不到這裡 —— 實測一批 misskey 帳號是 200 ms 一個，等於對同一台
+    # 伺服器連續叩門。
+    # ⚠️ 這**不是**修 HTTP 400 的（那是拿 `sn:` 哨符當 userId 查造成的，
+    # 見 `services/identity.py`），純粹是禮貌。
+    fetch_account_delay_seconds: float = 2.0
     # 上限保護：第一次對大帳號抓會抓到天亮。撞到上限**會明講**，不假裝抓完了。
     fetch_max_pages: int = 20
 

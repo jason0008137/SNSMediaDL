@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..adapters import NormalizedPost, get_adapter
 from ..db.enums import MediaStatus, Rating, RatingSource
 from ..db.models import Account, Media, Post
-from . import counters
+from . import counters, identity
 
 
 @dataclass
@@ -26,6 +26,10 @@ class IngestResult:
     posts_skipped: int = 0
     media_new: int = 0
     account_id: int | None = None
+    # 這一批順手把哪些「只有名字」的匯入帳號補上了真實 id。
+    # ⚠️ 一定要帶出去給使用者看：這是**改動歷史資料歸屬**的操作，
+    # 只寫進 log 的話，等於做了一件很大的事而當事人不知道。
+    healed: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -33,6 +37,7 @@ class IngestResult:
             "posts_skipped": self.posts_skipped,
             "media_new": self.media_new,
             "account_id": self.account_id,
+            "healed": self.healed,
         }
 
 
@@ -110,7 +115,10 @@ def upsert_account(
     platform_user_id: str,
     screen_name: str | None,
     instance_host: str = "",
+    healed: list[dict[str, Any]] | None = None,
 ) -> Account:
+    """找到或建立帳號。`healed` 有給的話，治療過的帳號會 append 一筆進去。"""
+    healed_note: dict[str, Any] | None = None
     account = session.scalar(
         select(Account).where(
             Account.platform == platform,
@@ -118,6 +126,31 @@ def upsert_account(
             Account.platform_user_id == platform_user_id,
         )
     )
+    if account is None and screen_name:
+        # ⚠️ **新建之前先看看有沒有「只有名字」的那一列。**
+        #
+        # 匯入的帳號 `platform_user_id` 是 `sn:<screen_name>` 哨符（沒有真 id）。
+        # 直接新建一列的話，同一個人會變成兩列：一列有匯入的歷史、一列有之後
+        # 採集的新東西，而帳號頁只會顯示兩張同名卡片，沒有任何提示。
+        #
+        # X 的真實 id **只有採集當下拿得到**（公開 API 已關），所以這件事沒辦法
+        # 做成離線指令，只能在這條主路徑上做。
+        #
+        # 判斷依據是 screen_name，而 handle 會被釋出再被別人註冊 ——
+        # 極少數情況下會歸錯戶。取捨與配套見 `services/identity.py` 與
+        # `identity_heals` 表；那張表是事後回溯的唯一線索。
+        account = identity.heal_placeholder_account(
+            session, platform, instance_host,
+            screen_name=screen_name, real_id=platform_user_id,
+        )
+        if account is not None:
+            healed_note = {
+                "screen_name": screen_name,
+                "real_id": platform_user_id,
+                "posts": account.post_count or 0,
+                "media": account.media_count or 0,
+            }
+
     if account is None:
         account = Account(
             platform=platform,
@@ -130,6 +163,8 @@ def upsert_account(
     elif screen_name and account.screen_name != screen_name:
         # 帳號改名是常態，更新顯示名稱；platform_user_id 才是身分。
         account.screen_name = screen_name
+    if healed_note is not None and healed is not None:
+        healed.append(healed_note)
     return account
 
 
@@ -175,7 +210,7 @@ def ingest_posts(
         if account is None:
             account = upsert_account(
                 session, platform, np.platform_user_id, effective_name,
-                instance_host=np.instance_host,
+                instance_host=np.instance_host, healed=result.healed,
             )
             accounts[key] = account
         result.account_id = account.id

@@ -70,6 +70,7 @@ def cfg(tmp_path) -> Config:
         max_attempts=2,
         # 測試不需要真的等 —— 節流本身另有專門的計時測試
         download_delay_seconds=0.0,
+        fetch_account_delay_seconds=0.0,
     )
 
 

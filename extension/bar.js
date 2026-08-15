@@ -118,6 +118,8 @@ const HTML = `
             <option value="irl">irl</option>
             <option value="mod">mod</option>
             <option value="ai">ai</option>
+            <option value="3d">3d</option>
+            <option value="photograph">photograph</option>
             <option value="other">other</option>
           </select>
         </div>
@@ -185,11 +187,17 @@ function say(text, cls = '') {
  *
  * 網址是「這個分頁在看誰」的權威來源 —— 不依賴有沒有攔到請求，
  * 也不會被其他分頁影響。面板上的每一個數字、標籤、送出目標都掛在它身上。 */
-function setPageScreenName(name) {
-  if (name === pageScreenName) return;
+function setPageScreenName(name, opts = {}) {
+  const nextCapturable = opts.capturable !== false;
+  if (name === pageScreenName && nextCapturable === capturable) return;
+  const sameAccount = name === pageScreenName;
   pageScreenName = name;
-  account = null;      // 換帳號了，強制重讀
-  creatorSig = '';
+  capturable = nextCapturable;
+  mediaUrl = opts.mediaUrl || null;
+  if (!sameAccount) {
+    account = null;      // 換帳號了，強制重讀
+    creatorSig = '';
+  }
   refresh();
 }
 
@@ -197,6 +205,11 @@ function setPageScreenName(name) {
 function onCaptured() {
   if (shadow) refresh();
 }
+
+// 這一頁能不能採集（媒體分頁才行）。與 pageScreenName 是兩回事 ——
+// 站在 /reposts 上「這一頁在看誰」有答案，但那裡的東西不是他的作品。
+let capturable = true;
+let mediaUrl = null;
 
 // ── 展開 / 收合 ──────────────────────────────────────
 async function setExpanded(on) {
@@ -387,11 +400,15 @@ async function doSend() {
       say(`已入庫 ${r.sent} 則，但無法啟動下載：${r.downloadError}`, 'err');
       return;
     }
+    // backend 順手把匯入的舊帳號（只有名字、沒有平台 id）補上真實 id 時，
+    // **一定要講** —— 那是把幾千筆歷史記錄重新歸戶，使用者按一次送出就發生了。
+    const healed = (r.healed || [])
+      .map((h) => `@${h.screen_name}（併入 ${h.posts} 則舊記錄）`).join('、');
     if (!r.sent) {
-      say('沒有新資料（可能都抓過了）', 'ok');
+      say(healed ? `沒有新資料，但補上了 ${healed} 的平台 id` : '沒有新資料（可能都抓過了）', 'ok');
       return;
     }
-    say(`已送出 ${r.sent} 則，開始下載…`, 'ok');
+    say(`已送出 ${r.sent} 則${healed ? `；補上了 ${healed} 的平台 id` : ''}，開始下載…`, 'ok');
     watchDownload();
   } finally {
     $('primary').disabled = false;
@@ -665,8 +682,34 @@ function renderNotices(state) {
     say(`暫存超過上限，已丟棄最舊的 ${state.droppedOverflow} 則`, 'err');
   } else if (state.online === false) {
     say('backend 離線 —— 採集照常，送出時才需要它', 'warn');
+  } else if (pageScreenName && !capturable) {
+    // ⚠️ **不可以只是數字停在 0。** 使用者以為在採集、滑了半天沒動靜，
+    // 那與「壞掉」長得一模一樣。要講出為什麼，而且要給得出去處。
+    sayLink(`這一頁不採集 —— 只有媒體分頁的東西確定是 @${pageScreenName} 自己的`,
+      mediaUrl, '去他的相片頁');
   } else if (!pageScreenName) {
-    say('開啟某個帳號的頁面就會開始採集');
+    say('開啟某個帳號的媒體分頁就會開始採集');
+  } else {
+    // ⚠️ **沒話要說的時候要把上一句清掉。**
+    // 少了這一條，離開 /reposts 之後「這一頁不採集」會一直掛在那裡 ——
+    // 使用者在媒體頁上正常採集，畫面卻告訴他不採集。
+    say('');
+  }
+}
+
+/** 帶一個連結的提示。純文字說「去媒體頁」沒有用 —— 使用者還要自己拼網址，
+ *  而正確的網址是 `?filter=photo`（裸 /media 現在是影片分頁）。 */
+function sayLink(text, href, linkText) {
+  const el = $('msg');
+  if (!el) return;
+  el.className = 'msg warn';
+  el.textContent = `${text} `;
+  if (href) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.textContent = linkText;
+    a.style.color = 'inherit';
+    el.append(a);
   }
 }
 

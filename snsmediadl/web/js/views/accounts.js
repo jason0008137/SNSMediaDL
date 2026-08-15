@@ -1,6 +1,6 @@
 // 帳號清單、編輯抽屜、創作者檢視。
 //
-// 設計依據：
+// 設計依據（wiki 的 UI_帳號管理）：
 //   · 4,653 筆 —— **搜尋是入口，清單不是**
 //   · 卡上只留高頻（♥ ★ 看媒體），低頻與破壞性的全部收進 [編輯] 抽屜
 //   · 三個日期欄位有**兩個的資訊量是零**（`last_ingest_at` 4,648/4,653 同一天、
@@ -35,6 +35,7 @@ function accountQuery() {
   p.set('offset', state.acctOffset);
   const q = $('aSearch').value.trim();
   if (q) p.set('q', q);
+  if ($('aPlatform').value) p.set('platform', $('aPlatform').value);
   if ($('aFavOnly').checked) p.set('favorite', 'true');
   if ($('aMinStars').value) p.set('min_stars', $('aMinStars').value);
   // `__unset__` 直接原樣送 —— 空字串在 query string 裡與「不篩選」分不出來
@@ -106,6 +107,7 @@ function cardHtml(a) {
       <span class="card-verdict${v.bad ? ' bad' : ''}"${
         v.full ? ` data-tip="${esc(v.full)}"` : ''}>${esc(v.text)}</span>
     </div>
+    ${previewHtml(a)}
     <div class="card-foot">
       <span>預設 ${defaults ? esc(defaults) : '（未設定）'}</span>
       <span class="spacer"></span>
@@ -113,6 +115,53 @@ function cardHtml(a) {
       <button type="button" class="ghost" data-act="edit">編輯</button>
     </div>
   </div>`;
+}
+
+/** 預覽縮圖。**最新的幾張，不濾分級**（使用者拍板：濾了會出現缺口，
+ *  而預覽的用途是快速認出這是誰）。
+ *
+ *  ⚠️ 影片沒有縮圖（`/thumb` 對非圖片回 415），所以載入失敗要顯示 ▶ 佔位而不是
+ *  破圖。這件事在 SQL 那層不處理 —— 加 `kind='photo'` 會讓查詢從 359 ms
+ *  變成 3.6 分鐘（planner 改從 ix_media_status 驅動）。
+ *
+ *  src 留空，由 IntersectionObserver 捲到才填（一頁 100 張卡 = 400 張縮圖）。 */
+function previewHtml(a) {
+  const ids = a.preview || [];
+  if (!ids.length) {
+    // 空白格與「縮圖載入失敗」長得一樣 —— 要講出是哪一種
+    return a.media_count
+      ? '<div class="prev-empty">預覽還沒算出來（跑一次 recount-accounts）</div>'
+      : '<div class="prev-empty">這個帳號還沒有媒體</div>';
+  }
+  return `<div class="prev">${ids.map((id) =>
+    `<span class="prev-cell"><img alt="" data-src="/api/media/${id}/thumb"></span>`
+  ).join('')}</div>`;
+}
+
+// 預覽縮圖的延遲載入。與媒體格線同一套做法：捲到才發請求。
+let prevObserver = null;
+
+function wirePreviewImages() {
+  if (!prevObserver) {
+    prevObserver = new IntersectionObserver((entries, obs) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        const img = e.target;
+        img.onerror = () => {
+          // 影片、或原檔不在了。**不要留破圖** —— 那與「這裡本來就沒東西」
+          // 分不出來。▶ 是形狀載體，灰階也看得出是可播放的東西。
+          img.replaceWith(Object.assign(document.createElement('span'), {
+            className: 'prev-alt', textContent: '▶',
+          }));
+        };
+        img.src = img.dataset.src;
+        obs.unobserve(img);
+      }
+    }, { rootMargin: '300px' });
+  }
+  for (const img of $('accountList').querySelectorAll('.prev img:not([src])')) {
+    prevObserver.observe(img);
+  }
 }
 
 // ── 清單載入 ───────────────────────────────────────────
@@ -127,6 +176,7 @@ function mountChunk() {
   // ⚠️ 純字串拼接 + 一次插入，**不逐張綁任何 listener** ——
   // 卡上的每個動作（♥、★、看媒體、編輯）都走 #accountList 上那一個委派。
   $('accountList').insertAdjacentHTML('beforeend', batch.map(cardHtml).join(''));
+  wirePreviewImages();
   if (!pending.length && sentinelObserver) sentinelObserver.disconnect();
 }
 
@@ -156,6 +206,7 @@ function skeletons(k = 8) {
 export async function loadAccounts() {
   if (state.acctMode === 'creators') return loadCreators();
   const seq = ++acctSeq;
+  unsetRating = null;          // 條件變了，上一批的數字就不再成立
   $('accountList').innerHTML = skeletons();
   $('accountCount').textContent = '計算中…';
 
@@ -191,6 +242,7 @@ export async function loadAccounts() {
   pending = list.slice();
   mountChunk();
   wireSentinel();
+  fetchUnsetCount();
 }
 
 function emptyAccountsHtml() {
@@ -200,6 +252,7 @@ function emptyAccountsHtml() {
       <button type="button" class="ghost" data-act="clearsearch">清除搜尋</button></p>`;
   }
   const conds = [
+    $('aPlatform').value ? `平台 ${$('aPlatform').value}` : '',
     $('aFavOnly').checked ? '只看 ♥' : '',
     $('aMinStars').value ? `評分 ${$('aMinStars').value} 星以上` : '',
     $('aDefaultRating').value ? `預設分級 ${$('aDefaultRating').value}` : '',
@@ -227,8 +280,19 @@ function paintAccountCount() {
 }
 
 async function fetchUnsetCount() {
+  // ⚠️ **要跟著目前的篩選走。** 一開始這裡問的是全庫，結果套了平台篩選之後
+  // 畫面變成「共 12 個帳號　其中 13 個還沒設分級預設值」—— 13 > 12，
+  // 使用者只會覺得這個數字是壞的。它回答的是「我眼前這批還剩多少要整理」。
+  //
+  // 已經在依預設分級篩選時整句不顯示：那時清單本身就是答案。
+  if ($('aDefaultRating').value) { unsetRating = null; paintAccountCount(); return; }
+  const p = new URLSearchParams(accountQuery());
+  p.set('default_rating', '__unset__');
+  p.set('limit', '1');
+  p.set('offset', '0');
+  p.set('with_stats', 'false');
   try {
-    const res = await fetch('/api/accounts?default_rating=__unset__&limit=1&with_stats=false');
+    const res = await fetch(`/api/accounts?${p}`);
     if (!res.ok) return;
     unsetRating = Number(res.headers.get('X-Total-Count') || 0);
     paintAccountCount();
@@ -266,6 +330,13 @@ $('accountList').addEventListener('click', async (ev) => {
     (e) => say(card, `評分失敗：${e.message}`, 'err'),
   );
   if (wasStar) return;
+
+  // ⚠️ 預覽格沒有 data-act，要在下面那道 `if (!btn) return` **之前**判斷。
+  // 點預覽 = 想看這個帳號的東西，與點「N 個媒體」是同一個意圖。
+  if (ev.target.closest('.prev')) {
+    jumpToMedia({ account: a.id, label: acctName(a) });
+    return;
+  }
 
   const btn = ev.target.closest('[data-act]');
   if (!btn) return;
@@ -527,7 +598,7 @@ $('aSearch').addEventListener('input', () => {
 });
 
 ['aSort', 'aFavOnly', 'aMinStars', 'aFetchStatus',
- 'aDefaultRating', 'aDefaultContent'].forEach((id) =>
+ 'aDefaultRating', 'aDefaultContent', 'aPlatform'].forEach((id) =>
   $(id).addEventListener('change', () => {
     if (id === 'aSort') localStorage.setItem('accountSort', $('aSort').value);
     state.acctOffset = 0;
@@ -621,8 +692,27 @@ $('creatorList').addEventListener('click', (ev) => {
   if (btn) jumpToMedia({ creator: btn.dataset.creator, label: btn.dataset.label });
 });
 
+/** 平台下拉的選項。**帶筆數** —— 選了會不會是空的，要在選之前就看得出來。
+ *
+ *  只在第一次進帳號頁時載一次：平台清單不會在使用中變動（新平台要改程式）。 */
+let platformsLoaded = false;
+
+async function loadPlatforms() {
+  if (platformsLoaded) return;
+  try {
+    const d = await api('/api/accounts/platforms');
+    const cur = $('aPlatform').value;
+    $('aPlatform').innerHTML = '<option value="">全部平台</option>'
+      + d.items.map((it) =>
+        `<option value="${esc(it.platform)}">${esc(it.platform)}（${
+          it.count.toLocaleString()}）</option>`).join('');
+    $('aPlatform').value = cur;
+    platformsLoaded = true;
+  } catch { /* 補充選項，拿不到就維持「全部平台」，不必報錯 */ }
+}
+
 /** 進入帳號頁時呼叫（nav 的 registry）。 */
 export function loadAccountsView() {
-  fetchUnsetCount();
+  loadPlatforms();
   return loadAccounts();
 }

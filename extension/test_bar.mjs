@@ -180,7 +180,24 @@ bar.setPageScreenName(null);
 await settle();
 check('顯示不在帳號頁面', $('acct').textContent, '不在帳號頁面');
 check('送出鈕停用', $('primary').disabled, true);
-check('提示怎麼開始', $('msg').textContent, '開啟某個帳號的頁面就會開始採集');
+check('提示怎麼開始', $('msg').textContent, '開啟某個帳號的媒體分頁就會開始採集');
+
+// ── 站在帳號頁但不是媒體分頁：**不可以只是不收** ──────────────
+//
+// 2026-08-16 X 改版之後，/reposts（轉發）獨立成一個分頁，那裡全是別人的作品。
+// 擴充在那裡不採集是對的，但如果什麼都不說，使用者會以為壞了 ——
+// 滑了半天數字一直是 0，而畫面上沒有任何線索。
+bar.setPageScreenName('someone', { capturable: false, mediaUrl: 'https://x.com/someone/media?filter=photo' });
+await settle();
+check('不採集時講得出原因', $('msg').textContent.includes('這一頁不採集'), true);
+check('而且點得出去處', $('msg').children.at(-1)?.href,
+  'https://x.com/someone/media?filter=photo');
+check('提示是警示色不是錯誤色', $('msg').className, 'msg warn');
+
+// 回到媒體分頁就恢復正常
+bar.setPageScreenName('someone', { capturable: true, mediaUrl: null });
+await settle();
+check('媒體分頁不再顯示那句話', $('msg').textContent.includes('這一頁不採集'), false);
 
 // --- 5. 帳號還沒進 backend DB 也要能送（新帳號的第一批）---
 syncState = state({

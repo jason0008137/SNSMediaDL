@@ -13,16 +13,17 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 // --- 撐起 content.js 需要的環境 ---
 const notified = [];
+const opts = [];
 const messages = [];
 globalThis.chrome = { runtime: { sendMessage: async (m) => { messages.push(m); } } };
 globalThis.window = {
   addEventListener: () => {},
   __SNSMediaDLBar: {
-    setPageScreenName: (n) => notified.push(n),
+    setPageScreenName: (n, o) => { notified.push(n); opts.push(o); },
     setTabAccount: () => {},
   },
 };
-globalThis.location = { pathname: '/' };
+globalThis.location = { pathname: '/', search: '' };
 globalThis.document = { body: null, addEventListener: () => {} };
 
 // setInterval 會讓 node 不結束，也會干擾測試
@@ -42,9 +43,17 @@ const check = (label, got, want) => {
 
 const visit = (path) => {
   notified.length = 0;
-  globalThis.location.pathname = path;
+  const [p, q] = path.split('?');
+  globalThis.location.pathname = p;
+  globalThis.location.search = q ? `?${q}` : '';
   tick();
   return notified.length ? notified[notified.length - 1] : '（沒有通知）';
+};
+
+/** 「這一頁能不能採集」—— 與「在看誰」是兩個不同的答案。 */
+const capturable = (path) => {
+  visit(path);
+  return opts.length ? opts[opts.length - 1]?.capturable : '（沒有通知）';
 };
 
 // --- 帳號頁 ---
@@ -64,6 +73,28 @@ check('i 路徑', visit('/i/bookmarks'), null);
 check('搜尋', visit('/search'), null);   // pathname 不含 query string
 check('根路徑', visit('/'), null);
 
+// --- 能不能採集：只有媒體分頁算數 ---
+//
+// ⚠️ 2026-08-16 X 改版：/reposts（轉發）獨立成一個分頁，那裡全是別人的作品；
+//    而**裸的 /media 現在是「影片」分頁**，相片在 ?filter=photo。
+//    所以規則是「路徑第二段是 media」，query 一律放行 —— 寫成只認裸 /media
+//    的話，實際效果會是「只採集影片」。
+check('相片頁可採集', capturable('/artist/media?filter=photo'), true);
+check('影片頁（裸 /media）可採集', capturable('/artist/media'), true);
+check('個人時間軸不採集', capturable('/artist'), false);
+check('轉發頁不採集', capturable('/artist/reposts'), false);
+check('回覆頁不採集', capturable('/artist/with_replies'), false);
+check('喜歡頁不採集', capturable('/artist/likes'), false);
+check('貼文詳情不採集', capturable('/artist/status/123'), false);
+check('首頁不採集', capturable('/home'), false);
+
+// 切 filter 也要視為換頁（否則相片↔影片切換時面板不會更新）
+visit('/artist/media?filter=photo');
+notified.length = 0;
+globalThis.location.search = '';
+tick();
+check('換 filter 會通知', notified.length, 1);
+
 // --- SPA 內切換帳號要跟著變 ---
 visit('/artist_a/media');
 check('切到另一個帳號', visit('/artist_b/media'), 'artist_b');
@@ -77,11 +108,15 @@ const changes = (path) => {
 };
 check('換帳號有通知', changes('/artist_d/media'), ['artist_d']);
 check('離開帳號頁也通知（數字要歸零）', changes('/home'), [null]);
+// 站在不可採集的分頁時，badge 的帳號要是 null —— 那一頁不會有東西進來，
+// 顯示成「@artist_d 待送 0」會讓人以為採集壞了
+check('不可採集的分頁通知 null', changes('/artist_d/reposts'), [null]);
 
 // --- 同帳號內換分頁不重複通知 ---
 visit('/artist_c');
 notified.length = 0;
 globalThis.location.pathname = '/artist_c';
+globalThis.location.search = '';
 tick();
 check('路徑沒變就不通知', notified.length, 0);
 

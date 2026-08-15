@@ -32,12 +32,31 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from ..db.models import Account, Media, Post
 
 log = logging.getLogger("snsmediadl")
+
+# 帳號卡上放幾張預覽。改這個數字只要重算，不要 migration。
+PREVIEW_N = 4
+
+# 「這個帳號最新的 N 個媒體」。
+#
+# ⚠️ **刻意不加 `kind` 與 `status` 條件。** 加了之後 SQLite 會改從
+# `ix_media_status` 驅動（掃 224 萬列），實測從 359 ms 變成 **3.6 分鐘**。
+# 影片沒有縮圖 —— 那由前端顯示 ▶ 佔位，不是靠 SQL 濾掉。
+#
+# 也不濾分級：使用者要的是「一覽無遺」，濾掉會出現缺口。
+_PREVIEW_SQL = text(f"""(
+    select json_group_array(mid) from (
+        select m.id as mid from media m join posts p on p.id = m.post_id
+        where p.account_id = accounts.id
+        order by p.posted_at desc, m.id desc
+        limit {PREVIEW_N}
+    )
+)""")
 
 
 def _exprs() -> dict:
@@ -60,6 +79,7 @@ def _exprs() -> dict:
             select(func.max(Post.ingested_at))
             .where(Post.account_id == Account.id).scalar_subquery()
         ),
+        "preview_media": _PREVIEW_SQL,
     }
 
 
@@ -96,12 +116,13 @@ def check(session: Session) -> list[dict]:
             Account.media_count, e["media_count"],
             Account.last_post_at, e["last_post_at"],
             Account.last_ingest_at, e["last_ingest_at"],
+            Account.preview_media, e["preview_media"],
         )
     ).all()
 
     bad = []
     for (aid, name, pc, pc_real, mc, mc_real,
-         lp, lp_real, li, li_real) in rows:
+         lp, lp_real, li, li_real, pv, pv_real) in rows:
         diffs = {}
         if pc != pc_real:
             diffs["post_count"] = (pc, pc_real)
@@ -111,6 +132,10 @@ def check(session: Session) -> list[dict]:
             diffs["last_post_at"] = (lp, lp_real)
         if li != li_real:
             diffs["last_ingest_at"] = (li, li_real)
+        # 預覽是快照（貼文被刪、新採集都會變），一樣要能被 --check 抓到 ——
+        # 不然它會慢慢指向不存在的媒體，而畫面只是默默顯示破圖
+        if (pv or "[]") != (pv_real or "[]"):
+            diffs["preview_media"] = (pv, pv_real)
         if diffs:
             bad.append({"id": aid, "screen_name": name, "diffs": diffs})
     return bad

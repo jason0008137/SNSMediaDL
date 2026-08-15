@@ -12,7 +12,9 @@ from snsmediadl.db.enums import AccountRole, MediaKind, MediaStatus, Rating
 
 def test_all_tables_created(engine):
     names = set(inspect(engine).get_table_names())
-    assert names == {"creators", "accounts", "posts", "media"}
+    # identity_heals：帳號身分補齊的紀錄。它不是核心資料模型的一部分
+    # （刪掉不影響任何查詢），但它是「歸錯戶」唯一的回溯線索。
+    assert names == {"creators", "accounts", "posts", "media", "identity_heals"}
 
 
 def test_post_dedupe_key_is_platform_and_post_id(session):

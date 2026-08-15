@@ -152,6 +152,17 @@ class Account(Base):
     # 理由與實測數字寫在那個模組的 docstring。
     #
     # `snsmediadl recount-accounts --check` 會比對它們與真值。
+    # 帳號卡上的預覽縮圖：最新幾個 media id，存成 JSON 陣列。
+    #
+    # 為什麼去正規化（與上面四個聚合欄同一個理由）：即席算「每個帳號最新 4 張」
+    # 在正式庫上是 4.2 秒（全表視窗函式）；一頁 100 個帳號逐一算是 359 ms。
+    # 存起來就是讀一個欄位。
+    #
+    # ⚠️ **不濾分級**（使用者 2026-08-15 拍板）。濾掉 r18 會讓預覽出現缺口，
+    # 而預覽的用途是「快速認出這是誰」，有缺口反而更難認。
+    # 代價：工作安全模式開著時，帳號頁仍會出現 r18 縮圖。
+    preview_media: Mapped[str | None] = mapped_column(Text, default=None)
+
     post_count: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
@@ -254,3 +265,34 @@ class Media(Base):
     )
 
     post: Mapped[Post] = relationship(back_populates="media")
+
+
+class IdentityHeal(Base):
+    """把「只有名字的匯入帳號」補上真實平台 id 的紀錄。
+
+    匯入既有媒體庫時，多數檔案只帶得出帳號名，帶不出平台的數字 id，
+    於是 `platform_user_id` 寫成 `sn:<screen_name>` 這個哨符。真實 id 只有在
+    採集當下才拿得到（X 的公開 API 已關），所以治療發生在 ingest 的主路徑上。
+
+    ⚠️ **這張表是「事後發現搞錯了」時唯一的線索。**
+    治療的判斷是「同平台、同 screen_name」，而 X 的 handle 會被釋出再被別人
+    註冊 —— 極少數情況下，三年前的舊媒體會被掛到新主人身上。那個錯誤本身
+    無法完全避免（資料裡沒有留下「當時那個 foo 是誰」的證據），
+    但**它必須留下痕跡**。log 會捲掉，這張表不會。
+
+    不記 media 筆數：媒體跟著貼文走，`moved_posts` 已經足夠回溯。
+    """
+
+    __tablename__ = "identity_heals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(String(32))
+    instance_host: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    screen_name: Mapped[str] = mapped_column(String(200))
+    placeholder_id: Mapped[str] = mapped_column(String(64))
+    real_id: Mapped[str] = mapped_column(String(64))
+    # rename = 只有哨符列，改它的 id 就好（貼文一則都沒搬）
+    # merge  = 真 id 那列也在，把貼文搬過去再刪掉哨符列
+    kind: Mapped[str] = mapped_column(String(16))
+    moved_posts: Mapped[int] = mapped_column(Integer, default=0)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

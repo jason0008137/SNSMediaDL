@@ -28,7 +28,7 @@ output_root = 'D:\SNS_Media'
 #
 # 匯入進來的既有媒體庫也放這裡。
 extra_media_roots = [
-  'D:\OldMedia\twitter',
+  'D:\OldMedia	witter',
 ]
 
 # 縮圖快取放哪。預設 `<output_root>/thumb`。
@@ -76,6 +76,10 @@ extra_media_roots = [
 # ── Fediverse / 批次抓取 ──────────────────────────────────
 
 # fetch_delay_seconds = 1.0
+
+# 帳號與帳號之間的間隔（秒）。上面那個只管同一個帳號的翻頁。
+# 「一鍵更新」是序列跑的，這個值決定它對同一台伺服器叩門的密度。
+# fetch_account_delay_seconds = 2.0
 # fetch_page_size = 40
 # 上限保護：第一次對大帳號抓會抓到天亮。撞到上限會明講，不會假裝抓完了。
 # fetch_max_pages = 20

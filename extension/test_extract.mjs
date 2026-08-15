@@ -50,11 +50,10 @@ let messageHandler = null;
 globalThis.chrome = {
   runtime: { sendMessage: async (m) => { captured.push(m); } },
 };
-globalThis.location = { pathname: '/sample_account/media' };
+globalThis.location = { pathname: '/sample_account/media', search: '?filter=photo' };
 globalThis.window = {
   addEventListener: (ev, fn) => { if (ev === 'message') messageHandler = fn; },
 };
-globalThis.location = { pathname: '/sample_account/media' };
 
 new Function(readFileSync(join(here, 'content.js'), 'utf8'))();
 
@@ -103,6 +102,35 @@ check('可稽核的候選 bitrate', vid.availableBitrates, [256000, 832000, 2176
 check('影片縮圖有保留', vid.thumb.includes('amplify_video_thumb'), true);
 check('影片長度', vid.durationMs, 9571);
 check('possiblySensitive 有帶出', typeof mixed.possiblySensitive, 'boolean');
+check('媒體頁可採集', msg.capturable, true);
+
+// ── 轉推一律丟掉 ────────────────────────────────────────
+//
+// 轉推的 legacy.user_id_str 是**轉推者**，extended_entities.media 卻是
+// **原作者的** —— 所以「只收本頁帳號」那道閘門對它是成立的，它會通過。
+// 2026-08-16 實測：X 的 /reposts 分頁上，UserRepostsTimeline 一次就抽出
+// 19 個別人的媒體。這裡把它擋在解析層。
+captured.length = 0;
+const rtLegacy = JSON.parse(JSON.stringify(fixture.moduleItems_sample[0].legacy));
+rtLegacy.id_str = '1000000000000000009';
+// 轉推者是本頁帳號（所以帳號閘門會放行），但媒體是別人的
+rtLegacy.retweeted_status_result = { result: { legacy: { user_id_str: '9999', id_str: '777' } } };
+const rtEnvelope = JSON.parse(JSON.stringify(envelope));
+rtEnvelope.data.user.result.timeline_v2.timeline.instructions[0].moduleItems.push({
+  entryId: 'rt-1',
+  item: { itemContent: { tweet_results: { result: { legacy: rtLegacy } } } },
+});
+messageHandler({
+  source: globalThis.window,
+  data: { __snsmediadl: true, op: 'UserRepostsTimeline', text: JSON.stringify(rtEnvelope), via: 'xhr' },
+});
+await new Promise((r) => setTimeout(r, 20));
+const rtMsg = captured.find((m) => m.type === 'captured');
+check('轉推沒有被送出', rtMsg.posts.some((p) => p.postId === '1000000000000000009'), false);
+check('其餘的照收', rtMsg.posts.length, 2);
+const rtReport = captured.find((m) => m.type === 'report' && m.context?.retweetsDropped);
+check('丟掉幾則要記下來', rtReport?.context.retweetsDropped, 1);
+check('op 名稱有記進報告（改名時看得出來）', rtReport?.context.op, 'UserRepostsTimeline');
 
 console.log(fail === 0 ? '\n全部通過' : `\n${fail} 項失敗`);
 process.exit(fail === 0 ? 0 : 1);

@@ -1,7 +1,7 @@
 """UIUX 2.0 需要的後端行為。
 
 這些端點不是為了「多一個 API」而加的，每一支都對應介面上一句**答不出來就會
-騙人**的話：
+騙人**的話（見 wiki 的 UI_* 線框筆記）：
 
   · `hidden_by_safe_mode` → 「共 0 個媒體」旁邊那句「另有 N 筆因安全模式隱藏」
   · `unsupported_platform` → 解析結果表要分辨「貼對了但要換工具」與「打錯字」
@@ -190,3 +190,26 @@ def test_settings_expose_the_paths_the_panel_shows(client):
     # 講之前得先拿得到值
     assert s["thumb_root"].endswith("thumb")
     assert s["fetch_max_pages"] >= 1
+
+
+# ── 帳號頁的平台篩選 ──────────────────────────────────────
+
+
+def test_platform_breakdown_for_the_account_filter(client, mixed_accounts):
+    """選項要帶筆數 —— 選到 0 筆的平台時，空清單與「篩選壞了」長得一樣。"""
+    items = client.get("/api/accounts/platforms").json()["items"]
+    assert {i["platform"]: i["count"] for i in items} == {
+        "x": 2, "misskey": 1, "mastodon": 1, "pixiv": 1}
+    # 多的排前面：4,211 個 x 要在 9 個 misskey 前面
+    assert items[0]["platform"] == "x"
+
+
+def test_platform_route_is_not_swallowed_by_account_id(client):
+    # `/api/accounts/platforms` 不可以被 `/accounts/{account_id}` 之類的路由接走
+    assert client.get("/api/accounts/platforms").status_code == 200
+
+
+def test_accounts_can_be_filtered_by_platform(client, mixed_accounts):
+    res = client.get("/api/accounts?platform=mastodon")
+    assert [a["screen_name"] for a in res.json()] == ["d"]
+    assert res.headers["X-Total-Count"] == "1"

@@ -671,3 +671,27 @@ label.chk input { width: auto; }
   padding: 16px; color: var(--err-text); font-size: 12px; line-height: 1.7;
   white-space: pre-line; margin: 0;
 }
+
+/* ── 帳號卡的預覽縮圖 ──
+   「一覽無遺」是這件事的目的，所以**不濾分級**（使用者拍板）——
+   濾掉會讓某些卡片出現缺口，而有缺口的縮圖列比沒有更難認人。 */
+.prev { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-top: 8px; }
+.prev-cell {
+  position: relative; aspect-ratio: 1; overflow: hidden;
+  background: var(--bg); border-radius: 6px; display: block;
+}
+.prev img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 還沒填 src 時不要顯示破圖圖示 */
+.prev img:not([src]) { visibility: hidden; }
+/* 影片沒有縮圖（/thumb 對非圖片回 415）。▶ 是形狀載體，灰階仍可辨識。 */
+.prev-alt {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%; font-size: 18px; color: var(--muted);
+  background: repeating-linear-gradient(
+    45deg, var(--panel), var(--panel) 6px, var(--bg) 6px, var(--bg) 12px);
+}
+.prev-empty {
+  margin-top: 8px; padding: 10px; text-align: center;
+  font-size: 11px; color: var(--muted);
+  background: var(--bg); border: 1px dashed var(--line); border-radius: 6px;
+}

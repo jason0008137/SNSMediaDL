@@ -1,7 +1,7 @@
 // 抓取：貼網址批次抓、一鍵更新、佇列與整批評價。
 //
 // 這是三個畫面裡**模型負載最高**的一頁 —— 唯一真正非同步的地方。
-// 非同步流程一定要畫三格：
+// 非同步流程一定要畫三格（wiki 的 UI_抓取控制 第六節）：
 //   ① 送出當下：「已排入 N 個」，並立刻把視線帶到佇列區
 //   ② 執行中：第 N/M、進度、目前在跑誰、能不能停
 //   ③ 結果：**評價**，不只是計數
@@ -112,7 +112,11 @@ async function submitUrls() {
 // ── 一鍵更新 ───────────────────────────────────────────
 
 const SKIP_REASONS = {
-  cannot_fetch: '只能由 extension 採集（X）',
+  // ⚠️ 不可以寫死成 X。`cannot_fetch` 的意思是「backend 沒有這個平台的抓取
+  // 實作」，X 只是其中最大的一群。實測有過一次：12 個 baraag 帳號因為平台名
+  // 對不上註冊表而被歸到這裡，畫面卻告訴使用者「只能由 extension 採集（X）」
+  // —— 那句話讓真正的原因完全查不到。
+  cannot_fetch: 'backend 沒有這個平台的抓取實作（X 只能用 extension 採集）',
   untracked: '已取消追蹤',
   pixiv_excluded: '這次沒有包含 pixiv',
   no_credentials: '缺憑證（config.toml 的 platform_credentials）',

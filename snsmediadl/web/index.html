@@ -21,7 +21,7 @@
 <body>
 
 <!-- ⚠️ 這裡曾經有一條整頁寬的「工作安全模式：已排除 R18 內容」橫幅，2.0 刪掉。
-     三個理由：與 header 的開關重複、
+     三個理由（見 wiki 的 UI_導覽結構 第二節）：與 header 的開關重複、
      它是媒體頁專屬狀態卻掛在每一頁、而且它答不出真正的問題（這一頁被濾掉幾筆）。
      訊號方向也反了：**開著是預設與受保護的狀態，不需要一直喊；關著才是例外**。
      所以現在改成安全模式「關閉時」才由 header 的開關本身變成警示樣式。 -->
@@ -33,7 +33,7 @@
        媒體 2,247,850 筆 / 帳號 4,653 筆 / 抓取歷來執行 0 次。
        原本的 Creators（0 筆）與「問題」（失敗 0 筆）已降級 ——
        前者進帳號頁的檢視切換與編輯抽屜，後者進 header 狀態區的 modal。
-       兩者都仍在 3 步內到得了（降級不是刪除，每個被降級的功能都算過步數）。 -->
+       兩者都仍在 3 步內到得了（可達性驗算見 UI_導覽結構 第三節）。 -->
   <nav class="tabs" aria-label="主要導覽">
     <button class="tab active" data-view="media">媒體</button>
     <button class="tab" data-view="accounts">帳號</button>
@@ -215,6 +215,11 @@
     </div>
 
     <div class="fgroup">
+      <!-- 選項帶筆數：選到一個 0 筆的平台會看到空清單，而空清單與「篩選壞了」
+           長得一樣。筆數由 /api/accounts/platforms 填。 -->
+      <select id="aPlatform" data-tip="只看某個平台的帳號">
+        <option value="">全部平台</option>
+      </select>
       <select id="aSort" data-tip="排序方式">
         <option value="favorite">我的最愛 → 評分</option>
         <option value="stars">評分高到低</option>

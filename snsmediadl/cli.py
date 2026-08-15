@@ -301,6 +301,69 @@ def cmd_analyze(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_identity(args: argparse.Namespace) -> int:
+    """帳號身分現況：還有幾個「只有名字」的匯入帳號。
+
+    **只有 `--list`，沒有 `--fix`。** 這不是漏做的：哨符要補上真實 id，
+    得先知道那個 id 是什麼，而平台的 user id 只有在採集當下拿得到
+    （X 的公開 API 已關）。離線補不了 —— 治療發生在 ingest 主路徑上，
+    見 `services/identity.py`。
+
+    這支指令的用途是**回答「還剩多少」與「補過哪些」**。
+    """
+    from sqlalchemy import func, select
+
+    from .db.models import Account, IdentityHeal
+    from .services.identity import PLACEHOLDER_PREFIX
+
+    _cfg, maker = _bootstrap()
+    with maker() as session:
+        rows = session.execute(
+            select(Account.platform, func.count())
+            .where(Account.platform_user_id.like(f"{PLACEHOLDER_PREFIX}%"))
+            .group_by(Account.platform)
+            .order_by(func.count().desc())
+        ).all()
+        total = sum(n for _, n in rows)
+        if rows:
+            print(f"還沒有平台 id 的帳號：{total} 個")
+            for platform, n in rows:
+                print(f"  {platform:10} {n:>6}")
+            print("\n這些帳號只有名字。造訪它們的頁面讓 extension 採集一次，")
+            print("或（Fediverse）跑一次「一鍵更新」，就會自動補上。")
+        else:
+            print("所有帳號都有平台 id。")
+
+        # 同名但已經有真 id 的那一列 —— 那是**下次採集就會被合併**的對象
+        ghost = select(Account).where(
+            Account.platform_user_id.like(f"{PLACEHOLDER_PREFIX}%")).subquery()
+        pending = session.execute(
+            select(ghost.c.platform, ghost.c.screen_name)
+            .join(Account, (Account.platform == ghost.c.platform)
+                  & (Account.instance_host == ghost.c.instance_host)
+                  & (func.lower(Account.screen_name) == func.lower(ghost.c.screen_name))
+                  & (Account.id != ghost.c.id))
+        ).all()
+        if pending:
+            print(f"\n⚠️ 有 {len(pending)} 個帳號同時存在「只有名字」與「有 id」兩列：")
+            for platform, name in pending[:args.limit]:
+                print(f"  {platform:10} {name}")
+            print("  下次採集到它們時會自動合併（貼文搬過去、哨符列刪掉）。")
+
+        heals = session.scalars(
+            select(IdentityHeal).order_by(IdentityHeal.at.desc()).limit(args.limit)
+        ).all()
+        if heals:
+            print(f"\n最近補齊的 {len(heals)} 筆：")
+            for h in heals:
+                when = h.at.isoformat(sep=" ", timespec="seconds")
+                what = "合併" if h.kind == "merge" else "改 id"
+                extra = f"，搬了 {h.moved_posts} 則貼文" if h.kind == "merge" else ""
+                print(f"  {when}  {h.platform:8} @{h.screen_name} {what}"
+                      f"（{h.placeholder_id} → {h.real_id}）{extra}")
+    return 0
+
+
 def cmd_recount_accounts(args: argparse.Namespace) -> int:
     """檢查（或修正）`accounts` 的聚合欄。
 
@@ -475,6 +538,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rc.add_argument("--limit", type=int, default=20, help="最多列出幾筆差異")
     rc.set_defaults(func=cmd_recount_accounts)
+
+    idt = sub.add_parser(
+        "identity",
+        help="還有幾個「只有名字」的匯入帳號，以及補齊過哪些",
+    )
+    idt.add_argument("--list", action="store_true", help="（預設行為，留著讓意圖明確）")
+    idt.add_argument("--limit", type=int, default=20, help="最多列出幾筆")
+    idt.set_defaults(func=cmd_identity)
 
     da = sub.add_parser(
         "delete-account",

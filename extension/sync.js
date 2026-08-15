@@ -266,6 +266,10 @@ async function flushAccount(base, state, userId, override = null) {
     sent: toSendIds.length,
     skipped: allIds.length - toSendIds.length,
     result,
+    // backend 順手把「只有名字」的匯入帳號補上真實 id 時會回報。
+    // ⚠️ 一定要往上帶：那是**改動歷史資料歸屬**的操作，
+    // 使用者按一次送出就發生了，不告訴他就是靜默做大事。
+    healed: result?.healed || [],
   };
 }
 
@@ -298,6 +302,7 @@ export async function flush(userId = null, tags = null) {
   let skipped = 0;
   let postsNew = 0;
   let mediaNew = 0;
+  const healed = [];
 
   try {
     for (const uid of targets) {
@@ -306,6 +311,7 @@ export async function flush(userId = null, tags = null) {
       skipped += r.skipped;
       postsNew += r.result?.posts_new || 0;
       mediaNew += r.result?.media_new || 0;
+      healed.push(...(r.healed || []));
     }
   } catch (e) {
     // 已成功的帳號其 bucket 已清空，state 要存回去才不會重送
@@ -322,5 +328,5 @@ export async function flush(userId = null, tags = null) {
   state.lastSyncAt = new Date().toISOString();
   await setState(state);
 
-  return { sent, skipped, online: true, accounts: targets.length, postsNew, mediaNew };
+  return { sent, skipped, online: true, accounts: targets.length, postsNew, mediaNew, healed };
 }

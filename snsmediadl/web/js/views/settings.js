@@ -51,6 +51,15 @@ export async function openSettings() {
       </div>
 
       <div class="ovl-section">
+        <h3>帳號身分補齊</h3>
+        <p class="note">匯入進來的帳號多半只有名字、沒有平台 id。採集到它們時
+          backend 會就地補上，必要時把重複的兩列合併。<br>
+          ⚠️ 判斷依據是帳號名，而平台的帳號名會被釋出再被別人註冊 ——
+          <b>這裡是唯一能回溯歸錯戶的地方</b>。</p>
+        <div id="setHeals">讀取中…</div>
+      </div>
+
+      <div class="ovl-section">
         <h3>唯讀資訊</h3>
         <div id="setReadonly">讀取中…</div>
       </div>`,
@@ -86,6 +95,25 @@ export async function openSettings() {
         paintAuto(s?.auto_download);
         body.querySelector('#setReadonly').innerHTML = readonlyRows(s);
       });
+      api('/api/identity/heals?limit=20')
+        .then((d) => {
+          const box = body.querySelector('#setHeals');
+          const pending = `<p class="note">還有 <b>${d.pending.toLocaleString()}</b> 個帳號只有名字。</p>`;
+          box.innerHTML = pending + (d.items.length
+            ? `<dl class="kv">${d.items.map((h) => `
+                <dt>${esc(h.at.slice(0, 16).replace('T', ' '))}</dt>
+                <dd>${esc(h.platform)} @${esc(h.screen_name)} —— ${
+                  h.kind === 'merge'
+                    ? `合併兩列，搬了 ${h.moved_posts} 則貼文`
+                    : '補上平台 id'}<br>
+                  <span class="muted">${esc(h.placeholder_id)} → ${esc(h.real_id)}</span></dd>`).join('')}</dl>`
+            // 0 筆是常態（還沒採集過），要看起來像正常而不是壞掉
+            : '<p class="note">還沒有補齊過任何帳號。</p>');
+        })
+        .catch((e) => {
+          body.querySelector('#setHeals').textContent = `讀不到：${e.message}`;
+        });
+
       api('/api/media/count?rating=r18')
         .then((d) => {
           body.querySelector('#setR18').textContent = `${d.total.toLocaleString()} 筆`;

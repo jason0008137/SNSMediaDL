@@ -133,25 +133,50 @@ function handle(op, text) {
     // 現在「這一頁在看誰」只由網址決定，這條路徑不再影響任何判斷。
     if (Object.keys(screenNames).length) {
       chrome.runtime.sendMessage({
-        type: 'captured', posts: [], screenNames, pageScreenName: screenNameFromUrl(),
+        type: 'captured', posts: [], screenNames,
+        pageScreenName: isCapturablePage() ? screenNameFromUrl() : null,
+        viewingScreenName: screenNameFromUrl(),
+        capturable: isCapturablePage(),
       }).catch(() => {});
     }
     return;
   }
 
   const { legacies } = collectLegacies(instructions);
-  const posts = legacies.map(extractPost).filter(Boolean);
+  const all = legacies.map(extractPost).filter(Boolean);
+
+  // ⚠️ **轉推一律丟掉。**
+  //
+  // 轉推的 `legacy.user_id_str` 是**轉推者**，而 `extended_entities.media`
+  // 是**原作者的**。所以「只收本頁帳號的貼文」這個閘門對它是成立的 ——
+  // 它問的是「這則貼文是不是他發的」（是），該問的卻是「這個媒體是不是他做的」
+  // （不是）。2026-08-16 實測：X 把轉推獨立成 /reposts 分頁，在那裡
+  // `UserRepostsTimeline` 一次就抽出 19 個**別人的**媒體。
+  //
+  // 這是 isCapturablePage() 的**保險**，不是替代：那一道靠的是
+  // 「X 的媒體頁不含轉推」這個平台行為，而平台行為會改。
+  const posts = all.filter((p) => !p.isRetweet);
+  const retweetsDropped = all.length - posts.length;
   const mediaCount = posts.reduce((n, p) => n + p.media.length, 0);
 
-  console.log(`${TAG} ${op}: ${posts.length} posts / ${mediaCount} media`);
+  const capturable = isCapturablePage();
+  console.log(`${TAG} ${op}: ${posts.length} posts / ${mediaCount} media`
+    + `${retweetsDropped ? ` (轉推丟棄 ${retweetsDropped})` : ''}`
+    + `${capturable ? '' : ' [這一頁不採集]'}`);
+  // op 名稱記進報告：X 改過兩次名（UserMedia → UserPhotoTimeline），
+  // 而擴充**不靠 op 名稱做決定** —— 但下次再改名時，這裡看得出來。
   tell('info', '攔截到 GraphQL 回應', op,
-    { op, posts: posts.length, media: mediaCount, path: location.pathname });
+    { op, posts: posts.length, media: mediaCount, retweetsDropped,
+      capturable, path: location.pathname + location.search });
 
   // 收不收由 sync.js 判斷（只收 pageScreenName 這個帳號的貼文）。
   // 判斷點只有一個，兩邊各判一次遲早會不一致 —— 這裡只負責把
-  // 「網址說這一頁在看誰」誠實地帶過去。
+  // 「網址說這一頁在看誰」與「這一頁能不能採集」誠實地帶過去。
   chrome.runtime.sendMessage({
-    type: 'captured', posts, screenNames, pageScreenName: screenNameFromUrl(),
+    type: 'captured', posts, screenNames,
+    pageScreenName: capturable ? screenNameFromUrl() : null,
+    viewingScreenName: screenNameFromUrl(),
+    capturable,
   })
     .then((r) => { if (r) window.__SNSMediaDLBar?.onCaptured(r); })
     .catch(() => { /* service worker 可能還沒醒，資料已在下次一併送出 */ });
@@ -174,16 +199,50 @@ function screenNameFromUrl() {
   return seg;
 }
 
+/** 這一頁**能不能採集**。與「這一頁在看誰」是兩個不同的問題。
+ *
+ * 只有媒體分頁算數。2026-08-16 實測 X 的個人頁分頁：
+ *
+ *   /<user>                  貼文    UserOriginalsTimeline
+ *   /<user>/with_replies     回覆
+ *   /<user>/reposts          轉發    UserRepostsTimeline  ← 全是別人的作品
+ *   /<user>/media            影片    ← ⚠️ 裸的 /media 現在是**影片**分頁
+ *   /<user>/media?filter=photo  相片  UserPhotoTimeline
+ *
+ * ⚠️ **`?filter` 不可以拿掉。** 裸 `/media` 只有影片，相片在 `?filter=photo`。
+ * 寫成「只認 /media 不認 query」的話，實際效果是「只採集影片」。
+ *
+ * 為什麼不用 operation 名稱當閘門：X 半年內改過兩次（operation ID hash 會輪換、
+ * 這次連名稱都換了）。白名單會在下一次改名時**靜默停止採集**，那比多收更難發現。
+ * 網址的語意穩定得多。 */
+function isCapturablePage() {
+  if (!screenNameFromUrl()) return false;
+  const parts = location.pathname.split('/').filter(Boolean);
+  return parts.length === 2 && parts[1].toLowerCase() === 'media';
+}
+
+/** 這個帳號的相片頁 —— 「這裡不採集」時要給得出去處。 */
+function mediaUrlFor(name) {
+  return `https://x.com/${name}/media?filter=photo`;
+}
+
 let lastPath = null;
 
 function checkUrl() {
-  if (location.pathname === lastPath) return;
-  lastPath = location.pathname;
+  // ⚠️ 連 search 一起看：`/media` 與 `/media?filter=photo` 是**兩個不同的分頁**
+  // （影片 vs 相片），只比 pathname 的話切換 filter 不會觸發更新。
+  const here = location.pathname + location.search;
+  if (here === lastPath) return;
+  lastPath = here;
   const name = screenNameFromUrl();
-  window.__SNSMediaDLBar?.setPageScreenName(name);
+  window.__SNSMediaDLBar?.setPageScreenName(
+    name, { capturable: isCapturablePage(), mediaUrl: name ? mediaUrlFor(name) : null });
   // 工具列 badge 是每分頁各自的，換帳號要立刻換數字 ——
   // 不通知的話它會停在上一個帳號的數字直到下一次攔到回應。
-  chrome.runtime.sendMessage({ type: 'pageChanged', pageScreenName: name })
+  chrome.runtime.sendMessage({
+    type: 'pageChanged',
+    pageScreenName: isCapturablePage() ? name : null,
+  })
     .catch(() => { /* service worker 可能還沒醒 */ });
 }
 

@@ -28,9 +28,24 @@ def _alembic(db: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "alembic", *args],
         cwd=PROJECT_ROOT,
-        env={**__import__("os").environ, "SNSMEDIADL_DB_PATH": str(db)},
+        env={
+            **__import__("os").environ,
+            "SNSMEDIADL_DB_PATH": str(db),
+            # ⚠️ 子行程寫 pipe 時用的是**它自己的**地區編碼（中文 Windows 是
+            # cp950），所以光在這邊指定 encoding="utf-8" 只會解出亂碼 ——
+            # migration 的中文錯誤訊息比對不到，測試在 PowerShell 下紅、
+            # 在 Bash 下綠。兩端都釘成 UTF-8 才是確定的。
+            "PYTHONIOENCODING": "utf-8",
+        },
         capture_output=True,
         text=True,
+        # ⚠️ **一定要指定 encoding。** `text=True` 用的是行程的地區編碼，
+        # 在中文 Windows 上是 cp950 —— 而 migration 的錯誤訊息是中文，
+        # 解不開時 subprocess 的讀取執行緒會丟 UnicodeDecodeError，
+        # 測試在 Bash 下綠、在 PowerShell 下紅。
+        # errors="replace"：這裡要的是「看得到訊息」，不是完美解碼。
+        encoding="utf-8",
+        errors="replace",
     )
 
 
@@ -184,10 +199,95 @@ def test_migration_creates_expected_tables(tmp_path):
     subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=PROJECT_ROOT,
-        env={**__import__("os").environ, "SNSMEDIADL_DB_PATH": str(db)},
+        env={
+            **__import__("os").environ,
+            "SNSMEDIADL_DB_PATH": str(db),
+            # ⚠️ 子行程寫 pipe 時用的是**它自己的**地區編碼（中文 Windows 是
+            # cp950），所以光在這邊指定 encoding="utf-8" 只會解出亂碼 ——
+            # migration 的中文錯誤訊息比對不到，測試在 PowerShell 下紅、
+            # 在 Bash 下綠。兩端都釘成 UTF-8 才是確定的。
+            "PYTHONIOENCODING": "utf-8",
+        },
         capture_output=True,
         text=True,
         check=True,
     )
     names = set(inspect(create_engine(f"sqlite:///{db}")).get_table_names())
     assert {"creators", "accounts", "posts", "media"} <= names
+
+
+def test_baraag_is_renamed_to_mastodon(tmp_path):
+    """`baraag` 是 EpicDL 的目錄名，不是平台名。
+
+    平台名是唯一鍵的成分，兩個名字並存等於同一個人會變成兩列。改名之後
+    `can_fetch('mastodon')` 才成立 —— 那 12 個帳號原本在「一鍵更新」裡
+    被歸成「抓不動」而整批靜默消失。
+    """
+    db = tmp_path / "baraag.db"
+    assert _alembic(db, "upgrade", "f6a7b8c9d0e1").returncode == 0
+
+    con = sqlite3.connect(db)
+    con.executescript(
+        """
+        INSERT INTO accounts (id, platform, instance_host, platform_user_id,
+                              screen_name, is_tracked, created_at)
+        VALUES (1, 'baraag', 'baraag.net', 'sn:artist', 'artist', 1,
+                '2026-01-01 00:00:00'),
+               (2, 'misskey', 'misskey.io', 'u2', 'other', 1,
+                '2026-01-01 00:00:00');
+
+        INSERT INTO posts (id, platform, instance_host, platform_post_id,
+                           account_id, is_retweet, ingested_at)
+        VALUES (1, 'baraag', 'baraag.net', 'p1', 1, 0, '2026-01-01 00:00:00'),
+               (2, 'misskey', 'misskey.io', 'p2', 2, 0, '2026-01-01 00:00:00');
+        """
+    )
+    con.commit()
+    con.close()
+
+    r = _alembic(db, "upgrade", "head")
+    assert r.returncode == 0, r.stderr
+
+    con = sqlite3.connect(db)
+    assert con.execute(
+        "SELECT platform FROM accounts WHERE id = 1").fetchone()[0] == "mastodon"
+    assert con.execute(
+        "SELECT platform FROM posts WHERE id = 1").fetchone()[0] == "mastodon"
+    # 別的平台不可以被掃到
+    assert con.execute(
+        "SELECT platform FROM accounts WHERE id = 2").fetchone()[0] == "misskey"
+    assert con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+    con.close()
+
+    # 可逆
+    assert _alembic(db, "downgrade", "f6a7b8c9d0e1").returncode == 0
+    con = sqlite3.connect(db)
+    assert con.execute(
+        "SELECT platform FROM accounts WHERE id = 1").fetchone()[0] == "baraag"
+    con.close()
+
+
+def test_baraag_rename_aborts_instead_of_clobbering_a_clash(tmp_path):
+    """同一個帳號已經同時以 baraag 與 mastodon 存在時，**中止**。
+
+    靜默跳過那幾筆的話，資料會留在「一半搬了一半沒搬」的狀態，
+    而那正是日後最難查的一種。
+    """
+    db = tmp_path / "clash.db"
+    assert _alembic(db, "upgrade", "f6a7b8c9d0e1").returncode == 0
+
+    con = sqlite3.connect(db)
+    con.executescript(
+        """
+        INSERT INTO accounts (id, platform, instance_host, platform_user_id,
+                              screen_name, is_tracked, created_at)
+        VALUES (1, 'baraag',   'baraag.net', 'dup', 'artist', 1, '2026-01-01 00:00:00'),
+               (2, 'mastodon', 'baraag.net', 'dup', 'artist', 1, '2026-01-01 00:00:00');
+        """
+    )
+    con.commit()
+    con.close()
+
+    r = _alembic(db, "upgrade", "head")
+    assert r.returncode != 0
+    assert "撞唯一鍵" in (r.stderr + r.stdout)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Config
 from ..db.enums import ContentType, FetchStatus, MediaStatus, Rating
-from ..db.models import Account, Creator, Media, Post
+from ..db.models import Account, Creator, IdentityHeal, Media, Post
 from ..downloader import runner
 from ..services.ingest import last_ingest
 from . import logbuf
@@ -66,6 +67,22 @@ def _account_dict(a: Account) -> dict:
         "last_fetch_note": a.last_fetch_note,
         "last_fetch_new_posts": a.last_fetch_new_posts,
     }
+
+
+def _preview_ids(raw: str | None) -> list[int]:
+    """`accounts.preview_media` 的 JSON 字串 → id 陣列。
+
+    壞掉就回空陣列**並記一筆 warning**：預覽是裝飾，不該讓整個帳號清單掛掉；
+    但靜默吞掉會讓「預覽突然全空」查不出原因。
+    """
+    if not raw:
+        return []
+    try:
+        ids = json.loads(raw)
+    except ValueError:
+        log.warning("preview_media 不是合法 JSON，已當成空的：%r", raw[:80])
+        return []
+    return [int(i) for i in ids if isinstance(i, int)]
 
 
 def _post_dict(p: Post) -> dict:
@@ -311,9 +328,69 @@ def list_accounts(
                               if account.last_post_at else None),
                 last_ingest_at=(account.last_ingest_at.isoformat()
                                 if account.last_ingest_at else None),
+                # 帳號卡的預覽縮圖（最新幾個 media id）。存的是 JSON 字串，
+                # 這裡解開成陣列 —— 讓每個呼叫端各自 JSON.parse 是在等人忘記。
+                preview=_preview_ids(account.preview_media),
             )
         out.append(d)
     return out
+
+
+@router.get("/identity/heals")
+def identity_heals(
+    limit: int = Query(default=50, le=200),
+    session: Session = Depends(get_session),
+) -> dict:
+    """帳號身分補齊的紀錄。
+
+    採集時如果碰到「只有名字」的匯入帳號（`platform_user_id` 是 `sn:` 哨符），
+    backend 會就地把它補上真實 id，必要時把兩列合併。**那是改動歷史資料歸屬
+    的操作**，判斷依據是 screen_name，而平台的 handle 會被釋出再被別人註冊 ——
+    極少數情況下會歸錯戶。
+
+    這支端點存在的唯一理由是：**那個錯誤要有辦法回溯**。log 會捲掉，這裡不會。
+    """
+    rows = session.scalars(
+        select(IdentityHeal).order_by(IdentityHeal.at.desc()).limit(limit)
+    ).all()
+    return {
+        "items": [
+            {
+                "id": h.id,
+                "platform": h.platform,
+                "instance_host": h.instance_host,
+                "screen_name": h.screen_name,
+                "placeholder_id": h.placeholder_id,
+                "real_id": h.real_id,
+                "kind": h.kind,
+                "moved_posts": h.moved_posts,
+                "at": h.at.isoformat(),
+            }
+            for h in rows
+        ],
+        "pending": session.scalar(
+            select(func.count()).select_from(Account).where(
+                Account.platform_user_id.like("sn:%"))
+        ) or 0,
+    }
+
+
+@router.get("/accounts/platforms")
+def account_platforms(session: Session = Depends(get_session)) -> dict:
+    """各平台各有幾個帳號。給帳號頁的平台篩選用。
+
+    **選項要帶筆數。** 沒有筆數的話，使用者選了一個 0 筆的平台會看到空清單，
+    而空清單與「篩選壞了」長得一模一樣 —— 這個庫裡就有過這種事：匯入器把
+    Mastodon 的平台名寫成 `baraag`，畫面上沒有任何地方看得出來。
+
+    一次 GROUP BY 掃 4,653 列，成本可以忽略。
+    """
+    rows = session.execute(
+        select(Account.platform, func.count())
+        .group_by(Account.platform)
+        .order_by(func.count().desc())
+    ).all()
+    return {"items": [{"platform": p, "count": n} for p, n in rows]}
 
 
 @router.get("/posts")

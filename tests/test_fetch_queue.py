@@ -217,3 +217,76 @@ async def test_user_id_is_passed_through(monkeypatch, queue):
 async def test_status_says_the_queue_is_volatile(queue):
     """重啟就沒了，介面必須講明 —— 不然使用者會以為排好的東西還在。"""
     assert queue.status()["volatile"] is True
+
+
+# ── 錯誤訊息要帶得出平台講的原因 ──────────────────────────
+
+
+async def test_http_error_carries_the_platform_message(monkeypatch, queue, cfg):
+    """400 的 body 裡有原因，丟掉它等於逼使用者去猜。
+
+    有前科：8 個 misskey 帳號回 400，被猜成「掃太快」，實際上是拿 `sn:` 哨符
+    當 userId 去查（見 `services/identity.py`）。當時畫面上只有「HTTP 400」。
+    """
+    async def boom(*a, **kw):
+        raise httpx.HTTPStatusError(
+            "400", request=httpx.Request("POST", "https://misskey.io/api/users/show"),
+            response=httpx.Response(
+                400, json={"error": {"code": "INVALID_PARAM", "message": "userId is invalid"}}),
+        )
+
+    monkeypatch.setattr(fq, "fetch_account", boom)
+    monkeypatch.setattr(fq.FetchQueue, "_record", lambda self, *a, **kw: _noop())
+    job = queue.enqueue(target())
+    await drain(queue)
+    assert job.state == "failed"
+    assert "INVALID_PARAM" in job.error
+    assert "userId is invalid" in job.error
+
+
+async def test_error_detail_never_raises_on_a_non_json_body():
+    """這個函式跑在錯誤處理路徑上 —— 它自己炸掉會把原本的錯誤蓋掉。"""
+    html = httpx.Response(502, text="<html><body>Bad Gateway</body></html>")
+    assert "Bad Gateway" in fq._error_detail(html)
+    assert fq._error_detail(httpx.Response(500, text="")) == ""
+
+
+async def _noop():
+    return None
+
+
+# ── 帳號之間的節流 ────────────────────────────────────────
+
+
+async def test_pacing_between_accounts(monkeypatch, cfg):
+    """兩個帳號之間要有間隔。
+
+    ⚠️ 這**不是** HTTP 400 的解方（那是哨符 id），是對站台的禮貌 ——
+    序列佇列原本帳號與帳號之間完全沒有間隔，實測 200 ms 一個。
+    """
+    slept: list[float] = []
+
+    async def fake_sleep(sec: float) -> None:
+        slept.append(sec)
+
+    cfg.fetch_account_delay_seconds = 1.5
+    queue = fq.FetchQueue(cfg=cfg, maker=None, autostart=False)
+
+    async def ok(*a, **kw):
+        return FetchResult(account="a")
+
+    monkeypatch.setattr(fq, "fetch_account", ok)
+    monkeypatch.setattr(fq.FetchQueue, "_record", lambda self, *a, **kw: _noop())
+    monkeypatch.setattr(fq.asyncio, "sleep", fake_sleep)
+
+    queue.enqueue(target(acct="a"))
+    queue.enqueue(target(acct="b"))
+    await queue.run_all()
+    assert slept.count(1.5) == 2      # 每個 job 之後各一次
+
+    slept.clear()
+    cfg.fetch_account_delay_seconds = 0
+    queue2 = fq.FetchQueue(cfg=cfg, maker=None, autostart=False)
+    queue2.enqueue(target(acct="c"))
+    await queue2.run_all()
+    assert 0 not in slept             # 關掉就完全不等

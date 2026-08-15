@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..adapters import IdListSource, RemoteAccount, get_source_adapter
 from ..config import Config
 from ..db.models import Post
+from .identity import heal_placeholder_account
 from .ingest import ingest_posts
 
 log = logging.getLogger("snsmediadl.fetch")
@@ -126,6 +127,23 @@ async def fetch_account(
             else await adapter.resolve_account(client, host, acct)
         )
         result.account = account.screen_name
+
+        if user_id is None:
+            # 走名字解析代表 DB 裡那一列可能還帶著 `sn:` 哨符（匯入來的帳號
+            # 只有名字、沒有平台 id）。現在拿到真 id 了，**就地把那一列治好** ——
+            # 不做的話下一步的 ingest 會用真 id 新建第二列，把同一個人的記錄
+            # 劈成兩半：匯入來的貼文全留在哨符那一列，而畫面上看不出發生過這件事。
+            def _heal() -> None:
+                with maker() as session:
+                    healed = heal_placeholder_account(
+                        session, platform, host,
+                        screen_name=account.screen_name,
+                        real_id=account.platform_user_id,
+                    )
+                    if healed is not None:
+                        session.commit()
+
+            await asyncio.to_thread(_heal)
 
         if isinstance(adapter, IdListSource):
             await _fetch_by_id_list(

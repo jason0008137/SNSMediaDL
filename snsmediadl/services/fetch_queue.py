@@ -36,12 +36,39 @@ from ..db.enums import FetchStatus
 from ..db.models import Account
 from ..urls import Target
 from .fetch import fetch_account
+from .identity import is_placeholder
 
 log = logging.getLogger("snsmediadl.fetch")
 
 # 已結束的工作保留幾筆給介面看。批次跑完使用者要能逐筆檢查，
 # 但不需要無限累積。
 _HISTORY_LIMIT = 200
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """從錯誤回應裡挖出平台自己講的原因。挖不到就回空字串。
+
+    Misskey：`{"error": {"code": "...", "message": "..."}}`
+    Mastodon：`{"error": "...", "error_description": "..."}`
+
+    ⚠️ 這個函式**不可以拋例外**。它跑在錯誤處理路徑上，body 可能不是 JSON、
+    可能是一整頁 HTML、也可能是空的 —— 在這裡再炸一次會把原本那個
+    HTTPStatusError 蓋掉，使用者連狀態碼都看不到。
+    """
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 - 不是 JSON 就退回原始文字
+        text = (response.text or "").strip()
+        return text[:200]
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            parts = [str(err.get(k)) for k in ("code", "message") if err.get(k)]
+            return "：".join(parts)[:200]
+        if err:
+            desc = body.get("error_description")
+            return f"{err}{f'：{desc}' if desc else ''}"[:200]
+    return str(body)[:200]
 
 
 def can_fetch(platform: str) -> bool:
@@ -95,7 +122,14 @@ def plan_refresh(session: Any, cfg: Config, *, include_pixiv: bool = False) -> R
                 host=acc.instance_host,
                 acct=acc.screen_name or acc.platform_user_id,
             )
-            plan.targets.append((target, acc.platform_user_id))
+            # ⚠️ **哨符不可以拿去查平台。** `sn:<name>` 的意思是「還沒有真正的
+            # 平台 id」，把它塞進 `users/show {"userId": ...}` 只會拿到 400。
+            # 實測（正式庫，2026-08-15）：9 個 misskey 帳號裡有真 id 的那個成功、
+            # 8 個哨符全部 400 —— 當時被誤判成限速。
+            # 傳 None 就會改走名字解析，而查到的真 id 會由
+            # `identity.heal_placeholder_account` 就地寫回同一列。
+            user_id = None if is_placeholder(acc.platform_user_id) else acc.platform_user_id
+            plan.targets.append((target, user_id))
     return plan
 
 
@@ -264,6 +298,7 @@ class FetchQueue:
             job = self._pending.popleft()
             await self._process(job)
             done.append(job)
+            await self._pace()
         await self._drain()
         return done
 
@@ -295,8 +330,26 @@ class FetchQueue:
             job = self._pending.popleft()
             await self._process(job)
 
-            if not self._pending:
+            if self._pending:
+                await self._pace()
+            else:
                 await self._drain()
+
+    async def _pace(self) -> None:
+        """兩個帳號之間喘一口氣。
+
+        佇列本來就是序列的，但帳號與帳號之間**完全沒有間隔** —— 實測一批
+        misskey 帳號是 200 ms 一個。列舉的節流（`fetch_delay_seconds`）
+        只管同一個帳號的翻頁，管不到這裡。
+
+        ⚠️ **這不是那批 HTTP 400 的解方。** 那是拿 `sn:` 哨符當 userId 去查
+        造成的（見 `services/identity.py`），加多少延遲都不會變好。
+        這個延遲純粹是對站台的禮貌 —— 別讓「一鍵更新 442 個帳號」變成
+        對同一台伺服器的連續叩門。
+        """
+        delay = self.cfg.fetch_account_delay_seconds
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     async def _process(self, job: Job) -> None:
         limited = self._rate_limited.get((job.platform, job.host))
@@ -338,7 +391,11 @@ class FetchQueue:
                 job.error = f"找不到 {job.label}（404）—— 帳號可能改名或打錯字"
                 outcome = (FetchStatus.NOT_FOUND.value, job.error, None)
             else:
-                job.error = f"HTTP {code}：{job.label}"
+                # 平台在 body 裡講了為什麼，丟掉它等於逼使用者去猜。
+                # 這次就猜錯了：8 個 misskey 帳號回 400，被讀成「掃太快」，
+                # 實際上是拿 `sn:` 哨符當 userId 去查（見 services/identity.py）。
+                why = _error_detail(exc.response)
+                job.error = f"HTTP {code}：{job.label}" + (f" —— {why}" if why else "")
                 outcome = (FetchStatus.FAILED.value, job.error, None)
         except AuthRequired as exc:
             job.state = "failed"
