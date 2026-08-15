@@ -20,107 +20,155 @@
 </head>
 <body>
 
-<div id="safeBanner" class="safe-banner">工作安全模式：已排除 R18 內容</div>
+<!-- ⚠️ 這裡曾經有一條整頁寬的「工作安全模式：已排除 R18 內容」橫幅，2.0 刪掉。
+     三個理由：與 header 的開關重複、
+     它是媒體頁專屬狀態卻掛在每一頁、而且它答不出真正的問題（這一頁被濾掉幾筆）。
+     訊號方向也反了：**開著是預設與受保護的狀態，不需要一直喊；關著才是例外**。
+     所以現在改成安全模式「關閉時」才由 header 的開關本身變成警示樣式。 -->
 
 <header>
   <div class="brand">SNSMediaDL</div>
 
-  <nav class="tabs">
+  <!-- 一級導覽依**實際負載**排序，不依功能清單排序：
+       媒體 2,247,850 筆 / 帳號 4,653 筆 / 抓取歷來執行 0 次。
+       原本的 Creators（0 筆）與「問題」（失敗 0 筆）已降級 ——
+       前者進帳號頁的檢視切換與編輯抽屜，後者進 header 狀態區的 modal。
+       兩者都仍在 3 步內到得了（降級不是刪除，每個被降級的功能都算過步數）。 -->
+  <nav class="tabs" aria-label="主要導覽">
     <button class="tab active" data-view="media">媒體</button>
-    <button class="tab" data-view="fetch">抓取 <span id="fetchBadge" class="badge hidden">0</span></button>
     <button class="tab" data-view="accounts">帳號</button>
-    <button class="tab" data-view="creators">Creators</button>
-    <button class="tab" data-view="problems">問題 <span id="errBadge" class="badge hidden">0</span></button>
+    <button class="tab" data-view="fetch">抓取 <span id="fetchBadge" class="badge hidden">0</span></button>
   </nav>
 
-  <div class="queue" id="queue" title="佇列狀態"></div>
+  <div class="header-right">
+    <!-- 背景活動區：三條互不相干的流程各自一行（下載 worker / 抓取佇列 /
+         extension 採集）。閒置時要**明說閒置**，不能整條變空白 —— 空白看起來
+         像壞掉。 -->
+    <button id="activityBtn" class="activity" aria-expanded="false" aria-controls="activityPop">
+      <span class="dot" id="activityDot"></span>
+      <span id="activityLabel">背景活動</span>
+    </button>
+    <button id="settingsBtn" class="icon-btn" data-tip="設定">⚙<span class="sr-only">設定</span></button>
+    <!-- 產品層摩擦，不准精簡掉。aria-pressed 而不是 checkbox：它的兩個狀態
+         在視覺上差很多（關閉時是警示），用按鈕比較好講狀態。 -->
+    <button id="safeBtn" class="safe-toggle" aria-pressed="true"></button>
 
-  <label class="dl-toggle" id="dlToggleWrap"
-         title="背景自動下載：每 5 秒自己撿 pending 的媒體來抓。&#10;extension 的「送出並下載」是明確觸發（/api/queue/run），不受這個開關影響。">
-    <input type="checkbox" id="autoDownload">
-    <span id="dlLabel">背景下載：關</span>
-  </label>
-
-  <label class="safe-toggle">
-    <input type="checkbox" id="safeMode" checked>
-    <span>工作安全模式</span>
-  </label>
+    <div id="activityPop" class="activity-pop hidden">
+      <div class="flow" id="flowDownload"></div>
+      <div class="flow" id="flowFetch"></div>
+      <div class="flow" id="flowExt"></div>
+      <div class="flow-foot">
+        <span id="flowFailed" class="muted">失敗 —</span>
+        <span class="spacer"></span>
+        <button id="openProblems" class="ghost small">問題與日誌 ▸</button>
+      </div>
+    </div>
+  </div>
 </header>
 
 <!-- ── 媒體 ── -->
 <section id="view-media" class="view">
-  <div class="filters">
-    <!-- 可搜尋而不是 4,653 個 <option>：那種下拉沒有搜尋，只能滾，等於找不到。
-         用原生 datalist —— 鍵盤操作與無障礙由瀏覽器處理，自製只會更差。 -->
-    <input id="fAccountInput" list="fAccountList" type="search"
-           placeholder="帳號…（打字搜尋）" spellcheck="false" autocomplete="off">
-    <datalist id="fAccountList"></datalist>
-    <span id="fAccountHint" class="muted err"></span>
-    <select id="fCreator"><option value="">全部 creator</option></select>
-    <select id="fRating">
-      <option value="">全部分級</option>
-      <option value="sfw">sfw</option>
-      <option value="r18">r18</option>
-    </select>
-    <select id="fContent">
-      <option value="">全部類型</option>
-      <option value="illust">illust</option>
-      <option value="irl">irl</option>
-      <option value="mod">mod</option>
-      <option value="ai">ai</option>
-      <option value="3d">3d</option>
-      <option value="photograph">photograph</option>
-      <option value="other">other</option>
-    </select>
-    <select id="fKind">
-      <option value="">全部媒體</option>
-      <option value="photo">photo</option>
-      <option value="video">video</option>
-      <option value="animated_gif">animated_gif</option>
-    </select>
-    <select id="fStatus">
-      <option value="">全部狀態</option>
-      <option value="done">done</option>
-      <option value="pending">pending</option>
-      <option value="failed">failed</option>
-    </select>
-    <select id="fMinStars" title="五星評分，與 sfw/r18 分級無關">
-      <option value="">全部評分</option>
-      <option value="5">★★★★★</option>
-      <option value="4">★★★★ 以上</option>
-      <option value="3">★★★ 以上</option>
-      <option value="2">★★ 以上</option>
-      <option value="1">★ 以上（= 已評分）</option>
-    </select>
-    <select id="fSort" title="排序">
+  <div class="filter-bar">
+    <!-- 群 A「找誰的」。可搜尋而不是 4,653 個 <option>：那種下拉沒有搜尋，
+         只能滾，等於找不到。用原生 datalist —— 鍵盤操作與無障礙由瀏覽器處理。 -->
+    <div class="fgroup fgroup-who">
+      <input id="fAccountInput" list="fAccountList" type="search"
+             placeholder="🔍 帳號…（打字搜尋）" spellcheck="false" autocomplete="off">
+      <datalist id="fAccountList"></datalist>
+      <span id="fAccountHint" class="muted err"></span>
+    </div>
+
+    <!-- 群 B「找什麼」。這三個在真實資料上**有**鑑別力。 -->
+    <div class="fgroup">
+      <select id="fRating" aria-label="分級">
+        <option value="">全部分級</option>
+        <option value="sfw">sfw</option>
+        <option value="r18">r18</option>
+      </select>
+      <select id="fContent" aria-label="類型">
+        <option value="">全部類型</option>
+        <option value="illust">illust</option>
+        <option value="irl">irl</option>
+        <option value="mod">mod</option>
+        <option value="ai">ai</option>
+        <option value="3d">3d</option>
+        <option value="photograph">photograph</option>
+        <option value="other">other</option>
+      </select>
+      <select id="fKind" aria-label="型別">
+        <option value="">全部型別</option>
+        <option value="photo">photo</option>
+        <option value="video">video</option>
+        <option value="animated_gif">animated_gif</option>
+      </select>
+    </div>
+
+    <!-- 群 C：在真實資料上鑑別力為零的三個（creator 0 位、狀態全 done、
+         評分全 NULL）。**不是藏起來就算了** —— 空的下拉是「假預設用途」，
+         看起來可選、點開空無一物。這裡各自寫出為什麼是空的。 -->
+    <details class="fmore" id="fMore">
+      <summary>更多篩選</summary>
+      <div class="fmore-body">
+        <label class="fmore-row">
+          <span>creator</span>
+          <select id="fCreator"><option value="">全部 creator</option></select>
+          <em id="fCreatorNote" class="muted"></em>
+        </label>
+        <label class="fmore-row">
+          <span>下載狀態</span>
+          <select id="fStatus">
+            <option value="">全部狀態</option>
+            <option value="done">done</option>
+            <option value="pending">pending</option>
+            <option value="failed">failed</option>
+          </select>
+          <em id="fStatusNote" class="muted"></em>
+        </label>
+        <label class="fmore-row">
+          <span>評分</span>
+          <select id="fMinStars">
+            <option value="">全部評分</option>
+            <option value="5">★★★★★</option>
+            <option value="4">★★★★ 以上</option>
+            <option value="3">★★★ 以上</option>
+            <option value="2">★★ 以上</option>
+            <option value="1">★ 以上（= 已評分）</option>
+          </select>
+          <em id="fStarsNote" class="muted"></em>
+        </label>
+      </div>
+    </details>
+
+    <span class="spacer"></span>
+    <select id="fSort" data-tip="排序">
       <option value="newest">最新加入</option>
       <option value="oldest">最早加入</option>
       <option value="stars">評分高到低</option>
     </select>
-    <button id="fReset" class="ghost">清除篩選</button>
-    <button id="refresh" class="ghost" title="重新載入目前檢視（保留篩選與頁碼）">⟳ 重新整理</button>
+    <button id="refresh" class="ghost" data-tip="重新載入目前檢視&#10;（保留篩選與頁碼）">⟳</button>
     <button id="selectMode" class="ghost">選取模式</button>
-    <span class="spacer"></span>
-    <span id="mediaCount" class="muted"></span>
   </div>
 
-  <!-- 從帳號／creator 跳過來時顯示。光把下拉的值改掉不算數 ——
-       畫面整個換掉之後，使用者要一眼看出「現在只看得到這一個帳號」，
-       否則會以為媒體庫變小了。 -->
-  <div id="jumpChip" class="jump-chip hidden"></div>
+  <!-- 生效中的條件用**可移除標籤**呈現。現況要判斷「我在看哪一批」，得逐一
+       讀完 8 個下拉的當前值，而其中 3 個在真實資料上永遠是預設值。
+       標籤只顯示真正生效的條件，數量與長度都隨內容變動 —— 所以給它共域
+       （底板 + 邊框），不靠間距。 -->
+  <div id="chipBar" class="chip-bar hidden"></div>
+
+  <div id="mediaCount" class="count-line muted"></div>
 
   <div id="selBar" class="sel-bar hidden">
     <span id="selInfo">已選 0 個媒體</span>
     <button id="selAll" class="ghost">全選本頁</button>
     <button id="selNone" class="ghost">清除選取</button>
     <span class="spacer"></span>
-    <select id="bulkRating">
+    <select id="bulkRating" aria-label="批次分級">
       <option value="">分級…</option>
       <option value="sfw">sfw</option>
       <option value="r18">r18</option>
       <option value="__clear__">（清除）</option>
     </select>
-    <select id="bulkContent">
+    <select id="bulkContent" aria-label="批次類型">
       <option value="">類型…</option>
       <option value="illust">illust</option>
       <option value="irl">irl</option>
@@ -129,9 +177,9 @@
       <option value="3d">3d</option>
       <option value="photograph">photograph</option>
       <option value="other">other</option>
-      <option value="__clear__">（清除）</option>
     </select>
-    <select id="bulkStars" title="五星評分掛在媒體上，選幾個就改幾個（不像分級會影響整則貼文）">
+    <select id="bulkStars" aria-label="批次評分"
+            data-tip="五星評分掛在媒體上，選幾個就改幾個&#10;（不像分級會影響整則貼文）">
       <option value="">評分…</option>
       <option value="5">★★★★★</option>
       <option value="4">★★★★</option>
@@ -159,166 +207,188 @@
 </section>
 
 <!-- ── 帳號 ── -->
+<section id="view-accounts" class="view hidden">
+  <div class="filter-bar">
+    <!-- 4,653 筆 —— **搜尋是入口，清單不是**。給它最大寬度。 -->
+    <div class="fgroup fgroup-who">
+      <input id="aSearch" type="search" placeholder="🔍 搜尋帳號名稱或 ID…" spellcheck="false">
+    </div>
+
+    <div class="fgroup">
+      <select id="aSort" data-tip="排序方式">
+        <option value="favorite">我的最愛 → 評分</option>
+        <option value="stars">評分高到低</option>
+        <option value="name">名稱</option>
+        <option value="last_post">最後發文</option>
+        <option value="last_ingest">最後採集</option>
+        <option value="last_fetch">最久沒檢查</option>
+        <option value="media">媒體數</option>
+        <option value="posts">貼文數</option>
+        <option value="created">建檔時間</option>
+        <option value="id">加入順序</option>
+      </select>
+      <!-- 「（未設定）」放在值清單的最前面：「哪些我還沒標」才是主要用例。 -->
+      <select id="aDefaultRating" data-tip="帳號預設分級。會繼承給之後 ingest 的新貼文">
+        <option value="">預設分級：全部</option>
+        <option value="__unset__">（未設定）</option>
+        <option value="sfw">sfw</option>
+        <option value="r18">r18</option>
+      </select>
+      <select id="aDefaultContent" data-tip="帳號預設類型。會繼承給之後 ingest 的新貼文">
+        <option value="">預設類型：全部</option>
+        <option value="__unset__">（未設定）</option>
+        <option value="illust">illust</option>
+        <option value="irl">irl</option>
+        <option value="mod">mod</option>
+        <option value="ai">ai</option>
+        <option value="3d">3d</option>
+        <option value="photograph">photograph</option>
+        <option value="other">other</option>
+      </select>
+    </div>
+
+    <details class="fmore" id="aMore">
+      <summary>更多篩選</summary>
+      <div class="fmore-body">
+        <label class="fmore-row">
+          <span>我的最愛</span>
+          <label class="chk"><input type="checkbox" id="aFavOnly"> 只看 ♥</label>
+        </label>
+        <label class="fmore-row">
+          <span>評分</span>
+          <select id="aMinStars">
+            <option value="">全部評分</option>
+            <option value="5">★★★★★</option>
+            <option value="4">★★★★ 以上</option>
+            <option value="3">★★★ 以上</option>
+            <option value="2">★★ 以上</option>
+            <option value="1">★ 以上（= 已評分）</option>
+          </select>
+        </label>
+        <label class="fmore-row">
+          <span>擷取結果</span>
+          <select id="aFetchStatus">
+            <option value="">全部擷取狀態</option>
+            <option value="__bad__">只看抓取有問題的</option>
+            <option value="ok">ok（有新的）</option>
+            <option value="no_new">no_new（沒有新的）</option>
+            <option value="not_found">not_found（可能改名）</option>
+            <option value="rate_limited">rate_limited（被限速）</option>
+            <option value="auth_required">auth_required（憑證）</option>
+            <option value="failed">failed</option>
+            <option value="skipped">skipped</option>
+          </select>
+          <em id="aFetchNote" class="muted"></em>
+        </label>
+      </div>
+    </details>
+
+    <span class="spacer"></span>
+
+    <!-- 帳號與創作者是**同一份資料的兩種分組方式**，不是兩個工作面 ——
+         所以用 radio，不做成第四個 tab。 -->
+    <div class="viewmode" role="radiogroup" aria-label="檢視">
+      <span class="muted">檢視：</span>
+      <label class="chk"><input type="radio" name="aView" value="accounts" checked> 帳號</label>
+      <label class="chk"><input type="radio" name="aView" value="creators"> 創作者</label>
+    </div>
+  </div>
+
+  <div class="count-line muted">
+    <span id="accountCount"></span>
+    <span class="spacer"></span>
+    <!-- 同一個畫面上混用兩種儲存模型（♥★ 立即生效 vs 抽屜裡按儲存）
+         一定要宣告，否則使用者會不知道自己剛才那一下有沒有存進去。 -->
+    <span>♥ 與 ★ 點了<b>立即生效</b>；其餘設定在 [編輯] 裡按儲存</span>
+  </div>
+
+  <div id="accountPane">
+    <div id="accountList" class="cards"></div>
+    <div id="acctSentinel"></div>
+    <div class="pager">
+      <button id="aPrev" class="ghost">← 上一頁</button>
+      <span id="aPageInfo" class="muted"></span>
+      <button id="aNext" class="ghost">下一頁 →</button>
+    </div>
+  </div>
+
+  <div id="creatorPane" class="hidden">
+    <div id="creatorList" class="cards"></div>
+  </div>
+</section>
+
 <!-- ── 抓取 ── -->
 <section id="view-fetch" class="view hidden">
   <div class="fetch-grid">
     <div class="fetch-box">
-      <h2>貼網址批次抓</h2>
-      <p class="hint">
-        一行一個帳號網址（misskey.io / baraag.net / pixiv）。空白行與 <code>#</code> 開頭會略過。<br>
-        其他 Fediverse 站台可用 <code>misskey|https://站台/@someone</code> 指定平台。<br>
-        <b>X 不能由 backend 抓</b>（公開 API 已關），那要用 Chrome extension。
-      </p>
-      <textarea id="fetchUrls" rows="8" spellcheck="false"
+      <h2>貼網址批次抓
+        <button class="hintbtn" data-tip="一行一個帳號網址（misskey.io / baraag.net / pixiv）。&#10;空白行與 # 開頭會略過。&#10;其他 Fediverse 站台可用 misskey|https://站台/@someone 指定平台。">?</button>
+      </h2>
+      <textarea id="fetchUrls" rows="7" spellcheck="false"
         placeholder="https://misskey.io/@someone&#10;https://baraag.net/@artist/media&#10;https://www.pixiv.net/users/12345"></textarea>
-      <div class="filters">
-        <button id="parseUrls">解析</button>
-        <button id="submitUrls" class="primary" disabled>送出</button>
-        <span class="spacer"></span>
+      <div class="fetch-actions">
         <label class="chk"><input type="checkbox" id="fetchDownload" checked> 抓完就下載</label>
-        <label class="chk" title="不因碰到已抓過的貼文就停。用於補抓中間漏掉的">
+        <label class="chk" data-tip="不因碰到已抓過的貼文就停。&#10;用於補抓中間漏掉的">
           <input type="checkbox" id="fetchFull"> 完整重掃
         </label>
+        <span class="spacer"></span>
+        <!-- 「解析不寫入任何東西」貼著按鈕，**不進氣泡** ——
+             它是使用者敢不敢按下去的關鍵。 -->
+        <span class="muted">解析只是預覽，不寫入任何東西</span>
+        <button id="parseUrls">解析</button>
+        <button id="submitUrls" class="primary" disabled>送出</button>
       </div>
       <div id="parseResult" class="parse-result"></div>
     </div>
 
     <div class="fetch-box">
       <h2>一鍵更新</h2>
-      <p class="hint">
-        把資料庫裡<b>追蹤中</b>的帳號各跑一次增量 —— 只抓還沒抓過的。
-        已經跟上的帳號通常只發 1 個請求。
-      </p>
-      <div class="filters">
-        <button id="refreshAll" class="primary">一鍵更新</button>
-        <label class="chk" title="pixiv 節流很慢（1.8 秒一個請求、併發 1），一個帳號可能跑很久">
+      <p class="muted">把資料庫裡<b>追蹤中</b>的帳號各跑一次增量 —— 只抓還沒抓過的。</p>
+      <!-- D2：**90.5% 的帳號 backend 抓不動**。這不是邊緣情況，是多數情況，
+           所以在按下去之前就要看得見，不能等送出後逐筆報「跳過」。 -->
+      <div id="refreshScope" class="scope-box">計算中…</div>
+      <div class="fetch-actions">
+        <label class="chk" data-tip="pixiv 節流很慢（1.8 秒一個請求、併發 1）&#10;一個帳號可能跑很久">
           <input type="checkbox" id="includePixiv"> 包含 pixiv
         </label>
+        <span class="spacer"></span>
+        <button id="refreshAll" class="primary">開始更新</button>
       </div>
       <div id="refreshResult" class="parse-result"></div>
     </div>
   </div>
 
-  <h2>抓取佇列</h2>
-  <div class="filters">
+  <h2>抓取佇列
+    <button class="hintbtn" data-tip="佇列只在記憶體裡 —— backend 重啟就沒了。&#10;重跑的成本很低（增量），需要時再貼一次即可。">?</button>
+  </h2>
+
+  <!-- ③ 結果 + 評價。「跑完了算好還是壞」是這一頁最重要的一題，
+       只說「已排入 N 個」回答的是第 5 題，不是第 6 題。 -->
+  <div id="batchVerdict" class="verdict hidden"></div>
+
+  <div class="queue-summary">
     <span id="fetchQueueSummary" class="muted">—</span>
+    <span id="fetchVolatile" class="muted hidden">· 重啟後會清空</span>
     <span class="spacer"></span>
     <button id="clearFetchQueue" class="ghost">清空未開始的</button>
     <button id="clearRateLimit" class="ghost hidden">解除限速標記</button>
   </div>
-  <p class="hint">佇列只在記憶體裡 —— backend 重啟就沒了。重跑的成本很低（增量），需要時再貼一次即可。</p>
+  <div id="fetchProgress" class="progress hidden"><span></span></div>
   <div id="fetchQueue" class="fetch-jobs"></div>
 </section>
 
-<section id="view-accounts" class="view hidden">
-  <div class="filters">
-    <input id="aSearch" type="search" placeholder="搜尋帳號名稱或 ID…" spellcheck="false">
-    <select id="aSort" title="排序方式">
-      <option value="favorite">我的最愛 → 評分</option>
-      <option value="stars">評分高到低</option>
-      <option value="name">名稱</option>
-      <option value="last_post">最後發文</option>
-      <option value="last_ingest">最後採集</option>
-      <option value="last_fetch">最久沒檢查</option>
-      <option value="media">媒體數</option>
-      <option value="posts">貼文數</option>
-      <option value="created">建檔時間</option>
-      <option value="id">加入順序</option>
-    </select>
-    <label class="chk"><input type="checkbox" id="aFavOnly"> 只看 ♥</label>
-    <select id="aFetchStatus" title="最後一次擷取的結果">
-      <option value="">全部擷取狀態</option>
-      <option value="__bad__">只看抓取有問題的</option>
-      <option value="ok">ok（有新的）</option>
-      <option value="no_new">no_new（沒有新的）</option>
-      <option value="not_found">not_found（可能改名）</option>
-      <option value="rate_limited">rate_limited（被限速）</option>
-      <option value="auth_required">auth_required（憑證）</option>
-      <option value="failed">failed</option>
-      <option value="skipped">skipped</option>
-    </select>
-    <select id="aMinStars">
-      <option value="">全部評分</option>
-      <option value="5">★★★★★</option>
-      <option value="4">★★★★ 以上</option>
-      <option value="3">★★★ 以上</option>
-      <option value="2">★★ 以上</option>
-      <option value="1">★ 以上（= 已評分）</option>
-    </select>
-    <!-- 「（未設定）」放在值清單的最前面：正式庫 4,653 個帳號全部沒設過預設值，
-         「哪些我還沒標」才是主要用例，不是邊緣情況。 -->
-    <select id="aDefaultRating" title="帳號預設分級。會繼承給之後 ingest 的新貼文">
-      <option value="">預設分級：全部</option>
-      <option value="__unset__">（未設定）</option>
-      <option value="sfw">sfw</option>
-      <option value="r18">r18</option>
-    </select>
-    <select id="aDefaultContent" title="帳號預設類型。會繼承給之後 ingest 的新貼文">
-      <option value="">預設類型：全部</option>
-      <option value="__unset__">（未設定）</option>
-      <option value="illust">illust</option>
-      <option value="irl">irl</option>
-      <option value="mod">mod</option>
-      <option value="ai">ai</option>
-      <option value="3d">3d</option>
-      <option value="photograph">photograph</option>
-      <option value="other">other</option>
-    </select>
-    <span class="spacer"></span>
-    <span id="accountCount" class="muted"></span>
-  </div>
-  <p class="hint">
-    ♥ 與 ★ 點了<b>立即生效</b>，不用按存檔。<br>
-    設定帳號預設分級後，<b>只影響之後 ingest 的新貼文</b>，不會回溯既有貼文。要回溯請按「重標」。<br>
-    「最後發文」是作者最新一則貼文的時間，「最後採集」是我最近一次抓到東西的時間，
-    「最後檢查」是我最近一次<b>去問</b>的時間 —— 查了但對方沒發新的，只有「最後檢查」會動。
-  </p>
-  <div id="accountList" class="cards"></div>
-  <div class="pager">
-    <button id="aPrev" class="ghost">← 上一頁</button>
-    <span id="aPageInfo" class="muted"></span>
-    <button id="aNext" class="ghost">下一頁 →</button>
-  </div>
-</section>
-
-<!-- ── Creators ── -->
-<section id="view-creators" class="view hidden">
-  <div class="filters">
-    <input id="newCreator" placeholder="新 creator 名稱">
-    <button id="addCreator">建立</button>
-    <span class="spacer"></span>
-    <span class="muted">同一位作者的跨平台帳號與小帳都掛在同一個 creator 底下</span>
-  </div>
-  <div id="creatorList" class="cards"></div>
-</section>
-
-<!-- ── 問題 ── -->
-<section id="view-problems" class="view hidden">
-  <div class="filters">
-    <button id="retryAll">重試全部失敗</button>
-    <span class="spacer"></span>
-    <select id="logLevel">
-      <option value="">全部等級</option>
-      <option value="ERROR">ERROR</option>
-      <option value="WARNING">WARNING</option>
-      <option value="INFO">INFO</option>
-    </select>
-    <button id="refreshLogs" class="ghost">重新整理日誌</button>
-  </div>
-
-  <h2>下載失敗</h2>
-  <div id="errorList" class="errors"></div>
-
-  <h2>伺服器日誌</h2>
-  <pre id="logs" class="logs"></pre>
-</section>
-
-<!-- ── 詳情面板 ── -->
-<aside id="detail" class="detail hidden">
-  <button id="closeDetail" class="close">×</button>
+<!-- ── 媒體詳情面板 ── -->
+<aside id="detail" class="detail hidden" aria-label="媒體詳情">
+  <button id="closeDetail" class="close" data-tip="關閉（Esc）">×</button>
   <div id="detailBody"></div>
 </aside>
 
-<script src="app.js"></script>
+<!-- modal / 抽屜由 js/overlay.js 動態建立，這裡只留掛載點 —— 這樣「開啟時
+     背景不捲動」與 focus trap 可以集中處理，不必每個呼叫端各寫一次。 -->
+<div id="overlayRoot"></div>
+
+<!-- ES module。瀏覽器原生支援，仍然零建置流程。
+     type="module" 自帶 defer，所以 DOM 已就緒，模組頂層可以直接綁事件。 -->
+<script type="module" src="js/main.js"></script>
 </body>
 </html>

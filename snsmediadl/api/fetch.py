@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..adapters import IdListSource, get_source_adapter
+from ..adapters.pixiv import DETAIL_DELAY_SECONDS
 from ..config import Config
 from ..db.models import Account
 from ..services.fetch import fetch_account
@@ -124,7 +125,14 @@ def post_parse(
     """
     out = []
     for line in parse_lines(body.text):
-        item: dict = {"raw": line.raw, "duplicate": line.duplicate, "error": line.error}
+        item: dict = {
+            "raw": line.raw,
+            "duplicate": line.duplicate,
+            "error": line.error,
+            # 'x' / 'instagram'：貼對了但要換工具。介面要把它與「打錯字」
+            # 分成兩種結論 —— 正式庫 90.5% 的帳號是 X。
+            "unsupported_platform": line.unsupported_platform,
+        }
         if line.target is not None:
             existing = _existing_account(session, line.target)
             item["target"] = {
@@ -223,6 +231,43 @@ async def post_refresh_all(
         "jobs": queued,
         "skipped": plan.skipped,
         "skipped_counts": {k: len(v) for k, v in plan.skipped.items()},
+    }
+
+
+@router.get("/fetch/refresh-preview")
+def get_refresh_preview(
+    include_pixiv: bool = False,
+    session: Session = Depends(get_session),
+    cfg: Config = Depends(get_config),
+) -> dict:
+    """「一鍵更新」按下去會跑哪些帳號。**不排任何東西。**
+
+    存在的理由：一個以 X 為主的媒體庫裡，**多數帳號 backend 抓不動**
+    （X 的公開 API 已關，只能由 extension 在登入的頁面裡採集）。作者自己的
+    庫是 4,653 個帳號裡 4,211 個（90.5%）。那不是邊緣情況，是多數情況，
+    所以必須在按下去**之前**就講出來，而不是送出後才逐筆報「跳過」。
+
+    ⚠️ 走的是與真正執行時**同一個** `plan_refresh`。自己在這裡重寫一次分類
+    邏輯的話，兩邊會漂移，畫面上的「可抓 N 個」就會變成謊話。
+
+    `min_seconds` 是**下限**不是預估：每個帳號至少要一個請求，pixiv 的每個
+    請求至少 1.8 秒。實際上有新作品時每一件都要一個請求，會久很多 ——
+    介面必須照這個語意寫（「至少」），不可以拿它當完成時間。
+    """
+    plan = plan_refresh(session, cfg, include_pixiv=include_pixiv)
+    by_platform: dict[str, int] = {}
+    for target, _user_id in plan.targets:
+        by_platform[target.platform] = by_platform.get(target.platform, 0) + 1
+
+    min_seconds = sum(
+        (DETAIL_DELAY_SECONDS if platform == "pixiv" else cfg.fetch_delay_seconds) * n
+        for platform, n in by_platform.items()
+    )
+    return {
+        "fetchable": len(plan.targets),
+        "by_platform": by_platform,
+        "skipped": {k: len(v) for k, v in plan.skipped.items()},
+        "min_seconds": round(min_seconds),
     }
 
 

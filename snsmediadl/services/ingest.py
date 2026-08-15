@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -33,6 +34,45 @@ class IngestResult:
             "media_new": self.media_new,
             "account_id": self.account_id,
         }
+
+
+# ── extension 送進來的最後一筆 ──────────────────────────
+#
+# GUI 把背景活動分成三條互不相干的流程（下載 worker / 抓取佇列 / extension
+# 採集），第三條就是這裡。它要能說出自己的狀態，而在這之前**完全沒有任何
+# 地方記錄過它**：使用者無從分辨「extension 沒在送」與「送了但 backend 沒收到」。
+#
+# ⚠️ 只在記憶體裡，重啟就沒了 —— 與抓取佇列同樣是 volatile。介面必須講明
+# 這是「自 backend 啟動以來」，不可以在重啟後顯示成「從來沒有」。
+_last_ingest: dict[str, Any] | None = None
+
+
+def record_ingest(platform: str, screen_name: str | None, result: IngestResult) -> None:
+    """記下這一次採集。由 `POST /api/ingest`（extension 的入口）呼叫。"""
+    global _last_ingest
+    _last_ingest = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "platform": platform,
+        "screen_name": screen_name,
+        "posts_new": result.posts_new,
+        "media_new": result.media_new,
+    }
+
+
+def last_ingest() -> dict[str, Any] | None:
+    """自 backend 啟動以來，extension 最後一次送進來的東西。沒有就是 None。"""
+    return _last_ingest
+
+
+def reset_last_ingest() -> None:
+    """清掉那筆記錄。
+
+    給測試用：它是**行程層級**的狀態（與抓取佇列、`runner.last_run()` 一樣），
+    不歸任何一個 session 管，所以會跨測試殘留 —— 前一個測試 ingest 過，
+    下一個測試就看不到「還沒收到過」這個初始狀態，而那正是介面要講的話。
+    """
+    global _last_ingest
+    _last_ingest = None
 
 
 def resolve_rating(

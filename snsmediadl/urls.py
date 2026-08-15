@@ -24,14 +24,20 @@ KNOWN_HOSTS: dict[str, str] = {
     "www.pixiv.net": "pixiv",
 }
 
-# 認得但明確不支援。錯誤訊息一定要講替代方案 ——
+# 認得但明確不支援：host -> (平台名, 說明)。錯誤訊息一定要講替代方案 ——
 # 「不支援」而不說怎麼辦，使用者只會再貼一次。
-UNSUPPORTED_HOSTS: dict[str, str] = {
-    "x.com": "X 不能由 backend 抓（公開 API 已關閉），請用 Chrome extension 採集",
-    "twitter.com": "X 不能由 backend 抓（公開 API 已關閉），請用 Chrome extension 採集",
-    "mobile.twitter.com": "X 不能由 backend 抓（公開 API 已關閉），請用 Chrome extension 採集",
-    "instagram.com": "instagram 還沒做 —— 抓取路徑尚未 recon，目前沒有可用的 adapter",
-    "www.instagram.com": "instagram 還沒做 —— 抓取路徑尚未 recon，目前沒有可用的 adapter",
+#
+# 平台名要帶出來，是因為介面必須把「貼對了但要換工具」與「打錯字」分成
+# 兩種結論（正式庫 90.5% 的帳號是 X）—— 見 `UnsupportedTarget`。
+_X_MESSAGE = "X 不能由 backend 抓（公開 API 已關閉），請用 Chrome extension 採集"
+_IG_MESSAGE = "instagram 還沒做 —— 抓取路徑尚未 recon，目前沒有可用的 adapter"
+
+UNSUPPORTED_HOSTS: dict[str, tuple[str, str]] = {
+    "x.com": ("x", _X_MESSAGE),
+    "twitter.com": ("x", _X_MESSAGE),
+    "mobile.twitter.com": ("x", _X_MESSAGE),
+    "instagram.com": ("instagram", _IG_MESSAGE),
+    "www.instagram.com": ("instagram", _IG_MESSAGE),
 }
 
 # 用 @handle 當身分的平台（Fediverse）。pixiv 用數字 id。
@@ -48,6 +54,20 @@ _OVERRIDE = re.compile(r"^(?P<platform>[A-Za-z][A-Za-z0-9_]*)\|(?P<rest>.+)$")
 
 class ParseError(ValueError):
     """這一行看不懂或不支援。**訊息會直接顯示給使用者，要寫得可行動。**"""
+
+
+class UnsupportedTarget(ParseError):
+    """認得這個站台，但 backend 抓不動它（X、instagram）。
+
+    ⚠️ 與「看不懂這一行」分成兩個型別不是潔癖，是介面需求：解析結果表要能
+    把「網址貼對了，只是要換 extension」與「打錯字」講成兩種結論。
+    不分開的話，介面只能去比對錯誤訊息裡有沒有「extension」這個字 ——
+    那種比對會在改一次文案之後靜默失效。
+    """
+
+    def __init__(self, message: str, *, platform: str) -> None:
+        super().__init__(message)
+        self.platform = platform
 
 
 @dataclass(frozen=True)
@@ -79,6 +99,9 @@ class ParsedLine:
     error: str | None = None
     # 這一批裡前面已經出現過同一個目標
     duplicate: bool = False
+    # 認得的站台但 backend 抓不動（'x' / 'instagram'）。有值時 error 也有值 ——
+    # 兩者的差別是「這行沒救」還是「這行要換工具」。
+    unsupported_platform: str | None = None
 
 
 def _split_host(netloc: str) -> str:
@@ -165,7 +188,7 @@ def parse_target(line: str) -> Target:
         host = bare.group("host").lower()
         platform = forced or KNOWN_HOSTS.get(host)
         if platform is None:
-            raise ParseError(_unknown_host_message(host))
+            raise _unknown_host_error(host)
         if platform not in _FEDIVERSE:
             raise ParseError(f"{platform} 不吃 @帳號 形式，請用網址")
         return Target(platform=platform, host=host, acct=bare.group("name"))
@@ -180,7 +203,7 @@ def parse_target(line: str) -> Target:
 
     platform = forced or KNOWN_HOSTS.get(host)
     if platform is None:
-        raise ParseError(_unknown_host_message(host))
+        raise _unknown_host_error(host)
 
     segments = [s for s in parts.path.split("/") if s]
 
@@ -192,11 +215,12 @@ def parse_target(line: str) -> Target:
     )
 
 
-def _unknown_host_message(host: str) -> str:
+def _unknown_host_error(host: str) -> ParseError:
     known = UNSUPPORTED_HOSTS.get(host)
     if known:
-        return known
-    return (
+        platform, message = known
+        return UnsupportedTarget(message, platform=platform)
+    return ParseError(
         f"不認得 {host} —— 支援的站台：{', '.join(sorted(KNOWN_HOSTS))}。"
         f"其他 Fediverse 站台可以用 `misskey|https://{host}/@someone` 指定平台"
     )
@@ -216,6 +240,11 @@ def parse_lines(text: str) -> list[ParsedLine]:
             continue
         try:
             target = parse_target(stripped)
+        except UnsupportedTarget as exc:
+            # 認得的站台、抓不動 —— 與「看不懂」分開回報（見 UnsupportedTarget）
+            out.append(ParsedLine(
+                raw=stripped, error=str(exc), unsupported_platform=exc.platform))
+            continue
         except ParseError as exc:
             out.append(ParsedLine(raw=stripped, error=str(exc)))
             continue

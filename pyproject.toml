@@ -26,7 +26,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 include = ["snsmediadl*"]
 
 [tool.setuptools.package-data]
-snsmediadl = ["web/*.html", "web/*.css", "web/*.js"]
+snsmediadl = ["web/*.html", "web/*.css", "web/js/*.js", "web/js/views/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

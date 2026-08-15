@@ -14,6 +14,7 @@ from ..config import Config
 from ..db.enums import ContentType, FetchStatus, MediaStatus, Rating
 from ..db.models import Account, Creator, Media, Post
 from ..downloader import runner
+from ..services.ingest import last_ingest
 from . import logbuf
 from .app import get_config, get_maker, get_session, get_transport
 
@@ -528,15 +529,34 @@ def count_media(
     從 `/api/media` 拆出來的理由見那一支的說明。**這支很慢是預期中的**
     （正式庫上約 1.3 秒），所以呼叫端要非同步發、不要擋著畫面。
     """
-    stmt = _media_stmt(
+    def count(stmt) -> int:
+        return session.scalar(
+            select(func.count()).select_from(stmt.order_by(None).subquery())
+        ) or 0
+
+    total = count(_media_stmt(
         status=status, kind=kind, rating=rating, exclude_rating=exclude_rating,
         content_type=content_type, account_id=account_id, creator_id=creator_id,
         platform=platform, min_stars=min_stars,
-    )
-    total = session.scalar(
-        select(func.count()).select_from(stmt.order_by(None).subquery())
-    )
-    return {"total": total or 0}
+    ))
+
+    # ── 被安全模式擋掉幾筆 ──
+    #
+    # ⚠️ 這是**第二次 COUNT**，成本翻倍。所以只在 `total == 0` 時才算 ——
+    # 那正是使用者最困惑的時刻：帳號頁明明寫著「684 個媒體」，點進來卻是空的。
+    # 有結果的時候這個數字幫助有限，不值得再掃一次 224 萬列。
+    #
+    # 沒算的時候回 `None`，**不回 0** —— 0 的意思是「確定沒有被擋掉的」，
+    # 那是另一件事。呼叫端要能分辨「沒被擋」與「沒去算」。
+    hidden: int | None = None
+    if exclude_rating and total == 0:
+        hidden = count(_media_stmt(
+            status=status, kind=kind, rating=rating, exclude_rating=None,
+            content_type=content_type, account_id=account_id, creator_id=creator_id,
+            platform=platform, min_stars=min_stars,
+        ))
+
+    return {"total": total, "hidden_by_safe_mode": hidden}
 
 
 # 佇列真正在動的三個狀態。`done` 不在裡面 —— 見 `queue_status`。
@@ -584,6 +604,10 @@ def queue_status(session: Session = Depends(get_session)) -> dict:
     # 而 extension 的進度顯示必須知道該不該繼續等。
     counts["running"] = runner.is_running()
     counts["last_run"] = runner.last_run()
+    # 第三條背景流程（extension 採集）。GUI 的背景活動區要三條分列：
+    # 下載 worker、抓取佇列、extension 採集**互不相干**，任何一條在跑不代表
+    # 另外兩條也在跑 —— 共用一個數字會被讀成「系統的狀態」。
+    counts["last_ingest"] = last_ingest()
     return counts
 
 
@@ -662,10 +686,22 @@ def get_media_detail(
         raise HTTPException(status_code=404, detail="media not found")
 
     m, p, a = row
+    # 同一則貼文的其他張。分級掛在**貼文**上，所以詳情面板要讓使用者看得出
+    # 「改這裡會影響幾張」——正式庫單則貼文最多 **194 個媒體**，那不是理論值。
+    # 只回 id / 序號 / 型別：面板上是一排小按鈕，不需要整份 media_dict。
+    siblings = session.execute(
+        select(Media.id, Media.ordinal, Media.kind)
+        .where(Media.post_id == p.id)
+        .order_by(Media.ordinal, Media.id)
+    ).all()
     return {
         "media": _media_dict(m),
         "post": _post_dict(p),
         "account": _account_dict(a),
+        "siblings": [
+            {"id": sid, "ordinal": ordinal, "kind": kind}
+            for sid, ordinal, kind in siblings
+        ],
     }
 
 
@@ -750,6 +786,10 @@ def get_settings(cfg: Config = Depends(get_config)) -> dict:
         # 唯讀。這是「預設值應該是什麼」，改法是 config.toml + 重啟，
         # 不是執行期 PATCH（見 patch_settings 的說明）。
         "extra_media_roots": [str(p) for p in cfg.extra_media_roots],
+        # 設定面板要把「這些改不動、要編 config.toml 並重啟」講出來 ——
+        # 看得見的約束才不會被誤當成壞掉的控制項。
+        "thumb_root": str(cfg.thumb_dir),
+        "fetch_max_pages": cfg.fetch_max_pages,
     }
 
 

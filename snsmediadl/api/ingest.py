@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..services.ingest import ingest
+from ..services.ingest import ingest, record_ingest
 from .app import get_session
 
 router = APIRouter(prefix="/api", tags=["ingest"])
@@ -26,4 +26,6 @@ class IngestRequest(BaseModel):
 def post_ingest(body: IngestRequest, session: Session = Depends(get_session)) -> dict:
     """接收採集結果。只入庫排隊，不在 request 內下載。"""
     result = ingest(session, body.platform, body.posts, screen_name=body.screen_name)
+    # 記一筆給 GUI 的背景活動區看 —— 那是三條流程裡唯一沒有任何狀態來源的一條
+    record_ingest(body.platform, body.screen_name, result)
     return result.as_dict()

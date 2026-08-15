@@ -32,6 +32,21 @@ def _no_real_network(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
 
 
+@pytest.fixture(autouse=True)
+def _clean_process_state():
+    """清掉跨測試殘留的**行程層級**狀態。
+
+    `services.ingest` 記著「extension 最後一次送進來什麼」給 GUI 的背景活動區
+    看。它不歸任何一個 session 管，所以會跨測試留下來 —— 症狀是「還沒收到過」
+    這個初始狀態只有在單獨跑那個測試時才成立，整套一起跑就失敗。
+    """
+    from snsmediadl.services.ingest import reset_last_ingest
+
+    reset_last_ingest()
+    yield
+    reset_last_ingest()
+
+
 @pytest.fixture()
 def engine():
     eng = make_engine(url="sqlite:///:memory:")
@@ -60,5 +75,5 @@ def cfg(tmp_path) -> Config:
 
 @pytest.fixture()
 def sample_account() -> list[dict]:
-    """實測捕獲後去識別化的資料：4 posts / 6 media，含混合型別貼文。"""
+    """spike 實測捕獲的真實資料：4 posts / 6 media，含混合型別貼文。"""
     return json.loads((FIXTURES / "sample_account.json").read_text(encoding="utf-8"))
