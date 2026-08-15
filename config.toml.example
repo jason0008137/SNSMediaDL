@@ -31,6 +31,15 @@ extra_media_roots = [
   'D:\OldMedia\twitter',
 ]
 
+# 縮圖快取放哪。預設 `<output_root>/thumb`。
+#
+# GUI 的格線不吐原檔（一頁 60 格、原檔平均 600 KB），改吐 320px 的 WebP，
+# 第一次看到某張圖時生成、之後直接讀快取。整個目錄砍掉也不會掉資料，
+# 只是下次要重生一次。
+#
+# 想把它放到 SSD 上（媒體庫在慢碟時差很多）就設這一項。
+# thumb_root = 'C:\SNSMediaDL_thumb'
+
 # 檔名格式。可用 token：
 #   %date% %post_id% %ordinal% %ext% %platform% %user_screen_name% %kind%
 # filename_format = "[%date%] %post_id%_%ordinal%.%ext%"

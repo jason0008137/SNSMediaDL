@@ -5,14 +5,23 @@ const PAGE = 60;
 
 const state = {
   view: 'media',
-  offset: 0,
-  total: 0,
+  offset: 0,            // 只有 sort=stars 走 offset，其餘走 keyset
+  cursors: [null],      // keyset 游標堆疊，長度 = 目前第幾頁
+  hasMore: false,
+  nextCursor: null,
+  total: null,          // null = 還沒算出來。**不是 0**
   accounts: [],
+  accountOptions: [],   // 帳號篩選 datalist 目前的候選
+  accountFilter: '',    // 生效中的 account_id（'' = 全部）
   creators: [],
   items: [],              // 目前這頁的媒體，選取與 shift 範圍要用
   selecting: false,
   picked: new Set(),      // media id
   lastPickIndex: null,    // shift 範圍選取的錨點
+  acctOffset: 0,          // 帳號頁的分頁位移
+  acctTotal: 0,
+  fetchActive: false,     // 抓取佇列還有東西 → 輪詢要維持快節奏
+  loadingMedia: false,    // 格線載入中 → 翻頁要鎖住（游標還沒算出來）
 };
 
 // 安全模式預設開啟 —— 預設安全比預設方便重要。
@@ -74,9 +83,11 @@ function wireStars(root, onSet, onError) {
   });
 }
 
+// TB 是必要的，不是防禦性的：正式庫總計 1.27 TB。
+// 少了 TB 這一級，它會顯示成「1305.7 GB」—— 讀得懂但沒人看得快。
 const fmtBytes = (n) => {
   if (!n) return '—';
-  const u = ['B', 'KB', 'MB', 'GB'];
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
@@ -92,35 +103,43 @@ $('safeMode').addEventListener('change', (e) => {
   safeMode = e.target.checked;
   localStorage.setItem('safeMode', String(safeMode));
   applySafeMode();
-  state.offset = 0;
+  resetMediaPaging();
   loadMedia();
 });
 
 // ── 分頁切換 ───────────────────────────────────────────
+
+/** 切到某個 view。`load` 為 false 時只換畫面、不發請求。
+ *
+ *  ⚠️ `load: false` 是給「切過去之後馬上要用不同條件重載」的呼叫端用的
+ *  （例如從帳號頁跳過來看某個帳號）。少了它，切分頁會先用**舊條件**發一次
+ *  請求，然後才是新條件那一次 —— 兩個併發，先發的後到就會蓋掉正確結果。 */
+function showView(name, { load = true } = {}) {
+  document.querySelectorAll('.tab').forEach((b) =>
+    b.classList.toggle('active', b.dataset.view === name));
+  state.view = name;
+  document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
+  $(`view-${name}`).classList.remove('hidden');
+  if (!load) return;
+  if (name === 'media') loadMedia();
+  if (name === 'fetch') refreshFetchQueue();
+  if (name === 'accounts') loadAccounts();
+  if (name === 'creators') loadCreators();
+  if (name === 'problems') loadProblems();
+}
+
 document.querySelectorAll('.tab').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.view = btn.dataset.view;
-    document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
-    $(`view-${state.view}`).classList.remove('hidden');
-    if (state.view === 'media') loadMedia();
-    if (state.view === 'fetch') refreshFetchQueue();
-    if (state.view === 'accounts') loadAccounts();
-    if (state.view === 'creators') loadCreators();
-    if (state.view === 'problems') loadProblems();
-  });
+  btn.addEventListener('click', () => showView(btn.dataset.view));
 });
 
 // ── 媒體格線 ───────────────────────────────────────────
-function mediaQuery() {
+
+/** 只有篩選條件，不含分頁與排序。**清單與總數共用**，兩邊各組一次會對不上。 */
+function mediaFilters() {
   const p = new URLSearchParams();
-  p.set('limit', PAGE);
-  p.set('offset', state.offset);
   if (safeMode) p.set('exclude_rating', 'r18');
-  p.set('sort', $('fSort').value);
   const map = {
-    account_id: $('fAccount').value,
+    account_id: state.accountFilter,
     creator_id: $('fCreator').value,
     rating: $('fRating').value,
     content_type: $('fContent').value,
@@ -129,17 +148,76 @@ function mediaQuery() {
     min_stars: $('fMinStars').value,
   };
   for (const [k, v] of Object.entries(map)) if (v) p.set(k, v);
+  return p;
+}
+
+/** `sort=stars` 的排序鍵是 (stars, id) 複合又含 NULL，後端不支援 keyset。 */
+const usesKeyset = () => $('fSort').value !== 'stars';
+
+function mediaQuery() {
+  const p = mediaFilters();
+  p.set('limit', PAGE);
+  p.set('sort', $('fSort').value);
+  if (usesKeyset()) {
+    // 游標堆疊的最後一個 = 這一頁的起點。第一頁是 null（不帶游標）。
+    const cursor = state.cursors[state.cursors.length - 1];
+    if (cursor != null) p.set($('fSort').value === 'oldest' ? 'after_id' : 'before_id', cursor);
+  } else {
+    p.set('offset', state.offset);
+  }
   return p.toString();
 }
 
+// ── 總數：獨立、非阻塞、可取消 ─────────────────────────
+//
+// 總數在正式庫上要 1.3 秒（COUNT 掃 224 萬列，安全模式的 exclude_rating
+// 選擇性只有 5%，沒有索引救得了）。擋著畫面等它，等於為了一個「共 N 個」
+// 讓每次翻頁都卡 1.3 秒。
+//
+// ⚠️ 算不出來時**不顯示 0**。那是拿假資料填空窗，使用者會以為真的沒東西。
+
+let countAbort = null;
+
+async function refreshMediaCount() {
+  // 前一個還在跑就取消：慢的那個後到會蓋掉正確結果（換了篩選尤其明顯）
+  if (countAbort) countAbort.abort();
+  countAbort = new AbortController();
+  const signal = countAbort.signal;
+
+  $('mediaCount').textContent = '計算總數…';
+  $('mediaCount').className = 'muted';
+  try {
+    const data = await api(`/api/media/count?${mediaFilters()}`, { signal });
+    if (signal.aborted) return;
+    state.total = data.total;
+    $('mediaCount').textContent = `共 ${data.total.toLocaleString()} 個媒體`;
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    state.total = null;
+    $('mediaCount').textContent = `總數算不出來：${e.message}`;
+    $('mediaCount').className = 'muted err';
+  }
+}
+
+/** 影片與 ugoira 沒有縮圖（那要 ffmpeg）。格線顯示佔位，點開才載入播放器。 */
+const PLAYABLE = new Set(['video', 'animated_gif', 'ugoira']);
+
 function cellHtml(m) {
-  const isPhoto = m.kind === 'photo';
   const missing = m.status !== 'done';
-  const body = missing
-    ? `<div class="missing">${m.status === 'failed' ? '下載失敗' : '尚未下載'}</div>`
-    : isPhoto
-      ? `<img loading="lazy" src="/api/media/${m.id}/file" alt="" onerror="this.parentNode.innerHTML='&lt;div class=missing&gt;檔案遺失&lt;/div&gt;'">`
-      : `<video preload="metadata" muted src="/api/media/${m.id}/file"></video>`;
+  let body;
+  if (missing) {
+    body = `<div class="missing">${m.status === 'failed' ? '下載失敗' : '尚未下載'}</div>`;
+  } else if (PLAYABLE.has(m.kind)) {
+    // ⚠️ **刻意不建立 `<video>` 元素。**
+    // 舊版每格掛一個 `preload="metadata"`，一頁 60 格 = 60 次跨磁碟開檔讀
+    // moov box，而檔案散在三顆碟上。佔位只花一個 div。
+    body = `<div class="placeholder"><span class="play">▶</span>
+            <span class="sz">${fmtBytes(m.bytes)}</span></div>`;
+  } else {
+    // src 留空，由 IntersectionObserver 在捲進視窗時才填（見 wireGridImages）。
+    // 縮圖是 320px WebP，不是原檔 —— 正式庫單檔最大 446 MB。
+    body = `<img class="thumb" alt="" data-src="/api/media/${m.id}/thumb">`;
+  }
 
   const rating = m.rating
     ? `<span class="tag ${m.rating === 'r18' ? 'r18' : ''}">${esc(m.rating)}</span>`
@@ -153,20 +231,145 @@ function cellHtml(m) {
   </div>`;
 }
 
-async function loadMedia() {
+// ── 格線圖片的延遲載入 ────────────────────────────────
+//
+// `loading="lazy"` 對「一次 60 格且大多在視窗內」幫助有限，瀏覽器仍會很早
+// 就全部排隊。用 IntersectionObserver 自己控，捲到才發請求。
+
+let gridObserver = null;
+
+function wireGridImages() {
+  if (gridObserver) gridObserver.disconnect();
+  gridObserver = new IntersectionObserver((entries, obs) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const img = e.target;
+      img.src = img.dataset.src;
+      img.onerror = () => {
+        // 縮圖失敗的原因要看得出來，不可以留一個破圖圖示了事：
+        // 404 = 檔案真的不見了；415 = 這格式生不出縮圖；500 = 原檔壞了。
+        img.replaceWith(Object.assign(document.createElement('div'), {
+          className: 'missing', textContent: '縮圖失敗',
+        }));
+      };
+      obs.unobserve(img);
+    }
+  }, { rootMargin: '200px' });   // 提前一點開始載，捲動時才不會看到空格
+
+  document.querySelectorAll('#grid img.thumb').forEach((img) => gridObserver.observe(img));
+}
+
+// ── 局部更新格線 ──────────────────────────────────────
+//
+// 詳情面板每存一次檔就重載整頁的話，就是每次都付一次查詢 + 一次 COUNT
+// （正式庫 1.3 秒）—— 而畫面上只有一格需要變。
+
+/** 更新某格的星星角標。 */
+function patchCellStars(mediaId, stars) {
+  const cell = document.querySelector(`.cell[data-id="${mediaId}"]`);
+  if (!cell) return;
+  cell.querySelector('.star-badge')?.remove();
+  // 未評分不顯示角標 —— 每格都掛一個空星星會讓整片格線變吵
+  if (stars) {
+    cell.insertAdjacentHTML('beforeend',
+      `<span class="star-badge">${'★'.repeat(stars)}</span>`);
+  }
+  const item = state.items.find((x) => x.id === mediaId);
+  if (item) item.stars = stars;
+}
+
+/** 更新同一則貼文的所有格子的分級標籤。分級掛在 post，會影響同則的每一張。 */
+function patchCellsForPost(postId, { rating }) {
+  const cells = document.querySelectorAll(`.cell[data-post="${postId}"]`);
+  for (const cell of cells) {
+    // 安全模式下標成 r18 就該從畫面消失 —— 那正是安全模式的意義。
+    // 移除而不是重載：重載會讓使用者正在看的位置整個跳掉。
+    if (safeMode && rating === 'r18') {
+      cell.remove();
+      if (state.total != null) {
+        state.total -= 1;
+        $('mediaCount').textContent = `共 ${state.total.toLocaleString()} 個媒體`;
+      }
+      continue;
+    }
+    cell.querySelector('.tag')?.remove();
+    if (rating) {
+      cell.insertAdjacentHTML('beforeend',
+        `<span class="tag ${rating === 'r18' ? 'r18' : ''}">${esc(rating)}</span>`);
+    }
+  }
+  if (!$('grid').querySelector('.cell')) {
+    // 整頁都被濾掉了。空白畫面看起來像壞掉，要講出發生了什麼。
+    $('grid').innerHTML =
+      '<p class="muted">本頁的媒體都被標記後隱藏了。按「重新整理」載入下一批。</p>';
+  }
+}
+
+/** 重設分頁狀態。改篩選／改排序／切安全模式時都要呼叫。 */
+function resetMediaPaging() {
+  state.cursors = [null];
+  state.offset = 0;
+}
+
+/** 空狀態。**要說出為什麼空，不能只說「沒有」。**
+ *
+ *  實測抓到的具體情境：帳號頁按下「684 個媒體」跳過來，畫面顯示「共 0 個媒體」。
+ *  那個 0 是對的 —— 那個帳號的 684 筆全是 r18，而工作安全模式開著。但使用者
+ *  剛剛才看到 684 這個數字，畫面卻空了，他只會覺得功能壞了。
+ *
+ *  這是評估鴻溝的缺口（Norman 的行動七階段）：顯示「0」只回答了「現在畫面上
+ *  是什麼」，回答不了「我剛做的事成功了嗎」與「這對我的目標是好是壞」。 */
+function emptyGridHtml() {
+  const hasFilter = [...mediaFilters().keys()].some((k) => k !== 'exclude_rating');
+  if (safeMode) {
+    return '<p class="muted">沒有符合條件的媒體。<br>'
+      + '<b>工作安全模式開著</b> —— 符合條件的 r18 內容不會顯示在這裡。'
+      + '關掉右上角的開關就看得到。</p>';
+  }
+  return hasFilter
+    ? '<p class="muted">沒有符合條件的媒體。試著放寬篩選條件。</p>'
+    : '<p class="muted">還沒有任何媒體。到「抓取」分頁貼幾個帳號網址開始。</p>';
+}
+
+// 請求序號。**慢的那個後到會蓋掉正確結果** —— 這不是理論問題：
+// 從帳號頁按「N 個媒體」時，切分頁本身會先發一次未篩選的請求（60 筆、要讀
+// 60 張縮圖），接著才是篩選後的請求（可能 0 筆、瞬間回來）。先發的後到，
+// 畫面就會停在**上一個帳號的內容**，而篩選標籤卻寫著新帳號。
+//
+// 總數那邊用 AbortController 解掉了同樣的問題；清單這邊用序號 ——
+// 因為要保留「已經回來的資料」判斷，不是單純取消。
+let mediaReqSeq = 0;
+
+/** 載入格線。`withCount` 為 false 時不重算總數（翻頁時總數沒變）。 */
+async function loadMedia({ withCount = true } = {}) {
+  if (!state.cursors) resetMediaPaging();
+  if (withCount) refreshMediaCount();   // 刻意不 await —— 畫面不等它
+
+  const seq = ++mediaReqSeq;
+  // 載入中就把翻頁鎖住（見 pageTurn）。用 disabled 而不是靜默忽略 ——
+  // 「按了沒反應」正是要避免的那種失敗。
+  state.loadingMedia = true;
+  $('prevPage').disabled = true;
+  $('nextPage').disabled = true;
   try {
     const data = await api(`/api/media?${mediaQuery()}`);
-    state.total = data.total;
+    if (seq !== mediaReqSeq) return;    // 有更新的請求出去了，這份已經過期
     state.items = data.items;
+    state.hasMore = data.has_more;
+    state.nextCursor = data.next_before_id ?? data.next_after_id ?? null;
     $('grid').innerHTML = data.items.length
       ? data.items.map(cellHtml).join('')
-      : '<p class="muted">沒有符合條件的媒體。</p>';
-    $('mediaCount').textContent = `共 ${data.total} 個媒體`;
-    const from = data.total ? state.offset + 1 : 0;
-    const to = Math.min(state.offset + PAGE, data.total);
-    $('pageInfo').textContent = `${from}–${to} / ${data.total}`;
-    $('prevPage').disabled = state.offset === 0;
-    $('nextPage').disabled = state.offset + PAGE >= data.total;
+      : emptyGridHtml();
+
+    // 頁碼用「第 N 頁」而不是「1–60 / 總數」—— keyset 分頁下 offset 不存在，
+    // 而總數是另一個請求、可能還沒到。硬要湊出 "x–y / z" 就得等總數，
+    // 那正是這次改動要消掉的等待。
+    const page = usesKeyset() ? state.cursors.length : Math.floor(state.offset / PAGE) + 1;
+    $('pageInfo').textContent = data.items.length
+      ? `第 ${page} 頁　本頁 ${data.items.length} 個`
+      : '沒有資料';
+    $('prevPage').disabled = usesKeyset() ? state.cursors.length <= 1 : state.offset === 0;
+    $('nextPage').disabled = !data.has_more;
 
     document.querySelectorAll('.cell').forEach((c, index) => {
       const id = Number(c.dataset.id);
@@ -176,9 +379,19 @@ async function loadMedia() {
         else showDetail(id);
       });
     });
+    wireGridImages();
     updateSelInfo();
   } catch (e) {
-    $('grid').innerHTML = `<p class="muted">載入失敗：${esc(e.message)}</p>`;
+    if (seq === mediaReqSeq) {
+      $('grid').innerHTML = `<p class="muted">載入失敗：${esc(e.message)}</p>`;
+      // 失敗也要把翻頁放開 —— 否則使用者被卡在一個壞掉的畫面上，
+      // 連退回上一頁都做不到
+      $('prevPage').disabled = usesKeyset() ? state.cursors.length <= 1 : !state.offset;
+      $('nextPage').disabled = false;
+    }
+  } finally {
+    // 只有最後一個請求負責解鎖 —— 舊的那個解鎖會讓還在飛的那次變成可按
+    if (seq === mediaReqSeq) state.loadingMedia = false;
   }
 }
 
@@ -336,32 +549,57 @@ $('bulkYes').addEventListener('click', async () => {
 
 $('refresh').addEventListener('click', () => loadMedia());
 
-const MEDIA_FILTERS = ['fAccount', 'fCreator', 'fRating', 'fContent', 'fKind', 'fStatus', 'fMinStars'];
+// fAccount 不在裡面 —— 它現在是可搜尋的 input，有自己的 handler（wireAccountPicker）
+const MEDIA_FILTERS = ['fCreator', 'fRating', 'fContent', 'fKind', 'fStatus', 'fMinStars'];
 
 MEDIA_FILTERS.forEach((id) =>
-  $(id).addEventListener('change', () => { state.offset = 0; loadMedia(); }));
+  $(id).addEventListener('change', () => { resetMediaPaging(); loadMedia(); }));
 
 $('fSort').addEventListener('change', () => {
   localStorage.setItem('mediaSort', $('fSort').value);
-  state.offset = 0;
+  resetMediaPaging();
   loadMedia();
 });
 
 $('fReset').addEventListener('click', () => {
   // 排序不是篩選 —— 「清除篩選」不該把使用者選的排序也一起打掉
   MEDIA_FILTERS.forEach((id) => { $(id).value = ''; });
-  state.offset = 0;
+  setAccountFilter('', '');
+  resetMediaPaging();
   loadMedia();
 });
 
-$('prevPage').addEventListener('click', () => {
-  state.offset = Math.max(0, state.offset - PAGE);
-  loadMedia();
-});
-$('nextPage').addEventListener('click', () => {
-  state.offset += PAGE;
-  loadMedia();
-});
+// 翻頁不重算總數 —— 條件沒變，總數就沒變，而它要 1.3 秒。
+//
+// ⚠️ **載入中不接受翻頁。** keyset 的下一頁游標是「這一頁最後一筆的 id」，
+// 而那個值要等回應回來才知道。上一頁還在飛的時候按下一頁，推進去的是
+// **上上頁**的游標 —— 實測結果是游標堆疊變成
+// `[null, 1273350, 1273290, 1273290, 1273290]`：頁碼顯示第 5 頁，畫面上是第 3 頁。
+//
+// 不用「排隊等一下再送」而是直接擋掉：使用者按了沒反應才是要避免的，
+// 所以按鈕會 disabled（看得出來不能按），而不是靜默忽略。
+function pageTurn(fn) {
+  if (state.loadingMedia) return;
+  fn();
+  loadMedia({ withCount: false });
+}
+
+$('prevPage').addEventListener('click', () => pageTurn(() => {
+  if (usesKeyset()) {
+    if (state.cursors.length > 1) state.cursors.pop();
+  } else {
+    state.offset = Math.max(0, state.offset - PAGE);
+  }
+}));
+
+$('nextPage').addEventListener('click', () => pageTurn(() => {
+  if (usesKeyset()) {
+    if (state.nextCursor == null) return;
+    state.cursors.push(state.nextCursor);
+  } else {
+    state.offset += PAGE;
+  }
+}));
 
 // ── 詳情面板 ───────────────────────────────────────────
 const RATINGS = ['', 'sfw', 'r18'];
@@ -443,7 +681,10 @@ async function showDetail(mediaId) {
       flash.textContent = '已儲存';
       flash.className = 'saved ok';
       setTimeout(() => { flash.textContent = ''; }, 1600);
-      loadMedia();   // 安全模式下標成 r18 應該立刻從格線消失
+      // 只更新受影響的格子，**不重載整頁**。
+      // 舊版在這裡呼叫 loadMedia()，等於每改一個下拉就重跑一次查詢 +
+      // 一次 COUNT（正式庫 1.3 秒）—— 而畫面上只有一格需要變。
+      patchCellsForPost(p.id, { rating: r.rating });
     } catch (e) {
       el.value = previous;   // 還原，不要讓畫面顯示一個沒存進去的值
       flash.textContent = `儲存失敗：${e.message}`;
@@ -466,8 +707,11 @@ async function showDetail(mediaId) {
       flash.textContent = '已儲存';
       flash.className = 'saved ok';
       setTimeout(() => { flash.textContent = ''; }, 1600);
-      // 格線上的星星角標要跟著更新；若正在依評分排序，順序也會變
-      loadMedia();
+      // 只更新這一格的星星角標。
+      // ⚠️ 依評分排序時，改了評分之後**順序其實已經不對了**。不自動重排是
+      // 刻意的：格子在腳下跳走比順序暫時不準更糟（見帳號頁 ♥ 的同款決定）。
+      // 使用者按「重新整理」就會重排。
+      patchCellStars(m.id, stars);
     },
     (e) => {
       $('dStarSaved').textContent = `儲存失敗：${e.message}`;
@@ -496,30 +740,137 @@ $('closeDetail').addEventListener('click', () => $('detail').classList.add('hidd
 
 // ── 帳號 ───────────────────────────────────────────────
 
-/** 媒體頁的「全部帳號」下拉。**必須是未經篩選的完整清單** ——
- *  跟帳號頁共用一次請求的話，帳號頁一搜尋，媒體頁的下拉就跟著少一半。 */
-async function loadAccountOptions() {
-  state.accounts = await api('/api/accounts?sort=name');
-  $('fAccount').innerHTML = '<option value="">全部帳號</option>'
-    + state.accounts.map((a) =>
-        `<option value="${a.id}">${esc(a.screen_name || a.platform_user_id)}</option>`).join('');
+// ── 媒體頁的帳號篩選：可搜尋，不預載 ─────────────────
+//
+// 舊做法是開頁時撈 2,000 個 <option> 塞進 `<select>`。兩個問題：
+//   1. 開頁就付一次請求（實測 85 ms）+ 2,000 個 DOM 節點
+//   2. 4,653 個帳號的下拉**本來就找不到東西** —— 沒有搜尋，只能滾
+//
+// 改成 `<input list>` + `<datalist>`：打字才查，一次最多 20 筆。
+// 用原生 datalist 而不是自製 combobox —— 鍵盤操作、無障礙、行動裝置
+// 都由瀏覽器處理好了，自己做只會做得比較差。
+
+let acctPickTimer = null;
+let acctPickAbort = null;
+
+/** 使用者選的帳號 id。datalist 選的是**顯示名稱**，要對回 id。 */
+function selectedAccountId() {
+  const typed = $('fAccountInput').value.trim();
+  if (!typed) return '';
+  const hit = state.accountOptions.find(
+    (a) => (a.screen_name || a.platform_user_id) === typed);
+  return hit ? String(hit.id) : '';
 }
+
+async function searchAccountOptions(q) {
+  if (acctPickAbort) acctPickAbort.abort();
+  acctPickAbort = new AbortController();
+  try {
+    // with_stats=false：這個下拉只要名字，聚合欄是純浪費
+    const list = await api(
+      `/api/accounts?sort=name&limit=20&with_stats=false&q=${encodeURIComponent(q)}`,
+      { signal: acctPickAbort.signal });
+    state.accountOptions = list;
+    $('fAccountList').innerHTML = list.map((a) =>
+      `<option value="${esc(a.screen_name || a.platform_user_id)}">`).join('');
+  } catch (e) {
+    if (e.name !== 'AbortError') $('fAccountList').innerHTML = '';
+  }
+}
+
+function wireAccountPicker() {
+  const input = $('fAccountInput');
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearTimeout(acctPickTimer);
+    // 清空 = 取消篩選，要立刻生效，不必等 debounce
+    if (!q) {
+      state.accountFilter = '';
+      resetMediaPaging();
+      loadMedia();
+      return;
+    }
+    acctPickTimer = setTimeout(() => searchAccountOptions(q), 250);
+  });
+  // 選定（或按 Enter）才套用篩選。每打一個字就重查媒體是沒必要的。
+  input.addEventListener('change', () => {
+    const id = selectedAccountId();
+    if (input.value.trim() && !id) {
+      // 打了字但沒對到任何帳號 —— 講出來，不要默默當成「全部帳號」
+      $('fAccountHint').textContent = '找不到這個帳號';
+      return;
+    }
+    $('fAccountHint').textContent = '';
+    state.accountFilter = id;
+    resetMediaPaging();
+    loadMedia();
+  });
+}
+
+/** 從別處（帳號頁的「看媒體」）跳過來時，把篩選設好並顯示出來。 */
+function setAccountFilter(accountId, label) {
+  state.accountFilter = accountId ? String(accountId) : '';
+  $('fAccountInput').value = label || '';
+  $('fAccountHint').textContent = '';
+}
+
+// 帳號頁一定要分頁。匯入舊資料後這個庫有 4,653 個帳號 ——
+// 一次渲染完整份會把瀏覽器凍住（實測 CDP 直接逾時）。
+const ACCT_PAGE = 100;
 
 function accountQuery() {
   const p = new URLSearchParams();
   p.set('sort', $('aSort').value);
+  p.set('limit', ACCT_PAGE);
+  p.set('offset', state.acctOffset);
   const q = $('aSearch').value.trim();
   if (q) p.set('q', q);
   if ($('aFavOnly').checked) p.set('favorite', 'true');
   if ($('aMinStars').value) p.set('min_stars', $('aMinStars').value);
+  // `__unset__` 直接原樣送 —— 空字串在 query string 裡與「不篩選」分不出來
+  if ($('aDefaultRating').value) p.set('default_rating', $('aDefaultRating').value);
+  if ($('aDefaultContent').value) {
+    p.set('default_content_type', $('aDefaultContent').value);
+  }
+  const fs = $('aFetchStatus').value;
+  // `__bad__` 展開成後端認得的多值。**不可以在前端濾** —— 前端只看得到
+  // 當頁的 100 筆，使用者會在一頁全是「從沒檢查過」的清單上看到 0 筆，
+  // 然後以為沒有任何帳號有問題。實測就是這樣錯的。
+  if (fs === '__bad__') p.set('fetch_status', FETCH_BAD.join(','));
+  else if (fs) p.set('fetch_status', fs);
   return p.toString();
+}
+
+// 非 ok/no_new 就是需要注意的狀態
+const FETCH_BAD = ['not_found', 'rate_limited', 'auth_required', 'failed'];
+
+const FETCH_LABEL = {
+  ok: '有新的', no_new: '沒有新的', not_found: '找不到（可能改名）',
+  rate_limited: '被限速', auth_required: '需要憑證', failed: '失敗', skipped: '已跳過',
+};
+
+function fetchBadge(a) {
+  if (!a.last_fetch_status) return '<span class="muted">從沒檢查過</span>';
+  const bad = FETCH_BAD.includes(a.last_fetch_status);
+  const n = a.last_fetch_new_posts;
+  const extra = a.last_fetch_status === 'ok' && n ? ` +${n}` : '';
+  return `<span class="fetch-badge${bad ? ' bad' : ''}" title="${esc(a.last_fetch_note || '')}">`
+    + `${esc(FETCH_LABEL[a.last_fetch_status] || a.last_fetch_status)}${extra}</span>`;
 }
 
 const fmtWhen = (iso) => (iso ? String(iso).slice(0, 10) : '—');
 
 async function loadAccounts() {
-  const list = await api(`/api/accounts?${accountQuery()}`);
-  $('accountCount').textContent = `${list.length} 個帳號`;
+  const res = await fetch(`/api/accounts?${accountQuery()}`);
+  if (!res.ok) throw new Error(`${res.status}`);
+  state.acctTotal = Number(res.headers.get('X-Total-Count') || 0);
+  const list = await res.json();
+  $('accountCount').textContent = `共 ${state.acctTotal} 個帳號`;
+  const from = state.acctTotal ? state.acctOffset + 1 : 0;
+  $('aPageInfo').textContent =
+    `${from}–${Math.min(state.acctOffset + ACCT_PAGE, state.acctTotal)} / ${state.acctTotal}`;
+  $('aPrev').disabled = state.acctOffset === 0;
+  $('aNext').disabled = state.acctOffset + ACCT_PAGE >= state.acctTotal;
   const creatorOpts = ['<option value="">（未歸屬）</option>']
     .concat(state.creators.map((c) => `<option value="${c.id}">${esc(c.display_name)}</option>`)).join('');
 
@@ -533,9 +884,15 @@ async function loadAccounts() {
       </div>
       <div class="muted">${esc(a.platform)} · id ${esc(a.platform_user_id)}</div>
       <div class="muted small">
-        ${a.post_count} 則貼文 · ${a.media_count} 個媒體 ·
+        ${a.post_count} 則貼文 ·
+        <button type="button" class="aViewMedia linkish"
+                ${a.media_count ? '' : 'disabled'}
+                title="${a.media_count
+                  ? '到媒體頁只看這個帳號'
+                  : '這個帳號還沒有任何媒體記錄'}">${a.media_count} 個媒體</button> ·
         最後發文 ${fmtWhen(a.last_post_at)} · 最後採集 ${fmtWhen(a.last_ingest_at)}
       </div>
+      <div class="muted small">最後檢查 ${fmtWhen(a.last_fetched_at)} ${fetchBadge(a)}</div>
       <div class="row">
         <select class="aRating">${opts(RATINGS, a.default_rating)}</select>
         <select class="aContent">${opts(CONTENTS, a.default_content_type)}</select>
@@ -571,6 +928,15 @@ async function loadAccounts() {
     // ♥ 與 ★ 立即送出，且**刻意不重新載入清單** —— 排序若是「我的最愛」，
     // reload 會讓剛按下的卡片瞬間跳到別的位置，滑鼠停在原處的使用者
     // 會以為自己點錯了。順序等下次切分頁或改條件時才更新。
+    // 「N 個媒體」本身就是入口 —— 使用者想看的正是那 N 個東西，
+    // 再多一顆「看媒體」按鈕只是把同一件事講兩次。
+    card.querySelector('.aViewMedia').addEventListener('click', () => {
+      jumpToMedia({
+        account: a.id,
+        label: a.screen_name || a.platform_user_id,
+      });
+    });
+
     const fav = card.querySelector('.fav');
     fav.addEventListener('click', async () => {
       const next = !a.is_favorite;
@@ -676,14 +1042,27 @@ async function loadAccounts() {
 let accountSearchTimer = null;
 $('aSearch').addEventListener('input', () => {
   clearTimeout(accountSearchTimer);
+  // 換了條件就回第一頁 —— 留在第 20 頁再篩選，多半會看到空白而以為壞了
+  state.acctOffset = 0;
   accountSearchTimer = setTimeout(loadAccounts, 250);
 });
 
-['aSort', 'aFavOnly', 'aMinStars'].forEach((id) =>
+['aSort', 'aFavOnly', 'aMinStars', 'aFetchStatus',
+ 'aDefaultRating', 'aDefaultContent'].forEach((id) =>
   $(id).addEventListener('change', () => {
     if (id === 'aSort') localStorage.setItem('accountSort', $('aSort').value);
+    state.acctOffset = 0;
     loadAccounts();
   }));
+
+$('aPrev').addEventListener('click', () => {
+  state.acctOffset = Math.max(0, state.acctOffset - ACCT_PAGE);
+  loadAccounts();
+});
+$('aNext').addEventListener('click', () => {
+  state.acctOffset += ACCT_PAGE;
+  loadAccounts();
+});
 
 // ── Creators ───────────────────────────────────────────
 async function loadCreators() {
@@ -701,17 +1080,53 @@ async function loadCreators() {
         ${c.accounts.map((a) => `<span class="pill">${esc(a.platform)} @${esc(a.screen_name || '?')}${a.role ? ` · ${esc(a.role)}` : ''}</span>`).join('') || '<span class="muted">尚未掛任何帳號</span>'}
       </div>
       <div class="row">
-        <button class="ghost cViewMedia" data-id="${c.id}">看全部作品</button>
+        <button class="ghost cViewMedia" data-id="${c.id}"
+                data-label="${esc(c.display_name)}">看全部作品</button>
       </div>
     </div>`).join('') || '<p class="muted">還沒有 creator。</p>';
 
   document.querySelectorAll('.cViewMedia').forEach((b) => {
-    b.addEventListener('click', () => {
-      document.querySelector('.tab[data-view="media"]').click();
-      $('fCreator').value = b.dataset.id;
-      state.offset = 0;
-      loadMedia();
-    });
+    b.addEventListener('click', () =>
+      jumpToMedia({ creator: b.dataset.id, label: b.dataset.label }));
+  });
+}
+
+// ── 跳到媒體頁並套上篩選 ──────────────────────────────
+//
+// ⚠️ 光是把下拉的值改掉**不算數**。使用者剛按的按鈕在另一個分頁上，
+// 跳過去之後畫面整個換掉 —— 他要能一眼看出「現在只看得到這個帳號的東西」，
+// 否則會以為媒體庫變小了 —— 他得看得出「我剛按的那下成功了嗎」。
+//
+// 所以除了套篩選，還要在篩選列上放一個講清楚的可移除標籤。
+
+function jumpToMedia({ account, creator, label }) {
+  // load: false —— 條件還沒設好，先發一次舊條件的請求純粹是浪費，
+  // 而且它會跟下面那次併發（見 showView 的說明）
+  showView('media', { load: false });
+
+  // 一次只套一種，另一種要清掉 —— 否則會疊加成「這個 creator 底下的這個帳號」，
+  // 而使用者沒有要求那個
+  $('fCreator').value = creator || '';
+  setAccountFilter(account || '', account ? label : '');
+
+  showJumpChip(label, account ? 'account' : 'creator');
+  resetMediaPaging();
+  loadMedia();
+}
+
+function showJumpChip(label, kind) {
+  const bar = $('jumpChip');
+  if (!label) { bar.innerHTML = ''; bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  bar.innerHTML = `<span class="chip">只看${kind === 'account' ? '帳號' : ' creator'}
+    <b>${esc(label)}</b><button type="button" id="jumpClear"
+    aria-label="取消這個篩選">×</button></span>`;
+  $('jumpClear').addEventListener('click', () => {
+    $('fCreator').value = '';
+    setAccountFilter('', '');
+    showJumpChip(null);
+    resetMediaPaging();
+    loadMedia();
   });
 }
 
@@ -780,15 +1195,20 @@ async function refreshQueue() {
     const parts = [];
     if (q.pending) parts.push(`<span class="pill pending">待下載 ${q.pending}</span>`);
     if (q.downloading) parts.push(`<span class="pill">下載中 ${q.downloading}</span>`);
-    parts.push(`<span class="pill done">完成 ${q.done}</span>`);
     if (q.failed) parts.push(`<span class="pill failed">失敗 ${q.failed}</span>`);
+    // 「完成 N」那顆藥丸拿掉了：N 是整個媒體庫的大小（正式庫 224 萬），
+    // 不是「這批完成幾個」，它回答不了任何決策，卻要 412 ms 去數。
+    // 佇列空的時候要明講是空的，不能整條列變空白 —— 那看起來像壞了。
+    if (!parts.length) parts.push('<span class="pill done">佇列空的</span>');
     $('queue').innerHTML = parts.join('');
 
     const badge = $('errBadge');
     badge.textContent = q.failed;
     badge.classList.toggle('hidden', !q.failed);
+    return q;      // 呼叫端用 active / running 決定下次多久再問
   } catch {
     $('queue').innerHTML = '<span class="pill failed">backend 無回應</span>';
+    return null;
   }
 }
 
@@ -956,6 +1376,8 @@ async function refreshFetchQueue() {
   }
   const c = st.counts;
   const active = c.queued + c.running;
+  // 輪詢節奏要看這個：抓取佇列有東西時，即使下載佇列是空的也得繼續盯
+  state.fetchActive = active > 0;
   $('fetchBadge').textContent = active;
   $('fetchBadge').classList.toggle('hidden', !active);
 
@@ -997,22 +1419,64 @@ $('clearRateLimit').addEventListener('click', async () => {
   refreshFetchQueue();
 });
 
+// ── 輪詢：有事才快，沒事就慢，看不到就停 ─────────────
+//
+// 舊做法是固定 `setInterval(refreshQueue, 5000)`，切到別的分頁也照跑。
+// 那支端點原本要 412 ms（現在 2 ms），但即使便宜了，對一個閒置的佇列
+// 每 5 秒問一次「有事嗎」仍然只是在燒電。
+//
+// 三段式：
+//   有東西在跑     → 3 秒（要看得到進度在動）
+//   全部閒置       → 30 秒
+//   分頁在背景     → 完全不問，切回來時立刻補一次
+
+const POLL_BUSY = 3000;
+const POLL_IDLE = 30000;
+let pollTimer = null;
+
+function scheduleNextPoll(delay) {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollOnce, delay);
+}
+
+async function pollOnce() {
+  if (document.hidden) return;          // 切回來時由 visibilitychange 接手
+  const [queue] = await Promise.all([
+    refreshQueue(),
+    // 抓取佇列只在記憶體裡，很便宜，但沒必要在背景一直跑
+    refreshFetchQueue(),
+  ]);
+  const busy = queue && (queue.active > 0 || queue.running);
+  scheduleNextPoll(busy || state.fetchActive ? POLL_BUSY : POLL_IDLE);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+  } else {
+    // 回到分頁的第一件事是把畫面補到最新 —— 使用者剛離開一段時間，
+    // 顯示的數字很可能已經過期
+    pollOnce();
+  }
+});
+
 // ── 啟動 ───────────────────────────────────────────────
 async function init() {
   applySafeMode();
   // 排序偏好記住。GUI 預設 favorite，而 API 預設是 id（= 舊行為，extension 靠它）
   $('aSort').value = localStorage.getItem('accountSort') || 'favorite';
   $('fSort').value = localStorage.getItem('mediaSort') || 'newest';
-  await loadSettings();
-  await loadCreators();
-  await loadAccountOptions();
-  await loadAccounts();
+
+  // 首屏只等媒體格線那一個請求。其餘並行且不擋畫面 ——
+  // 舊版序列 await 六個請求，最慢的那個決定了「開頁到看見東西」的時間。
+  wireAccountPicker();
+  const rest = Promise.all([
+    loadSettings(),
+    loadCreators(),
+    pollOnce(),
+  ]);
   await loadMedia();
-  await refreshQueue();
-  await refreshFetchQueue();
-  setInterval(refreshQueue, 5000);
-  // 抓取佇列跑得比下載慢，但進度要看得到在動
-  setInterval(refreshFetchQueue, 3000);
+  await rest;
 }
 
 init();

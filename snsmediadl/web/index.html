@@ -50,7 +50,12 @@
 <!-- ── 媒體 ── -->
 <section id="view-media" class="view">
   <div class="filters">
-    <select id="fAccount"><option value="">全部帳號</option></select>
+    <!-- 可搜尋而不是 4,653 個 <option>：那種下拉沒有搜尋，只能滾，等於找不到。
+         用原生 datalist —— 鍵盤操作與無障礙由瀏覽器處理，自製只會更差。 -->
+    <input id="fAccountInput" list="fAccountList" type="search"
+           placeholder="帳號…（打字搜尋）" spellcheck="false" autocomplete="off">
+    <datalist id="fAccountList"></datalist>
+    <span id="fAccountHint" class="muted err"></span>
     <select id="fCreator"><option value="">全部 creator</option></select>
     <select id="fRating">
       <option value="">全部分級</option>
@@ -98,6 +103,11 @@
     <span class="spacer"></span>
     <span id="mediaCount" class="muted"></span>
   </div>
+
+  <!-- 從帳號／creator 跳過來時顯示。光把下拉的值改掉不算數 ——
+       畫面整個換掉之後，使用者要一眼看出「現在只看得到這一個帳號」，
+       否則會以為媒體庫變小了。 -->
+  <div id="jumpChip" class="jump-chip hidden"></div>
 
   <div id="selBar" class="sel-bar hidden">
     <span id="selInfo">已選 0 個媒體</span>
@@ -209,12 +219,24 @@
       <option value="name">名稱</option>
       <option value="last_post">最後發文</option>
       <option value="last_ingest">最後採集</option>
+      <option value="last_fetch">最久沒檢查</option>
       <option value="media">媒體數</option>
       <option value="posts">貼文數</option>
       <option value="created">建檔時間</option>
       <option value="id">加入順序</option>
     </select>
     <label class="chk"><input type="checkbox" id="aFavOnly"> 只看 ♥</label>
+    <select id="aFetchStatus" title="最後一次擷取的結果">
+      <option value="">全部擷取狀態</option>
+      <option value="__bad__">只看抓取有問題的</option>
+      <option value="ok">ok（有新的）</option>
+      <option value="no_new">no_new（沒有新的）</option>
+      <option value="not_found">not_found（可能改名）</option>
+      <option value="rate_limited">rate_limited（被限速）</option>
+      <option value="auth_required">auth_required（憑證）</option>
+      <option value="failed">failed</option>
+      <option value="skipped">skipped</option>
+    </select>
     <select id="aMinStars">
       <option value="">全部評分</option>
       <option value="5">★★★★★</option>
@@ -223,15 +245,40 @@
       <option value="2">★★ 以上</option>
       <option value="1">★ 以上（= 已評分）</option>
     </select>
+    <!-- 「（未設定）」放在值清單的最前面：正式庫 4,653 個帳號全部沒設過預設值，
+         「哪些我還沒標」才是主要用例，不是邊緣情況。 -->
+    <select id="aDefaultRating" title="帳號預設分級。會繼承給之後 ingest 的新貼文">
+      <option value="">預設分級：全部</option>
+      <option value="__unset__">（未設定）</option>
+      <option value="sfw">sfw</option>
+      <option value="r18">r18</option>
+    </select>
+    <select id="aDefaultContent" title="帳號預設類型。會繼承給之後 ingest 的新貼文">
+      <option value="">預設類型：全部</option>
+      <option value="__unset__">（未設定）</option>
+      <option value="illust">illust</option>
+      <option value="irl">irl</option>
+      <option value="mod">mod</option>
+      <option value="ai">ai</option>
+      <option value="3d">3d</option>
+      <option value="photograph">photograph</option>
+      <option value="other">other</option>
+    </select>
     <span class="spacer"></span>
     <span id="accountCount" class="muted"></span>
   </div>
   <p class="hint">
     ♥ 與 ★ 點了<b>立即生效</b>，不用按存檔。<br>
     設定帳號預設分級後，<b>只影響之後 ingest 的新貼文</b>，不會回溯既有貼文。要回溯請按「重標」。<br>
-    「最後發文」是作者最新一則貼文的時間，「最後採集」是我最近一次抓到東西的時間 —— 兩者常常不同。
+    「最後發文」是作者最新一則貼文的時間，「最後採集」是我最近一次抓到東西的時間，
+    「最後檢查」是我最近一次<b>去問</b>的時間 —— 查了但對方沒發新的，只有「最後檢查」會動。
   </p>
   <div id="accountList" class="cards"></div>
+  <div class="pager">
+    <button id="aPrev" class="ghost">← 上一頁</button>
+    <span id="aPageInfo" class="muted"></span>
+    <button id="aNext" class="ghost">下一頁 →</button>
+  </div>
 </section>
 
 <!-- ── Creators ── -->

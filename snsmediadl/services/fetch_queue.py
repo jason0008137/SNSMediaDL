@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from sqlalchemy import select
 
 from ..adapters import AuthRequired, IdListSource, SourceAdapter, get_adapter
 from ..config import Config
+from ..db.enums import FetchStatus
 from ..db.models import Account
 from ..urls import Target
 from .fetch import fetch_account
@@ -303,6 +305,9 @@ class FetchQueue:
             job.reason = limited
             self._active.discard(job.key)
             self._remember(job)
+            # 跳過也算「這一輪碰過它了」—— 不記的話使用者看到的是
+            # 一個很久沒被檢查的帳號，卻不知道原因是站台被限速。
+            await self._record(job, FetchStatus.SKIPPED.value, limited, None)
             return
 
         job.state = "running"
@@ -315,6 +320,11 @@ class FetchQueue:
             )
             job.state = "done"
             job.result = result.as_dict()
+            # ok 與 no_new 分開：兩者都成功，但使用者要知道的是「有沒有
+            # 東西進來」。合成一個 ok 等於把答案藏起來。
+            status = (FetchStatus.OK.value if result.posts_new
+                      else FetchStatus.NO_NEW.value)
+            outcome = (status, result.stopped_because, result.posts_new)
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             job.state = "failed"
@@ -322,24 +332,72 @@ class FetchQueue:
                 why = "這個站台稍早回了 429（限速）—— 等一陣子再手動解除"
                 self._rate_limited[(job.platform, job.host)] = why
                 job.error = f"被限速（429）：{job.label}"
+                outcome = (FetchStatus.RATE_LIMITED.value, job.error, None)
             elif code == 404:
                 # 最常見的原因是帳號改名或打錯字。講出來，否則使用者只看到 404
                 job.error = f"找不到 {job.label}（404）—— 帳號可能改名或打錯字"
+                outcome = (FetchStatus.NOT_FOUND.value, job.error, None)
             else:
                 job.error = f"HTTP {code}：{job.label}"
+                outcome = (FetchStatus.FAILED.value, job.error, None)
         except AuthRequired as exc:
             job.state = "failed"
             job.error = str(exc)
+            outcome = (FetchStatus.AUTH_REQUIRED.value, job.error, None)
         except Exception as exc:  # noqa: BLE001 - 一筆失敗不可以停掉整批
             job.state = "failed"
             job.error = f"{type(exc).__name__}: {exc}"
+            outcome = (FetchStatus.FAILED.value, job.error, None)
         finally:
             self._running = None
             self._active.discard(job.key)
             self._remember(job)
 
+        # 失敗一樣要記 —— 那正是最需要被看見的一種。
+        await self._record(job, *outcome)
+
         if job.state == "failed":
             log.error("抓取失敗 %s：%s", job.label, job.error)
+
+    async def _record(
+        self, job: Job, status: str, note: str | None, new_posts: int | None
+    ) -> None:
+        """把這一輪的結果寫回 accounts。
+
+        **用自己的 session**，不搭 `fetch_account` 的便車：失敗路徑上那個
+        session 可能已經 rollback，而失敗恰恰是最需要被記下來的那一種。
+        """
+        def _write() -> None:
+            with self.maker() as session:
+                stmt = select(Account).where(
+                    Account.platform == job.platform,
+                    Account.instance_host == job.host,
+                )
+                # 有 user_id 就用它 —— 帳號會改名，screen_name 不是穩定鍵
+                if job.user_id:
+                    stmt = stmt.where(Account.platform_user_id == job.user_id)
+                else:
+                    stmt = stmt.where(Account.screen_name == job.acct)
+                acc = session.scalars(stmt).first()
+                if acc is None:
+                    # 出聲，不要靜默跳過。找不到通常代表 ingest 把它建成了
+                    # 另一列（例如 Fediverse 的 handle 被解析成真實數字 id，
+                    # 而 DB 裡原本是 `sn:` 暫代的那一列）—— 那是真的問題。
+                    log.warning(
+                        "記錄擷取結果時找不到帳號：%s（user_id=%s）",
+                        job.label, job.user_id,
+                    )
+                    return
+                acc.last_fetched_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                acc.last_fetch_status = status
+                acc.last_fetch_note = (note or None)
+                acc.last_fetch_new_posts = new_posts
+                session.commit()
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception:  # noqa: BLE001 - 記錄失敗不可以連帶弄垮抓取
+            log.exception("寫入擷取記錄失敗：%s", job.label)
 
     async def _drain(self) -> None:
         if not self._want_download:

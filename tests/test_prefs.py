@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from snsmediadl.api.app import create_app, get_session
 from snsmediadl.db.models import Account, Media, Post
+from snsmediadl.services import counters
 
 
 @pytest.fixture()
@@ -97,7 +98,7 @@ def test_media_min_stars_filter(client, loaded):
     got = {m["id"] for m in client.get("/api/media?min_stars=2").json()["items"]}
     assert got == {ids[0], ids[1]}
     # 未評分（NULL）不是 0 分，一律被濾掉
-    assert client.get("/api/media?min_stars=1").json()["total"] == 2
+    assert client.get("/api/media/count?min_stars=1").json()["total"] == 2
 
 
 def test_media_sort_by_stars_puts_unrated_last(client, loaded):
@@ -198,6 +199,10 @@ def many(session) -> dict[str, int]:
         for ordinal in range(i):
             session.add(Media(post_id=post.id, ordinal=ordinal, kind="photo",
                               source_url="https://example.invalid/x.jpg"))
+    # ⚠️ 這個 fixture 直接寫 Post / Media，繞過了 `services/ingest`。
+    # 聚合欄是去正規化的快取值 —— 繞過服務層就得自己重算，正式程式碼同理。
+    # 這一行不是測試的雜訊，它就是契約本身。
+    counters.recompute(session, ids.values())
     session.commit()
     return ids
 
@@ -320,3 +325,52 @@ def test_gui_query_strings_are_accepted(client, many, url):
     釘在後端簽名上。
     """
     assert client.get(url).status_code == 200
+
+
+# ------------------------------------------- 帳號預設值篩選
+
+def test_filter_by_default_rating(client, many, session):
+    """使用者需求：帳號頁要能依 default_rating / default_content_type 篩選。"""
+    from snsmediadl.db.models import Account
+
+    session.get(Account, many["alpha"]).default_rating = "r18"
+    session.get(Account, many["beta_art"]).default_rating = "sfw"
+    session.commit()
+
+    assert names(client, "?default_rating=r18") == ["alpha"]
+    assert names(client, "?default_rating=sfw") == ["beta_art"]
+
+
+def test_filter_unset_is_the_main_use_case(client, many, session):
+    """⚠️ 「還沒設過的」才是主要用例 —— 正式庫 4,653 個帳號全部沒設過。
+
+    NULL 用 `__unset__` 哨符，**不用空字串**：`?default_rating=` 與不帶參數
+    在 query string 裡長得一樣，分不出來的話這個功能根本表達不出來。
+    """
+    from snsmediadl.db.models import Account
+
+    session.get(Account, many["alpha"]).default_rating = "r18"
+    session.commit()
+
+    unset = names(client, "?default_rating=__unset__")
+    assert "alpha" not in unset
+    assert set(unset) == {"beta_art", "Gamma", "delta"}
+
+    # 空字串 = 不篩選，回全部
+    assert len(names(client, "?default_rating=")) == 4
+
+
+def test_filter_by_default_content_type(client, many, session):
+    from snsmediadl.db.models import Account
+
+    session.get(Account, many["delta"]).default_content_type = "illust"
+    session.commit()
+
+    assert names(client, "?default_content_type=illust") == ["delta"]
+    assert "delta" not in names(client, "?default_content_type=__unset__")
+
+
+def test_bad_default_value_is_422_not_silently_ignored(client, many):
+    """打錯字要炸，不可以默默當成「不篩選」—— 那看起來像篩選功能壞了。"""
+    assert client.get("/api/accounts?default_rating=nonsense").status_code == 422
+    assert client.get("/api/accounts?default_content_type=nope").status_code == 422

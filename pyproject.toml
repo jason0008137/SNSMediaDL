@@ -14,6 +14,8 @@ dependencies = [
     "alembic>=1.13",
     "httpx>=0.27",
     "pydantic>=2.6",
+    # 格線縮圖。沒有它，一頁 60 格要傳上百 MB 的原檔。
+    "Pillow>=10",
     "tomli>=2.0; python_version < '3.11'",
 ]
 

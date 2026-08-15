@@ -172,6 +172,19 @@ python -m snsmediadl.cli serve           # 啟動 API（預設 127.0.0.1:8765）
 python -m snsmediadl.cli delete-account <id>   # 刪帳號記錄（預設預演，--yes 才動手；不刪檔案）
 ```
 
+維護用：
+
+```bash
+python -m snsmediadl.cli backup          # 線上備份 API，跑著的時候也能備
+python -m snsmediadl.cli check-db        # 完整性檢查。只回報，不自動修
+python -m snsmediadl.cli analyze         # 更新 query planner 的統計（匯入大量資料後跑一次）
+python -m snsmediadl.cli recount-accounts          # 檢查帳號的貼文／媒體計數是否與真值一致
+python -m snsmediadl.cli recount-accounts --fix    # 不一致才重算寫回
+```
+
+`recount-accounts` 預設**只檢查**，發現不一致就列出來並以 exit code 1 結束 ——
+不會默默修正。計數對不上代表某個維護點漏了，那才是要修的東西。
+
 API 文件在 `http://127.0.0.1:8765/docs`。
 
 ## 設定

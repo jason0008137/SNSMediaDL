@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from ..db.enums import ContentType, Rating, RatingSource
@@ -120,6 +120,113 @@ def set_account_defaults(
         "default_rating": account.default_rating,
         "default_content_type": account.default_content_type,
         "note": "既有貼文不會被回溯；要回溯請呼叫 /api/accounts/{id}/retag",
+    }
+
+
+class DeriveIn(BaseModel):
+    # 預設不覆蓋既有值。已經設過的帳號多半是人工設的，不該被推導結果蓋掉。
+    overwrite: bool = False
+    dry_run: bool = False
+    account_id: int | None = None
+
+
+@router.post("/accounts/derive-defaults")
+def derive_account_defaults(
+    body: DeriveIn, session: Session = Depends(get_session)
+) -> dict:
+    """從帳號**自己的貼文**推導帳號預設值。
+
+    與 `/accounts/{id}/retag` 方向相反：那支是「帳號預設值 → 貼文」，
+    這支是「貼文 → 帳號預設值」。舊資料匯入之後貼文都標好了，但帳號層
+    全是空的 —— 而帳號層才是瀏覽時真正在用的篩選維度。
+
+    ⚠️ **分級只要出現過一次 r18 就標 r18**，不看比例。
+
+    這是刻意選的方向。`default_rating` 會被之後 ingest 的新貼文繼承：
+    把一個「99% sfw 但偶爾畫 r18」的作者標成 sfw，代價是他的新 r18 作品
+    在工作安全模式下直接出現在畫面上；反過來標成 r18 的代價只是被多藏起來，
+    看得見也改得回來。猜錯的方向不對稱，就往安全那邊倒。
+
+    實測資料：4,146 個帳號全 sfw、463 個全 r18，只有 31 個混合 ——
+    這條規則實際影響的是那 31 個。
+
+    類型取「出現最多次的那一種」，因為它沒有安全上的不對稱。
+    """
+    rating_expr = func.max(
+        case((Post.rating == Rating.R18.value, 1), else_=0)
+    )
+    stmt = (
+        select(
+            Post.account_id,
+            rating_expr.label("has_r18"),
+            func.max(case((Post.rating.is_not(None), 1), else_=0)).label("has_rating"),
+        )
+        .group_by(Post.account_id)
+    )
+    if body.account_id is not None:
+        stmt = stmt.where(Post.account_id == body.account_id)
+
+    ratings = {
+        aid: (Rating.R18.value if has_r18 else Rating.SFW.value)
+        for aid, has_r18, has_rating in session.execute(stmt)
+        if has_rating
+    }
+
+    # 類型取眾數。一次查完，不做 N+1。
+    ct_stmt = (
+        select(Post.account_id, Post.content_type, func.count().label("n"))
+        .where(Post.content_type.is_not(None))
+        .group_by(Post.account_id, Post.content_type)
+        .order_by(Post.account_id, func.count().desc())
+    )
+    if body.account_id is not None:
+        ct_stmt = ct_stmt.where(Post.account_id == body.account_id)
+    content: dict[int, str] = {}
+    for aid, ctype, _n in session.execute(ct_stmt):
+        content.setdefault(aid, ctype)      # 已依次數倒序，第一個就是眾數
+
+    acc_stmt = select(Account)
+    if body.account_id is not None:
+        acc_stmt = acc_stmt.where(Account.id == body.account_id)
+
+    changed = {"rating": 0, "content_type": 0}
+    mixed: list[str] = []
+    for acc in session.scalars(acc_stmt):
+        r, c = ratings.get(acc.id), content.get(acc.id)
+        if r and (body.overwrite or acc.default_rating is None):
+            if acc.default_rating != r:
+                acc.default_rating = r
+                changed["rating"] += 1
+        if c and (body.overwrite or acc.default_content_type is None):
+            if acc.default_content_type != c:
+                acc.default_content_type = c
+                changed["content_type"] += 1
+
+    # 哪些帳號其實是混合的 —— 使用者可能想手動覆寫那幾個
+    mixed_stmt = (
+        select(Account.screen_name)
+        .join(Post, Post.account_id == Account.id)
+        .group_by(Account.id)
+        .having(
+            func.max(case((Post.rating == Rating.R18.value, 1), else_=0)) == 1,
+            func.max(case((Post.rating == Rating.SFW.value, 1), else_=0)) == 1,
+        )
+    )
+    mixed = [n for (n,) in session.execute(mixed_stmt) if n]
+
+    if body.dry_run:
+        session.rollback()
+    else:
+        session.commit()
+
+    return {
+        "dry_run": body.dry_run,
+        "updated": changed,
+        "mixed_accounts": {
+            "n": len(mixed),
+            "note": "這些帳號同時有 sfw 與 r18 貼文，一律標成 r18（見端點說明）",
+            "sample": mixed[:20],
+        },
     }
 
 

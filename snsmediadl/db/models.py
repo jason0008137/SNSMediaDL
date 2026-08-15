@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -124,6 +125,44 @@ class Account(Base):
         Integer, _stars_check("accounts"), default=None
     )
 
+    # ── 最後一次擷取 ──
+    # ⚠️ 記的是**嘗試**不是成功。記成功時間的話，一個連續失敗三個月的帳號
+    # 會顯示「三個月前」，跟一個三個月沒查過的帳號無法區分 —— 而那正是
+    # 這幾個欄位要分辨的兩件事。
+    last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    last_fetch_status: Mapped[str | None] = mapped_column(
+        String(16),
+        CheckConstraint(
+            "last_fetch_status IS NULL OR last_fetch_status IN "
+            "('ok', 'no_new', 'rate_limited', 'not_found', 'auth_required',"
+            " 'failed', 'skipped')",
+            name="ck_last_fetch_status",
+        ),
+        default=None,
+    )
+    # stopped_because 或錯誤訊息原文。失敗的原因不記下來，帳號頁上就只剩
+    # 一個「失敗」，使用者無從知道是改名還是憑證過期。
+    last_fetch_note: Mapped[str | None] = mapped_column(Text, default=None)
+    last_fetch_new_posts: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    # ── 聚合欄（去正規化的快取值）──
+    #
+    # ⚠️ 這四個是**算出來的**，不是輸入的。真值永遠在 posts / media 那邊。
+    # 維護與檢查一律走 `services/counters.py`，不要在別處手動加減 ——
+    # 理由與實測數字寫在那個模組的 docstring。
+    #
+    # `snsmediadl recount-accounts --check` 會比對它們與真值。
+    post_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    media_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    # 作者最新一則貼文的時間。與 last_fetched_at 是兩件事：那個是「我何時查的」。
+    last_post_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    # 我最近一次**抓到新東西**的時間。查了但對方沒發新的不會動到它。
+    last_ingest_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
     creator: Mapped[Creator | None] = relationship(back_populates="accounts")
     posts: Mapped[list[Post]] = relationship(back_populates="account")
 
@@ -170,9 +209,18 @@ class Media(Base):
     __tablename__ = "media"
     __table_args__ = (
         UniqueConstraint("post_id", "ordinal", name="uq_media_post_ordinal"),
+        # ⚠️ 這三個索引的形狀是實測定下來的，改之前先讀
+        # `alembic/versions/f6a7b8c9d0e1_account_counters.py` 的 docstring。
+        #
+        # · status 保持**完整**索引：partial `WHERE status != 'done'` 會讓下載
+        #   worker 的 `status = 'pending'` 退回全表掃描（SQLite 不推論蘊含關係）
+        # · stars 保持**完整** `(stars, id)`：正式庫 224 萬列全是 NULL，改 partial
+        #   會讓索引變空，`ORDER BY stars` 從 1 ms 變成 2,140 ms
+        # · file_hash 可以 partial：只有等值比對，沒有 ORDER BY
         Index("ix_media_status", "status"),
-        Index("ix_media_hash", "file_hash"),
-        Index("ix_media_stars", "stars"),
+        Index("ix_media_hash", "file_hash",
+              sqlite_where=text("file_hash IS NOT NULL")),
+        Index("ix_media_stars", "stars", "id"),
         _check("kind", MediaKind, nullable=False),
         _check("status", MediaStatus, nullable=False),
     )

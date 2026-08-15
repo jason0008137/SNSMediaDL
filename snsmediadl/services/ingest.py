@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from ..adapters import NormalizedPost, get_adapter
 from ..db.enums import MediaStatus, Rating, RatingSource
 from ..db.models import Account, Media, Post
+from . import counters
 
 
 @dataclass
@@ -179,6 +180,15 @@ def ingest_posts(
                 )
             )
             result.media_new += 1
+
+    # 聚合欄重算。**在 commit 之前**，跟貼文寫入同一個交易 ——
+    # 分成兩個交易的話，中間 crash 會留下「貼文進去了但計數沒跟上」的狀態，
+    # 而那正是快取值失準最難查的成因。
+    #
+    # 重算而不是 `+= result.posts_new`：這批可能同時碰到多個帳號
+    # （`distinct_users`），而且部分貼文會因去重被跳過。重算不必配對，
+    # 算錯一次也會被下一次呼叫修好。
+    counters.recompute(session, [a.id for a in accounts.values()])
 
     session.commit()
     return result

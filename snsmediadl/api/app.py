@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import Config, ensure_output_root, load_config
+from ..db import recovery
 from ..db.session import make_engine
 from ..db.models import Base
 from ..services.fetch_queue import FetchQueue
@@ -158,6 +159,11 @@ def create_app(
             # 下載才發現。這裡會丟例外中斷啟動 —— 那是刻意的。
             _config.output_root = ensure_output_root(_config.output_root)
         log.info("SNSMediaDL 啟動，輸出目錄 %s", _config.output_root if _config else "?")
+        # crash 收拾：把卡在 downloading 的媒體打回 pending，並檢查完整性。
+        # 放在下載迴圈啟動**之前** —— 反過來的話 worker 可能先撿走一批，
+        # 回收就會把正在下載的那幾筆一起搶走。
+        assert _maker is not None
+        recovery.on_startup(engine, _maker)
         if _config is not None and _config.extra_media_roots:
             log.info(
                 "額外可讀取的媒體目錄：%s",
@@ -179,6 +185,8 @@ def create_app(
             yield
         finally:
             log.info("SNSMediaDL 停止")
+            # WAL 併回主檔並截斷。不做的話 WAL 會一路長大，而且沒有徵兆。
+            recovery.checkpoint_wal(engine)
             if _fetch_queue is not None:
                 await _fetch_queue.stop()
             if task is not None:

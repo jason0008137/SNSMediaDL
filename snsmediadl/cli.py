@@ -261,6 +261,95 @@ def cmd_status(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    """備份資料庫。走 SQLite 的線上備份 API，不是複製檔案。
+
+    WAL 模式下主檔可能落後於 WAL，`copy` 出來的備份會少掉最近的交易 ——
+    而且看起來完全正常，直到你真的需要它。
+    """
+    from .db import recovery
+
+    cfg, _maker = _bootstrap()
+    engine = make_engine(cfg)
+    target = recovery.backup(engine, cfg.db_path, tag=args.tag)
+    size_mb = target.stat().st_size / 1024 / 1024
+    print(f"已備份 → {target}（{size_mb:,.0f} MB）")
+    return 0
+
+
+def cmd_check_db(_args: argparse.Namespace) -> int:
+    """資料庫完整性檢查。**不自動修復** —— 損壞時要人來決定從哪個備份還原。"""
+    from .db import recovery
+
+    cfg, _maker = _bootstrap()
+    engine = make_engine(cfg)
+    result = recovery.quick_check(engine)
+    print(f"完整性檢查：{result}")
+    return 0 if result == "ok" else 1
+
+
+def cmd_analyze(_args: argparse.Namespace) -> int:
+    """跑 `ANALYZE`，讓 planner 有真實的資料分布統計。
+
+    一次性動作。資料量變化很大之後（例如剛匯入幾百萬筆）值得再跑一次。
+    """
+    cfg, _maker = _bootstrap()
+    engine = make_engine(cfg)
+    with engine.begin() as conn:
+        conn.exec_driver_sql("ANALYZE")
+    print("ANALYZE 完成，統計已寫入 sqlite_stat1。")
+    return 0
+
+
+def cmd_recount_accounts(args: argparse.Namespace) -> int:
+    """檢查（或修正）`accounts` 的聚合欄。
+
+    **`--check` 是預設，`--fix` 才會寫入。**
+
+    為什麼不做成「發現不一致就自動修好」：那等於把 bug 藏起來。
+    這四個欄位是快取值，不一致代表**某條寫入路徑漏了維護** ——
+    數字本身就是那條路徑存在的唯一線索。默默修掉，下次還是會偏，
+    而且永遠查不出是誰造成的。
+    """
+    from .services import counters
+
+    _cfg, maker = _bootstrap()
+    with maker() as session:
+        bad = counters.check(session)
+
+        if not bad:
+            print("聚合欄與真值一致。")
+            return 0
+
+        print(f"⚠️ {len(bad)} 個帳號的聚合欄與真值不一致：\n")
+        for row in bad[:args.limit]:
+            name = row["screen_name"] or f"id={row['id']}"
+            print(f"  account#{row['id']}　{name}")
+            for field, (cached, real) in row["diffs"].items():
+                print(f"    {field:16} 存的 {cached!r} → 真值 {real!r}")
+        if len(bad) > args.limit:
+            print(f"  …另有 {len(bad) - args.limit} 個（用 --limit 看更多）")
+
+        if not args.fix:
+            print("\n這是檢查，什麼都沒改。要重算請加 --fix。")
+            print("⚠️ 重算之前先想一下：是哪條寫入路徑漏了 counters.recompute()？")
+            # 非 0 退出 —— 這樣它才能被排進自動檢查而不是靠人記得看輸出
+            return 1
+
+        n = counters.recompute(session, [r["id"] for r in bad])
+        session.commit()
+        print(f"\n已重算 {n} 個帳號。")
+
+        left = counters.check(session)
+        if left:
+            # 重算完還是不對，那不是「漏了維護」而是定義本身有問題
+            print(f"❌ 重算後仍有 {len(left)} 個不一致 —— "
+                  "counters._exprs 與 migration 的 backfill 可能算法不同",
+                  file=sys.stderr)
+            return 2
+    return 0
+
+
 def cmd_delete_account(args: argparse.Namespace) -> int:
     """刪掉一個帳號的全部記錄。**dry-run 是預設，不是選項。**"""
     from .services import deletion
@@ -365,6 +454,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("status", help="佇列統計")
     st.set_defaults(func=cmd_status)
+
+    bk = sub.add_parser("backup", help="備份資料庫（線上備份 API，不是複製檔案）")
+    bk.add_argument("--tag", default="manual", help="備份檔名裡的用途標籤")
+    bk.set_defaults(func=cmd_backup)
+
+    ck = sub.add_parser("check-db", help="資料庫完整性檢查（不自動修復）")
+    ck.set_defaults(func=cmd_check_db)
+
+    an = sub.add_parser("analyze", help="跑 ANALYZE，更新 planner 的統計")
+    an.set_defaults(func=cmd_analyze)
+
+    rc = sub.add_parser(
+        "recount-accounts",
+        help="檢查 accounts 的聚合欄有沒有跟真值對上。預設只檢查不修正",
+    )
+    rc.add_argument(
+        "--fix", action="store_true",
+        help="真的重算寫回。不加這個就只是回報差異（不一致時 exit code 1）",
+    )
+    rc.add_argument("--limit", type=int, default=20, help="最多列出幾筆差異")
+    rc.set_defaults(func=cmd_recount_accounts)
 
     da = sub.add_parser(
         "delete-account",

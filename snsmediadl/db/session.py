@@ -25,6 +25,21 @@ def _configure_sqlite(dbapi_conn, _record) -> None:
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute("PRAGMA journal_mode=WAL")
+    # ── 以下三項是為了 700 MB 等級的正式庫調的 ──
+    #
+    # 預設 cache_size 是 -2000（2 MB）。正式庫 706 MB / 180,544 個 page，
+    # 2 MB 等於幾乎沒有快取，每次查詢都在打磁碟。
+    cur.execute("PRAGMA cache_size=-65536")      # 64 MB
+    # 單帳號媒體查詢會 `USE TEMP B-TREE FOR ORDER BY`。臨時表落磁碟很慢。
+    cur.execute("PRAGMA temp_store=MEMORY")
+    cur.execute("PRAGMA mmap_size=268435456")    # 256 MB
+    #
+    # ⛔ **不要加 `PRAGMA synchronous=NORMAL`。** 量測後否決，不是漏掉：
+    # 實測 FULL vs NORMAL 的差距是「使用者按一次星星 1.58 ms vs 0.12 ms」、
+    # 「ingest 一批 4.67 ms vs 2.39 ms」。省下的 1.5 ms 在 GUI 上量不出來，
+    # 而代價是 crash 時可能丟掉最後幾筆交易 —— 那幾筆恰好是使用者剛按下的
+    # 評分與分級，也就是全庫唯一**不可重建**的資料（採集資料重跑就回來了）。
+    # 同一個決定的另一半 —— crash 真的發生之後怎麼收拾 —— 見 `db/recovery.py`。
     cur.close()
 
 

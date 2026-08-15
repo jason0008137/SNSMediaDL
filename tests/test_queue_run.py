@@ -84,7 +84,10 @@ def test_run_downloads_with_auto_download_off(client, loaded):
 
     status = _wait_until_drained(client)
     assert status["pending"] == 0
-    assert status["done"] == 6
+    assert status["failed"] == 0
+    # `/api/queue/status` 不再數 done（那要掃全表，見該端點的說明）。
+    # 要確切知道抓成功幾個就打 count —— 那是明確的一次查詢，不是每 5 秒一次。
+    assert client.get("/api/media/count?status=done").json()["total"] == 6
 
 
 def test_run_writes_real_files(client, loaded, cfg):

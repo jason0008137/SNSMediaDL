@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from logging.config import fileConfig
 
 from alembic import context
@@ -67,8 +68,44 @@ def _assert_fk_intact(connection) -> None:
         )
 
 
+def _backup_before_upgrade(cfg) -> None:
+    """upgrade 之前自動備份。**不依賴人記得。**
+
+    這不是多餘的謹慎：本 repo 的 `_foreign_keys_off` docstring 記著一次真實
+    事故 —— `a1b2c3d4e5f6` 把 962 則 posts 與 1188 筆 media 整個 cascade 刪光，
+    而 migration 回報成功、沒有任何錯誤訊息。那次靠的是手動備份救回來的。
+
+    只在 upgrade 時備份。downgrade 與 `current` / `history` 這類唯讀指令不備 ——
+    每次查個版本號都複製 700 MB 是另一種災難。
+
+    設 `SNSMEDIADL_SKIP_MIGRATION_BACKUP=1` 可跳過（測試用；正式流程別關）。
+    """
+    import os
+
+    if os.environ.get("SNSMEDIADL_SKIP_MIGRATION_BACKUP") == "1":
+        return
+    if not cfg.db_path.exists():
+        return                        # 全新的庫，沒東西可備
+    # alembic 沒有把「這次是什麼指令」放進 context，只能看 argv。
+    # 只有 upgrade 才備份 —— downgrade 之前使用者本來就該自己備，而
+    # `current` / `history` 這類唯讀指令每次都複製 700 MB 是另一種災難。
+    if "upgrade" not in sys.argv:
+        return
+
+    from snsmediadl.db import recovery
+
+    probe = make_engine(cfg)
+    try:
+        target = recovery.backup(probe, cfg.db_path, tag="premigrate")
+        print(f"[alembic] 已自動備份 → {target}")
+    finally:
+        probe.dispose()
+
+
 def run_migrations_online() -> None:
-    engine = make_engine(load_config())
+    cfg = load_config()
+    _backup_before_upgrade(cfg)
+    engine = make_engine(cfg)
     event.listen(engine, "connect", _foreign_keys_off)
     with engine.connect() as connection:
         context.configure(

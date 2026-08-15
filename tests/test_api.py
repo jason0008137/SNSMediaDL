@@ -53,8 +53,21 @@ def test_ingest_is_idempotent(client, loaded, sample_account):
 def test_queue_status(client, loaded):
     body = client.get("/api/queue/status").json()
     assert body["pending"] == 6
-    assert body["done"] == 0
-    assert body["total"] == 6
+    assert body["downloading"] == 0
+    assert body["failed"] == 0
+    assert body["active"] == 6
+
+
+def test_queue_status_does_not_pretend_to_know_done(client, loaded):
+    """`done` 回 None（沒算），**不可回 0**。
+
+    0 是謊話 —— 正式庫有 224 萬筆 done。舊寫法為了數出那個數字要 412 ms，
+    每 5 秒繳一次，而它回答不了任何決策。
+    """
+    body = client.get("/api/queue/status").json()
+    assert body["done"] is None
+    assert body["total"] is None
+    assert body["done_exact"] is False
 
 
 def test_list_posts_and_media(client, loaded):
@@ -62,16 +75,64 @@ def test_list_posts_and_media(client, loaded):
     assert len(media_of(client)) == 6
 
 
-def test_pagination_reports_total(client, loaded):
-    """只回陣列的話，前端無從得知還有沒有下一頁。"""
+def test_pagination_reports_has_more(client, loaded):
+    """前端要能知道還有沒有下一頁 —— 但**不靠總數**。
+
+    總數在正式庫上要 1.3 秒（見 `list_media` 的說明），所以清單改回
+    `has_more`：多撈一筆就知道，不必數完整張表。
+    """
     body = client.get("/api/media?limit=2").json()
-    assert body["total"] == 6
+    assert body["has_more"] is True
     assert len(body["items"]) == 2
     assert body["limit"] == 2 and body["offset"] == 0
+    # 總數不再由這支回 —— 誤用舊欄位要壞得明顯，不要靜默變成 None
+    assert "total" not in body
 
     page2 = client.get("/api/media?limit=2&offset=2").json()
-    assert page2["total"] == 6
     assert {m["id"] for m in page2["items"]} & {m["id"] for m in body["items"]} == set()
+
+    last = client.get("/api/media?limit=2&offset=4").json()
+    assert last["has_more"] is False
+
+
+def test_media_count_is_a_separate_endpoint(client, loaded):
+    assert client.get("/api/media/count").json()["total"] == 6
+    # 篩選參數與清單完全相同，否則兩邊會對不上
+    assert client.get("/api/media/count?kind=photo").json()["total"] == \
+        len(client.get("/api/media?kind=photo&limit=500").json()["items"])
+
+
+def test_media_count_route_is_not_swallowed_by_media_id(client, loaded):
+    """`/api/media/count` 必須宣告在 `/api/media/{media_id}` 之前。
+
+    反過來的話 "count" 會被當成 media_id 去 parse int，回 422 —— 而且不會
+    fallthrough。這條測試就是釘住宣告順序。
+    """
+    assert client.get("/api/media/count").status_code == 200
+
+
+def test_media_keyset_pagination_walks_without_gaps(client, loaded):
+    """keyset 翻頁：不重複、不漏、能走到底。"""
+    all_ids = [m["id"] for m in client.get("/api/media?limit=500").json()["items"]]
+
+    seen, cursor = [], None
+    for _ in range(10):
+        url = "/api/media?limit=2" + (f"&before_id={cursor}" if cursor else "")
+        body = client.get(url).json()
+        seen += [m["id"] for m in body["items"]]
+        if not body["has_more"]:
+            break
+        cursor = body["next_before_id"]
+
+    assert seen == all_ids
+    assert len(seen) == len(set(seen))
+
+
+def test_media_keyset_rejects_conflicting_or_unsupported_cursors(client, loaded):
+    assert client.get("/api/media?before_id=1&after_id=2").status_code == 422
+    # sort=stars 的排序鍵是 (stars, id) 複合又含 NULL —— 不默默改用 offset，
+    # 那會讓呼叫端以為自己在做 keyset，翻頁時靜默跳筆。
+    assert client.get("/api/media?sort=stars&before_id=5").status_code == 422
 
 
 def test_media_detail_returns_media_post_and_account(client, loaded):
@@ -93,7 +154,7 @@ def test_media_detail_works_beyond_list_page_size(client, session):
     client.post("/api/ingest", json={"platform": "x", "screenName": "a",
                                      "posts": payload})
 
-    total = client.get("/api/media?limit=1").json()["total"]
+    total = client.get("/api/media/count").json()["total"]
     assert total == 600
 
     # 第一筆（最舊的，排序在 500 筆之外）仍然拿得到

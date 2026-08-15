@@ -80,3 +80,20 @@ class AccountRole(_Str):
     MAIN = "main"
     ALT = "alt"
     R18_ALT = "r18_alt"
+
+
+class FetchStatus(_Str):
+    """最後一次擷取的結果。
+
+    `OK` 與 `NO_NEW` 刻意分開：兩者都是「成功」，但使用者要知道的是
+    「有沒有東西進來」。合成一個 ok 就等於把答案藏起來 —— 而「查了但
+    對方沒發新的」正是這個功能要消除的疑惑。
+    """
+
+    OK = "ok"                      # 跑完，有新貼文
+    NO_NEW = "no_new"              # 跑完，沒有新的（增量立刻停）
+    RATE_LIMITED = "rate_limited"  # 429
+    NOT_FOUND = "not_found"        # 404 —— 帳號改名或打錯字
+    AUTH_REQUIRED = "auth_required"  # 憑證缺失或過期
+    FAILED = "failed"              # 其他例外
+    SKIPPED = "skipped"            # 該站台已被標記限速，這輪先跳過

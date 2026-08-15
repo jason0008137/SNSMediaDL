@@ -39,6 +39,15 @@ class Config:
     # 403 —— 檔案還在、DB 也對，只是看不到了。
     extra_media_roots: list[Path] = field(default_factory=list)
 
+    # 縮圖快取放哪。預設 `<output_root>/thumb`（見 `thumb_dir`）。
+    #
+    # 為什麼需要快取：格線一頁 60 格，原檔平均 600 KB、最大 446 MB ——
+    # 直接吐原檔是一頁上百 MB 的 I/O。縮成 320px WebP 之後一頁不到 1 MB。
+    #
+    # ⚠️ **按需生成，不做批次預生成。** 媒體檔散在三顆碟上共 224 萬個，
+    # 掃一遍的成本遠超過收益，而且那是使用者的媒體庫，不該由程式自行遍歷。
+    thumb_root: Path | None = None
+
     # 下載節流。數值取自使用者提供的 WFDownloader 設定 ——
     # X 超速會鎖整個帳號約一天，所以預設保守：同時 4 個、每次開始至少隔 1 秒。
     concurrency: int = 4
@@ -97,6 +106,15 @@ class Config:
         return f"sqlite:///{self.db_path}"
 
     @property
+    def thumb_dir(self) -> Path:
+        """縮圖快取目錄。預設 `<output_root>/thumb`。
+
+        ⚠️ 縮圖是**可重建的衍生物**，整個目錄刪掉不會損失任何資料，
+        下次瀏覽到會重新生成。備份時可以整個跳過。
+        """
+        return self.thumb_root or (self.output_root / "thumb")
+
+    @property
     def media_roots(self) -> list[Path]:
         """允許提供給前端的所有根目錄。白名單的唯一來源。
 
@@ -133,6 +151,15 @@ def ensure_output_root(root: Path) -> Path:
         raise RuntimeError(f"下載目錄不可寫：{root} —— {exc}") from exc
 
     return root.resolve()
+
+
+# 型別是 `Path | None` 的設定項。
+#
+# ⚠️ 載入器靠 `isinstance(current, Path)` 判斷要不要轉成 Path，而這些欄位的
+# 預設值是 `None` —— 判斷會失敗，值會被原封不動存成 str，然後在第一次拿去
+# 拼路徑時才炸（或更糟：`str + str` 拼出一個看起來對的錯路徑）。
+# 新增 `X | None` 的路徑設定時**必須**加進這裡。
+_OPTIONAL_PATH_FIELDS = frozenset({"thumb_root"})
 
 
 def _coerce(value: str, sample: object) -> object:
@@ -175,7 +202,7 @@ def load_config(config_file: Path | None = None) -> Config:
             if not hasattr(cfg, key):
                 raise ValueError(f"config.toml 有未知設定項: {key!r}")
             current = getattr(cfg, key)
-            if isinstance(current, Path):
+            if isinstance(current, Path) or key in _OPTIONAL_PATH_FIELDS:
                 value = Path(value)
             elif isinstance(current, list):
                 value = _parse_path_list(value)
@@ -186,7 +213,9 @@ def load_config(config_file: Path | None = None) -> Config:
         if env_key not in os.environ:
             continue
         current = getattr(cfg, key)
-        if isinstance(current, dict):
+        if key in _OPTIONAL_PATH_FIELDS:
+            setattr(cfg, key, Path(os.environ[env_key]))
+        elif isinstance(current, dict):
             # dict 型的設定（instance_tokens）用 `host=token,host2=token2`
             setattr(cfg, key, _parse_pairs(os.environ[env_key]))
         else:

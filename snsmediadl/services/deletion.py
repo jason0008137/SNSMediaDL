@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from ..db.enums import MediaStatus
 from ..db.models import Account, Media, Post
+from . import counters
 
 log = logging.getLogger("snsmediadl.deletion")
 
@@ -181,6 +182,8 @@ def delete_post(session: Session, post_id: int) -> DeletionSummary:
 
     session.execute(delete(Media).where(Media.post_id == post_id))
     session.execute(delete(Post).where(Post.id == post_id))
+    # 帳號留著，所以它的聚合欄要跟著縮。刪帳號那條不用 —— 帳號整列都沒了。
+    counters.recompute(session, [summary.account_id])
     session.commit()
 
     log.warning(
@@ -205,6 +208,11 @@ def delete_media(session: Session, media_id: int) -> DeletionSummary:
     )
     summary.warnings = _warnings(summary)
 
+    # 先問出所屬帳號 —— 刪掉之後就查不到了
+    account_id = session.scalar(
+        select(Post.account_id).where(Post.id == media.post_id)
+    )
     session.execute(delete(Media).where(Media.id == media_id))
+    counters.recompute(session, [account_id])
     session.commit()
     return summary
