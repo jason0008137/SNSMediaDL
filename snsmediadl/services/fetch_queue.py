@@ -373,6 +373,9 @@ class FetchQueue:
             )
             job.state = "done"
             job.result = result.as_dict()
+            # 解析出來的真 id 記回 job：`_record()` 要靠它找到 DB 那一列，
+            # 而批次抓新加的帳號一開始是沒有 user_id 的。
+            job.user_id = job.user_id or result.platform_user_id or None
             # ok 與 no_new 分開：兩者都成功，但使用者要知道的是「有沒有
             # 東西進來」。合成一個 ok 等於把答案藏起來。
             status = (FetchStatus.OK.value if result.posts_new
@@ -426,16 +429,32 @@ class FetchQueue:
         """
         def _write() -> None:
             with self.maker() as session:
-                stmt = select(Account).where(
+                base = select(Account).where(
                     Account.platform == job.platform,
                     Account.instance_host == job.host,
                 )
-                # 有 user_id 就用它 —— 帳號會改名，screen_name 不是穩定鍵
+                # 有 user_id 就**只**用它。帳號會改名，這是唯一穩定的鍵；
+                # 而且明確給了 id 卻改用名字比對，正是會把結果寫到別人那一列
+                # 的猜測（`sn:` 哨符那批就是這樣分裂的）。找不到要出聲。
                 if job.user_id:
-                    stmt = stmt.where(Account.platform_user_id == job.user_id)
+                    candidates = [Account.platform_user_id == job.user_id]
                 else:
-                    stmt = stmt.where(Account.screen_name == job.acct)
-                acc = session.scalars(stmt).first()
+                    # 沒有 id 的情況：抓取在解析出 id 之前就失敗了。
+                    # 依序試兩種「acct 是什麼」的可能，不用 OR ——
+                    # OR 可能同時命中兩列，那時挑哪一列是碰運氣。
+                    #   1. acct 是 handle：游標式平台（Fediverse）
+                    #   2. acct 是數字 id：**id 清單式平台（pixiv）**。
+                    #      它的 screen_name 是暱稱，拿 acct 去比對永遠不會中。
+                    candidates = [
+                        Account.screen_name == job.acct,
+                        Account.platform_user_id == job.acct,
+                    ]
+
+                acc = None
+                for cond in candidates:
+                    acc = session.scalars(base.where(cond)).first()
+                    if acc is not None:
+                        break
                 if acc is None:
                     # 出聲，不要靜默跳過。找不到通常代表 ingest 把它建成了
                     # 另一列（例如 Fediverse 的 handle 被解析成真實數字 id，

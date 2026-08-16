@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import ssl
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
@@ -52,6 +54,63 @@ class RateLimitPolicy:
 CONSERVATIVE_RATE_LIMIT = RateLimitPolicy()
 
 
+@dataclass(frozen=True)
+class ClientProfile:
+    """這個平台的 API 期待對面是**什麼樣的 HTTP 客戶端**。
+
+    ### 為什麼需要這個東西
+
+    2026-08-16 實測：`www.pixiv.net/ajax/*` 走在 Cloudflare 後面，會對
+    httpx 的預設連線回 **403 + `Just a moment...` 挑戰頁**。逐項對照實驗：
+
+    | 條件 | 結果 |
+    |------|------|
+    | 預設 SSLContext + 任何 User-Agent | 403 |
+    | ALPN 設成 `h2, http/1.1` | 沒有差別 |
+    | **Chrome 的 cipher 順序 + 瀏覽器 UA** | **200** |
+    | Chrome cipher 但 UA 是 `SNSMediaDL/0.1` | 403 |
+
+    也就是 Cloudflare 同時看 **TLS ClientHello 指紋（JA3）**與 User-Agent，
+    兩個條件缺一不可。系統 curl（Schannel）拿得到 200，Python 的 `ssl`
+    模組（OpenSSL）預設 cipher 順序拿不到 —— 差別就在這裡。
+
+    ### 為什麼不放在 `auth_headers`
+
+    這不是認證：沒有憑證的請求一樣被擋（實測未帶 cookie 也是 403）。
+    它是「連線長什麼樣」，與 `RateLimitPolicy` 同一個層級的平台屬性，
+    所以用同樣的形式 —— **每個 adapter 明寫，不給 getattr 預設**。
+
+    ### 只影響平台 API，不影響 CDN
+
+    `i.pximg.net` 用預設連線 + `SNSMediaDL/0.1` 抓得到（實測 17 MB 原圖 200）。
+    下載層維持原樣，**不要**把瀏覽器 UA 一起套過去 —— 那會讓「哪一層需要
+    偽裝」這件事變得看不出來。
+    """
+
+    user_agent: str = "SNSMediaDL/0.1"
+    # 回一個 SSLContext，或 None 代表用 httpx 的預設。
+    # 用 factory 而不是直接放 SSLContext：建構它要載入系統 CA store，
+    # 沒用到的平台不該在 import 時付這個成本。
+    ssl_context_factory: Callable[[], ssl.SSLContext] | None = None
+
+    def ssl_context(self) -> ssl.SSLContext | None:
+        return self.ssl_context_factory() if self.ssl_context_factory else None
+
+    def client_kwargs(self) -> dict[str, Any]:
+        """給 `httpx.AsyncClient(**...)`。
+
+        `verify` 只在真的有 context 時才給 —— httpx 的預設值是 `True`，
+        傳 `None` 會被當成「不驗證憑證」。
+        """
+        ctx = self.ssl_context()
+        return {"verify": ctx} if ctx is not None else {}
+
+
+# 預設 = 誠實地說自己是誰。**這才是預設值**，偽裝成瀏覽器是例外，
+# 而例外要在 adapter 上寫明理由（見 pixiv）。
+DEFAULT_CLIENT_PROFILE = ClientProfile()
+
+
 class NormalizedMedia(BaseModel):
     """單一媒體檔。kind 掛在這裡不掛 post —— 一則貼文可混合多種型別。"""
 
@@ -87,6 +146,10 @@ class PlatformAdapter(Protocol):
     # 429 政策。**每個 adapter 都要明寫**，不給 getattr 預設 ——
     # 忘了寫就應該在啟動時炸掉，而不是靜默套用別的平台的政策。
     rate_limit_policy: RateLimitPolicy
+
+    # 連線長什麼樣（User-Agent + TLS 指紋）。同樣每個 adapter 明寫，
+    # 理由與上面那條一樣：靜默套用別的平台的偽裝程度是錯的。
+    client_profile: ClientProfile
 
     def normalize(self, payload: Any) -> list[NormalizedPost]:
         """把採集到的原始 payload 轉成 domain 物件。"""

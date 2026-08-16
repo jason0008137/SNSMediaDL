@@ -1,9 +1,12 @@
 """pixiv adapter：id 清單列舉、多頁推導、動圖、增量、憑證。全部走 MockTransport。
 
 ⚠️ **這裡的 fixture 是手寫的，不是真實回應。**
-它們反映的是「PixivBatchDownloader 的原始碼說 pixiv 長這樣」，沒有一項在
-pixiv 本站驗證過。等自己打過一次真實 API 之後，要拿真實回應（塗掉憑證）
-回來換掉這些。
+它們反映的是「PixivBatchDownloader 的原始碼說 pixiv 長這樣」。
+
+2026-08-16 對真實 API 打過一次，對上了三件事：
+`profile/all` 的 `illusts` 字典 / `manga` 空陣列兩種形狀、`illust` 詳情的欄位名、
+以及 `i.pximg.net` 只要 Referer。**其餘仍未驗證** —— 尤其是多頁作品的
+`_p0` → `_pN` 推導與動圖的 `ugoira_meta`，那兩項還只是「PBD 這樣做」。
 
 在那之前，這些測試證明的是「程式碼照我們相信的形狀運作」，
 **不是**「程式碼能對付真的 pixiv」。
@@ -12,6 +15,7 @@ pixiv 本站驗證過。等自己打過一次真實 API 之後，要拿真實回
 from __future__ import annotations
 
 import dataclasses
+import ssl
 
 import httpx
 import pytest
@@ -153,6 +157,67 @@ def test_auth_headers_refuses_to_run_without_credentials(cfg):
 def test_auth_headers_use_php_session(cfg_pixiv):
     headers = PixivAdapter().auth_headers(cfg_pixiv, "")
     assert headers["Cookie"] == "PHPSESSID=fake-session-for-tests"
+
+
+def test_client_profile_disguises_only_the_api_layer():
+    """Cloudflare 擋的是**連線指紋**：UA 與 cipher 順序缺一就 403（2026-08-16 實測）。
+
+    這個測試釘住三件事，因為三件事都曾經是 403 的成因：
+      1. 列舉用的 UA 是瀏覽器（`SNSMediaDL/0.1` 會被擋）
+      2. 有自訂的 SSLContext，且 cipher 首選是 Chrome 的 TLS 1.3 套件
+      3. **CDN 那一層不偽裝** —— 憑證與偽裝都不該外溢到不需要的地方
+    """
+    adapter = PixivAdapter()
+    profile = adapter.client_profile
+
+    assert profile.user_agent.startswith("Mozilla/5.0")
+    ctx = profile.ssl_context()
+    assert ctx is not None
+
+    names = [c["name"] for c in ctx.get_ciphers()]
+    # ⚠️ TLS 1.3 的三個套件**排不動** —— Python 的 `set_ciphers()` 只管
+    # TLS 1.2 以下（1.3 要 `SSL_CTX_set_ciphersuites`，ssl 模組沒開放）。
+    # 真正改變指紋的是 1.2 的清單：Chrome 把 AES128 排在 AES256 前面，
+    # OpenSSL 預設相反。有人「順手整理」這串 cipher 就會變回 403。
+    non13 = [n for n in names if not n.startswith("TLS_")]
+    assert non13[0] == "ECDHE-ECDSA-AES128-GCM-SHA256"
+    assert names != [c["name"] for c in ssl.create_default_context().get_ciphers()]
+
+    # 憑證驗證沒有被關掉 —— 改的只有 cipher 順序
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    # 建一次就重複用
+    assert profile.ssl_context() is ctx
+
+    # CDN 走的是另一條路，維持誠實的身分（實測 `i.pximg.net` 不做指紋檢查）
+    assert adapter.download_headers(
+        "https://i.pximg.net/x.jpg")["User-Agent"] == "SNSMediaDL/0.1"
+
+
+def test_other_platforms_do_not_inherit_the_disguise():
+    """偽裝是 pixiv 的例外，不是全域預設。"""
+    for platform in ("misskey", "mastodon", "x"):
+        profile = get_adapter(platform).client_profile
+        assert profile.user_agent == "SNSMediaDL/0.1"
+        assert profile.ssl_context() is None
+        assert profile.client_kwargs() == {}
+
+
+async def test_enumeration_sends_the_browser_user_agent(cfg_pixiv, maker, fast_adapter):
+    """UA 要真的送出去 —— 之前 `services/fetch.py` 是寫死 `SNSMediaDL/0.1`。"""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("User-Agent", ""))
+        if request.url.path.endswith("/profile/all"):
+            return httpx.Response(200, json={"error": False,
+                                             "body": {"illusts": [], "manga": []}})
+        return httpx.Response(200, json={"error": False, "body": {
+            "userId": "9999", "name": "someone"}})
+
+    await fetch_account(cfg_pixiv, maker, platform="pixiv", host="",
+                        acct="9999", transport=httpx.MockTransport(handler))
+
+    assert seen and all(ua.startswith("Mozilla/5.0") for ua in seen)
 
 
 def test_estimate_seconds_counts_gaps_not_requests():

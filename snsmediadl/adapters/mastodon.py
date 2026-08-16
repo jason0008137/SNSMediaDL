@@ -18,6 +18,7 @@ import httpx
 from ..db.enums import MediaKind
 from .base import (
     CONSERVATIVE_RATE_LIMIT,
+    DEFAULT_CLIENT_PROFILE,
     AuthRequired,
     FetchPage,
     NormalizedMedia,
@@ -68,6 +69,10 @@ class MastodonAdapter:
     # 沒有實測過 Mastodon 的 429 行為，所以吃最保守的預設（停止不重試）。
     # 想放寬要先有實測，不是猜。
     rate_limit_policy = CONSERVATIVE_RATE_LIMIT
+
+    # 誠實表明身分即可 —— 這三個平台的 API 不做客戶端指紋檢查
+    # （只有 pixiv 需要偽裝，理由寫在它自己的 adapter 裡）。
+    client_profile = DEFAULT_CLIENT_PROFILE
 
     def auth_headers(self, cfg: Any, host: str) -> dict[str, str]:
         """Mastodon 吃 Bearer。公開內容不需要，baraag.net 之類的站台部分內容需要。

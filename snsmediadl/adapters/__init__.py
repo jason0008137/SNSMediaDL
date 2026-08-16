@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from .base import (
     CONSERVATIVE_RATE_LIMIT,
+    DEFAULT_CLIENT_PROFILE,
+    ClientProfile,
     AuthRequired,
     FetchPage,
     IdListSource,
@@ -65,6 +67,8 @@ def get_source_adapter(platform: str) -> SourceAdapter | IdListSource:
 
 __all__ = [
     "CONSERVATIVE_RATE_LIMIT",
+    "DEFAULT_CLIENT_PROFILE",
+    "ClientProfile",
     "AuthRequired",
     "FetchPage",
     "IdListSource",

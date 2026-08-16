@@ -210,10 +210,14 @@ async def _repair_url(
     （`www.pixiv.net`，要憑證），下載打的是 CDN（`i.pximg.net`，**不要憑證**）。
     這兩者的 header 不能混。
     """
-    headers = {"User-Agent": "SNSMediaDL/0.1"}
+    # 打的是平台 API，所以要用 adapter 的連線設定（pixiv 的 API 在
+    # Cloudflare 後面 —— 用預設連線會拿到 403 挑戰頁而不是 JSON）。
+    profile = adapter.client_profile
+    headers = {"User-Agent": profile.user_agent}
     headers.update(adapter.auth_headers(cfg, ""))
     async with httpx.AsyncClient(
-        transport=transport, timeout=cfg.timeout_seconds, headers=headers
+        transport=transport, timeout=cfg.timeout_seconds, headers=headers,
+        **profile.client_kwargs(),
     ) as api_client:
         return await adapter.repair_media_url(
             api_client, item.platform_media_key or "", item.source_url

@@ -75,7 +75,17 @@ def _resolve_media_file(media_id: int, session: Session, cfg: Config) -> Path:
     return path
 
 
-@router.get("/media/{media_id}/file")
+# ⚠️ **必須明寫 HEAD。** FastAPI 的 `@router.get` 只註冊 GET（與 Starlette 的
+# 裸 Route 不同，那個會自動補 HEAD）。少了它，HEAD 會一路掉到掛在 "/" 的
+# 靜態檔 mount，回一個 404 —— 而 GUI 正是用 HEAD 去問「讀不到的原因是什麼」：
+#   404 = 檔案不在了（被刪，或那顆碟沒插）
+#   415 = 這個格式生不出縮圖
+#   500 = 原檔壞了
+# 沒有 HEAD 的話這三種永遠都會被說成第一種，也就是**捏造診斷**。
+_FILE_METHODS = ["GET", "HEAD"]
+
+
+@router.api_route("/media/{media_id}/file", methods=_FILE_METHODS)
 def get_media_file(
     media_id: int,
     session: Session = Depends(get_session),
@@ -120,7 +130,7 @@ def _render_thumb(src: Path, dst: Path) -> None:
         tmp.replace(dst)
 
 
-@router.get("/media/{media_id}/thumb")
+@router.api_route("/media/{media_id}/thumb", methods=_FILE_METHODS)
 def get_media_thumb(
     media_id: int,
     session: Session = Depends(get_session),

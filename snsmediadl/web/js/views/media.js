@@ -5,6 +5,8 @@ import { api } from '../api.js';
 import { PAGE, state, safeMode, onSafeModeChange } from '../state.js';
 import { showView, invalidateView } from '../nav.js';
 import { RATINGS, CONTENTS, opts } from '../enums.js';
+import { pushDismissable } from '../overlay.js';
+import { openViewer } from '../viewer.js';
 
 // 安全模式的兩個控制項都在別處（header 與設定面板）。這裡只訂閱結果。
 // 人不在媒體頁時不必立刻重查 —— 但快取要作廢，否則切回來會看到一份
@@ -201,7 +203,7 @@ function cellHtml(m) {
   } else {
     // src 留空，由 IntersectionObserver 在捲進視窗時才填（見 wireGridImages）。
     // 縮圖是 320px WebP，不是原檔 —— 正式庫單檔最大 446 MB。
-    body = `<img class="thumb" alt="" data-src="/api/media/${m.id}/thumb">`;
+    body = `<img class="thumb" alt="" data-id="${m.id}" data-src="/api/media/${m.id}/thumb">`;
   }
 
   return `<div class="cell st-${esc(m.status)}" data-id="${m.id}" data-post="${m.post_id}">
@@ -236,25 +238,16 @@ function wireGridImages() {
       if (!e.isIntersecting) continue;
       const img = e.target;
       const url = img.dataset.src;
-      img.onerror = () => {
+      img.onerror = async () => {
         // 縮圖失敗的原因要看得出來，不可以留一個破圖圖示了事。
-        // `<img>` 的 error 事件**拿不到狀態碼**，所以補一次 HEAD 去問 ——
-        // 只有失敗的那幾格會付這個成本，而分辨得出來很重要：
-        //   404 = 這個路徑現在讀不到（檔案被刪了，**或是那顆碟沒插**）
-        //   415 = 這個格式生不出縮圖（影片）
-        //   500 = 原檔壞了
+        // 對照表在 dom.js 的 `fileErrorText()`，三個呼叫端共用同一份文案。
         // 「被刪了還是碟沒插」是系統模型那五題裡目前答不出來的第 4 題。
         const box = Object.assign(document.createElement('div'), {
           className: 'missing', textContent: '縮圖失敗',
         });
         img.replaceWith(box);
-        fetch(url, { method: 'HEAD' }).then((r) => {
-          box.textContent = {
-            404: '讀不到原檔\n（被刪除，或那顆碟沒插）',
-            415: '這個格式生不出縮圖',
-            500: '原檔壞了',
-          }[r.status] || `縮圖失敗（${r.status}）`;
-        }).catch(() => { /* 連 HEAD 都失敗就維持「縮圖失敗」 */ });
+        const why = await fileErrorText(Number(img.dataset.id), { thumb: true });
+        if (why) box.textContent = why;
       };
       img.src = url;
       obs.unobserve(img);
@@ -645,7 +638,7 @@ $('nextPage').addEventListener('click', () => pageTurn(() => {
  *
  *  ⚠️ 正式庫 163 萬則貼文的 `rating_source` 是 `manual`，但那是**匯入器寫的**，
  *  不是人工確認過的。直接顯示「manual」會讓使用者以為「我標過了，不用再看」。
- *  真正的修法是匯入器改寫一個 `import` 值 —— 那是資料層改動，另案處理，
+ *  真正的修法是匯入器改寫一個 `import` 值（那是資料層改動，尚未做），
  *  這裡先用不會騙人的文案。 */
 function sourceText(src) {
   if (!src) return '尚未標記';
@@ -655,8 +648,46 @@ function sourceText(src) {
   return src;
 }
 
+/** 自動播放前的大小上限。正式庫單檔最大 446 MB —— 一開詳情就自動開始傳
+ *  那種檔案，等於每點一次就吃掉幾百 MB 的磁碟與頻寬。 */
+const AUTOPLAY_MAX_BYTES = 50 * 1024 * 1024;
+
+/** 影片與動圖的預覽。
+ *
+ *  `animated_gif`（X 存成無聲 mp4）與 `ugoira`（pixiv 動圖）**語意上就是 GIF**：
+ *  自己循環播放、沒有控制列。給它們控制列反而不對。
+ *
+ *  真影片保留控制列，但一樣循環播放。
+ *
+ *  ⚠️ `muted` 不是可選的：沒有它 Chrome 會直接拒絕自動播放，症狀是
+ *  「有時候會播、有時候不會」—— 那比不會播更難查。 */
+function videoHtml(m) {
+  const gifLike = m.kind !== 'video';
+  const tooBig = (m.bytes || 0) > AUTOPLAY_MAX_BYTES;
+  const attrs = [
+    `src="/api/media/${m.id}/file"`,
+    'id="dPreview"',
+    'loop', 'muted', 'playsinline',
+    // 動圖不給控制列 —— 但**大到不自動播的時候一定要給**，
+    // 否則畫面上是一個沒有任何辦法播放的靜止畫格。
+    (!gifLike || tooBig) ? 'controls' : '',
+    tooBig ? 'preload="metadata"' : 'autoplay',
+  ].filter(Boolean).join(' ');
+  const note = tooBig
+    ? `<p class="note muted">檔案 ${fmtBytes(m.bytes)}，按播放才會開始載入。</p>`
+    : '';
+  return `<video ${attrs}></video>${note}`;
+}
+
+/** 詳情面板在關閉堆疊上的登記。開著的時候不是 null。
+ *
+ *  ⚠️ 換張（siblings）會重新呼叫 `showDetail()`，**不可以重複登記** ——
+ *  疊了兩層的話 Esc 要按兩次才關得掉，正是這次要修的症狀。 */
+let detailDismiss = null;
+
 export async function showDetail(mediaId) {
   $('detail').classList.remove('hidden');
+  detailDismiss = detailDismiss || pushDismissable({ close: closeDetail });
   $('detailBody').innerHTML = '<p class="muted">載入中…</p>';
 
   let detail;
@@ -675,8 +706,11 @@ export async function showDetail(mediaId) {
   // 「碟沒插」與「檔案被刪了」在畫面上長得一模一樣。至少要說讀不到。
   const preview = m.status === 'done'
     ? (m.kind === 'photo'
-        ? `<img src="/api/media/${m.id}/file" alt="" id="dPreview">`
-        : `<video src="/api/media/${m.id}/file" controls preload="metadata" id="dPreview"></video>`)
+        // tabindex + role：`<img>` 預設不可聚焦，於是「點圖放大」就只有滑鼠
+        // 能用，而且關閉檢視器後焦點無處可回。兩件事同一個修法。
+        ? `<img src="/api/media/${m.id}/file" alt="" id="dPreview" class="zoomable"
+                tabindex="0" role="button" aria-label="放大檢視">`
+        : videoHtml(m))
     : `<p class="muted">狀態：${esc(m.status)}${m.error ? `　${esc(m.error)}` : ''}</p>`;
 
   const link = acct?.screen_name
@@ -733,14 +767,28 @@ export async function showDetail(mediaId) {
     box.className = 'missing-preview';
     box.textContent = '讀不到原檔。';
     $('dPreview').replaceWith(box);
-    try {
-      const r = await fetch(`/api/media/${m.id}/file`, { method: 'HEAD' });
-      box.textContent = r.status === 404
-        ? '讀不到原檔（404）—— 檔案被刪除，或那顆碟沒插。'
-          + '\nDB 記的路徑是匯入當下記下的字串，沒有驗證過檔案還在不在。'
-        : `讀不到原檔（${r.status}）。`;
-    } catch { /* 連 HEAD 都失敗就維持第一句 */ }
+    // 問不出原因就維持第一句 —— 不編一個聽起來很具體的理由。
+    const why = await fileErrorText(m.id);
+    if (why) box.textContent = why;
   }, { once: true });
+
+  // 點預覽圖 → 放大檢視。**只掛在詳情面板這一層**：格線的點擊已經是
+  // 「開詳情」，再加一個手勢會兩者打架。
+  //
+  // 影片不掛：它的整個表面都是原生控制列，點下去應該是播放／暫停。
+  if (m.kind === 'photo' && m.status === 'done') {
+    const zoom = () => openViewer({
+      media: m,
+      siblings: sibs,
+      // 檢視器裡換張時，背後的詳情面板跟著換 —— 關掉之後看到的
+      // 才是同一張，否則會覺得自己關錯了東西。
+      onSwitch: (id) => { if (id !== m.id) showDetail(id); },
+    });
+    $('dPreview')?.addEventListener('click', zoom);
+    $('dPreview')?.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); zoom(); }
+    });
+  }
 
   // 正式庫最長路徑 282 字元，含中文與深層巢狀 —— 預設一行截斷，要看才展開。
   $('dPathToggle')?.addEventListener('click', (ev) => {
@@ -825,11 +873,16 @@ export async function showDetail(mediaId) {
   });
 }
 
-function closeDetail() { $('detail').classList.add('hidden'); }
+function closeDetail() {
+  detailDismiss?.release();
+  detailDismiss = null;
+  $('detail').classList.add('hidden');
+  // 影片沒有停下來的話，關掉面板之後聲音／頻寬還在跑（面板只是 hidden，
+  // 元素還在 DOM 裡）。
+  const v = $('detailBody').querySelector('video');
+  if (v) v.pause();
+}
 $('closeDetail').addEventListener('click', closeDetail);
-document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && !$('detail').classList.contains('hidden')) closeDetail();
-});
 
 // ── 媒體頁的帳號篩選：可搜尋，不預載 ─────────────────
 //

@@ -43,6 +43,33 @@ def test_serves_downloaded_file(client, media):
     assert r.headers["content-type"].startswith("image/")
 
 
+def test_head_matches_get(client, session, media):
+    """HEAD 必須與 GET 給同一個答案。
+
+    ⚠️ 這不是潔癖，是 GUI 的診斷來源：`<img>` / `<video>` 的 error 事件拿不到
+    狀態碼，所以前端補一次 HEAD 去問「為什麼讀不到」（404 檔案不在 /
+    415 格式生不出縮圖 / 500 原檔壞了）。
+
+    而 FastAPI 的 `@router.get` **只註冊 GET**（與 Starlette 的裸 Route 不同）——
+    HEAD 會一路掉到掛在 "/" 的靜態檔 mount 回 404。症狀不是壞掉，是
+    **每一種失敗都被說成「檔案被刪除，或那顆碟沒插」**，也就是捏造診斷。
+    """
+    for path in (f"/api/media/{media.id}/file", f"/api/media/{media.id}/thumb"):
+        head = client.head(path)
+        get = client.get(path)
+        assert head.status_code == get.status_code, path
+        assert head.content == b"", "HEAD 不該有 body"
+
+    # 檔案不在時，HEAD 也要說 404（而不是靜態 mount 的那個 404 ——
+    # 兩者狀態碼一樣，所以這裡多驗一次 content-type 確認是我們回的）
+    session.get(type(media), media.id).local_path = str(
+        media.local_path) + ".gone"
+    session.commit()
+    r = client.head(f"/api/media/{media.id}/file")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+
+
 def test_path_traversal_is_rejected(client, session, media, tmp_path):
     """local_path 目前是自己寫的，但一旦被污染就是任意檔案讀取。"""
     outside = tmp_path / "secret.txt"

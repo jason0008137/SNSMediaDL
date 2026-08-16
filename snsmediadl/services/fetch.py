@@ -37,6 +37,13 @@ _ID_CHUNK = 500
 @dataclass
 class FetchResult:
     account: str = ""
+    # 這一輪解析出來的**平台 user id**。
+    #
+    # ⚠️ 存在的理由：`fetch_queue._record()` 要靠它找回 DB 那一列。批次抓
+    # 新加的帳號沒有 `job.user_id`，退而用 `screen_name == job.acct` 比對 ——
+    # 那對 Fediverse 成立（acct 就是 handle），對 pixiv **永遠不成立**
+    # （acct 是數字 id，screen_name 是暱稱），結果是抓成功了卻記不到擷取結果。
+    platform_user_id: str = ""
     instance_host: str = ""
     pages: int = 0
     posts_seen: int = 0
@@ -54,6 +61,7 @@ class FetchResult:
     def as_dict(self) -> dict:
         return {
             "account": self.account,
+            "platform_user_id": self.platform_user_id,
             "instance_host": self.instance_host,
             "pages": self.pages,
             "posts_seen": self.posts_seen,
@@ -113,13 +121,17 @@ async def fetch_account(
     adapter = get_source_adapter(platform)
     result = FetchResult(instance_host=host)
 
-    headers = {"User-Agent": "SNSMediaDL/0.1"}
-    # 認證方式是平台知識：Fediverse 是 Bearer，pixiv 是 Cookie。
-    # 這一層不該認得任何一種。
+    # 連線長什麼樣（UA + TLS 指紋）是平台知識：pixiv 的 API 在 Cloudflare
+    # 後面，要瀏覽器 UA + Chrome 的 cipher 順序才進得去，其餘平台誠實表明
+    # 身分即可。這一層不該認得任何一種，只負責照 adapter 說的做。
+    profile = adapter.client_profile
+    headers = {"User-Agent": profile.user_agent}
+    # 認證方式同理：Fediverse 是 Bearer，pixiv 是 Cookie。
     headers.update(adapter.auth_headers(cfg, host))
 
     async with httpx.AsyncClient(
-        transport=transport, timeout=cfg.timeout_seconds, headers=headers
+        transport=transport, timeout=cfg.timeout_seconds, headers=headers,
+        **profile.client_kwargs(),
     ) as client:
         account: RemoteAccount = (
             await adapter.resolve_account_by_id(client, host, user_id)
@@ -127,6 +139,7 @@ async def fetch_account(
             else await adapter.resolve_account(client, host, acct)
         )
         result.account = account.screen_name
+        result.platform_user_id = account.platform_user_id
 
         if user_id is None:
             # 走名字解析代表 DB 裡那一列可能還帶著 `sn:` 哨符（匯入來的帳號

@@ -20,22 +20,42 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),'
   + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 // 可以疊：帳號抽屜裡按下「刪除記錄」會在抽屜之上再開一個確認框。
+//
+// ⚠️ 這個堆疊**不只裝 overlay**，而是裝「所有能被 Esc 關掉的東西」——
+// 媒體詳情面板與放大檢視器也登記進來（見 `pushDismissable`）。
+// 原本它們各自在 document 上掛一個 keydown，那是這個 bug 的來源：
+//
+//   使用者按了影片的播放鍵之後，焦點在 `<video>` 上，Chrome 的原生媒體
+//   控制列會**先攔下 Esc**（收自己的選單／退出全螢幕），而那些監聽器掛在
+//   **冒泡**階段 —— 事件根本傳不到，所以要按好幾次才關得掉。
+//
+// 修法不是再加一個監聽器，是集中成一個、掛在 **capture** 階段：
+// document 是 capture 的第一站，我們比任何元素都先拿到鍵盤事件。
 const stack = [];
+
+// 需要「背景不捲動」的層數。dismissable（詳情面板）不算 —— 它不是 modal，
+// 背後的格線本來就該能捲。
+let modalCount = 0;
 
 function root() {
   return document.getElementById('overlayRoot');
 }
 
-function trapKeys(ev) {
+function onKeyDown(ev) {
   const top = stack[stack.length - 1];
   if (!top) return;
   if (ev.key === 'Escape') {
+    // 全螢幕時 Esc 的第一個職責是退出全螢幕（瀏覽器層級，攔不掉也不該攔）。
+    // 這時候如果又順手關掉面板，使用者會覺得按一下少了兩層。
+    if (document.fullscreenElement) return;
     ev.stopPropagation();
+    ev.preventDefault();
     top.close();
     return;
   }
-  if (ev.key !== 'Tab') return;
-  const items = [...top.el.querySelectorAll(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+  if (!top.trapTab || ev.key !== 'Tab') return;
+  const items = [...top.el.querySelectorAll(FOCUSABLE)]
+    .filter((n) => n.offsetParent !== null);
   if (!items.length) return;
   const first = items[0];
   const last = items[items.length - 1];
@@ -46,6 +66,46 @@ function trapKeys(ev) {
     ev.preventDefault();
     first.focus();
   }
+}
+
+function attach() {
+  // 同一個函式 + 同一個 capture 旗標重複加是 no-op（DOM 規格保證），
+  // 所以不必自己記有沒有加過 —— 少一個會不同步的狀態。
+  document.addEventListener('keydown', onKeyDown, true);
+}
+
+function detach() {
+  if (!stack.length) document.removeEventListener('keydown', onKeyDown, true);
+}
+
+/** 把一個「按 Esc 要關掉的東西」登記到堆疊最上層。
+ *
+ *  給**非 modal** 的面板用（媒體詳情、放大檢視器）：不鎖背景捲動、不做
+ *  focus trap，只要「Esc 一定關得掉，而且一次只關一層」。
+ *
+ *  `close` 由呼叫端提供，且**必須自己呼叫 `release()`** —— 這裡不猜對方
+ *  怎麼關的（有的是加 class、有的是移除節點）。
+ *
+ *  回傳 `{ release }`。重複 release 是安全的。 */
+export function pushDismissable({ close }) {
+  const entry = {
+    trapTab: false,
+    close() {
+      handle.release();
+      close();
+    },
+  };
+  const handle = {
+    release() {
+      const i = stack.indexOf(entry);
+      if (i === -1) return;
+      stack.splice(i, 1);
+      detach();
+    },
+  };
+  stack.push(entry);
+  attach();
+  return handle;
 }
 
 /** 開一個 overlay。回傳 `{ el, body, close }`。
@@ -73,15 +133,15 @@ export function openOverlay({ kind = 'modal', title, subtitle = '', body = '',
   const handle = {
     el: back,
     body: back.querySelector('.ovl-body'),
+    trapTab: true,
     close() {
       const i = stack.indexOf(handle);
       if (i === -1) return;            // 已經關過了（例如 Esc 與按鈕同時觸發）
       stack.splice(i, 1);
       back.remove();
-      if (!stack.length) {
-        document.body.classList.remove('overlay-open');
-        document.removeEventListener('keydown', trapKeys, true);
-      }
+      modalCount -= 1;
+      if (!modalCount) document.body.classList.remove('overlay-open');
+      detach();
       // 焦點回到原本的觸發元素。它可能已經被重新渲染掉了，所以要檢查還在不在。
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
       if (onClose) onClose();
@@ -97,11 +157,10 @@ export function openOverlay({ kind = 'modal', title, subtitle = '', body = '',
   });
 
   root().appendChild(back);
-  if (!stack.length) {
-    document.body.classList.add('overlay-open');
-    document.addEventListener('keydown', trapKeys, true);
-  }
+  if (!modalCount) document.body.classList.add('overlay-open');
+  modalCount += 1;
   stack.push(handle);
+  attach();
 
   if (onMount) onMount(handle.body, handle);
   // 開啟後把焦點送進去，否則 Tab 會從 <body> 開始跑到背後的畫面

@@ -22,6 +22,7 @@ import httpx
 from ..db.enums import MediaKind
 from .base import (
     CONSERVATIVE_RATE_LIMIT,
+    DEFAULT_CLIENT_PROFILE,
     FetchPage,
     NormalizedMedia,
     NormalizedPost,
@@ -76,6 +77,10 @@ class MisskeyAdapter:
 
     # 沒有實測過 Misskey 的 429 行為，所以吃最保守的預設（停止不重試）。
     rate_limit_policy = CONSERVATIVE_RATE_LIMIT
+
+    # 誠實表明身分即可 —— 這三個平台的 API 不做客戶端指紋檢查
+    # （只有 pixiv 需要偽裝，理由寫在它自己的 adapter 裡）。
+    client_profile = DEFAULT_CLIENT_PROFILE
 
     def auth_headers(self, cfg: Any, host: str) -> dict[str, str]:
         """Misskey 也吃 Bearer。公開內容免認證，沒設 token 是合法狀態。"""

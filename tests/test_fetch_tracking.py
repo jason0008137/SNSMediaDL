@@ -126,6 +126,37 @@ def test_missing_account_is_logged_not_silent(cfg, maker, account, monkeypatch, 
     assert any("找不到帳號" in r.message for r in caplog.records)
 
 
+def test_pixiv_result_is_recorded_even_though_acct_is_a_numeric_id(
+    cfg, maker, monkeypatch, caplog
+):
+    """pixiv 的 acct 是數字 id、screen_name 是暱稱 —— 兩者永遠不相等。
+
+    批次抓新加的帳號沒有 `job.user_id`，所以舊的 `screen_name == acct`
+    比對必然落空：**抓成功了卻記不到擷取結果**（使用者的 log 就是這個 warning）。
+    現在 `fetch_account` 會把解析出的真 id 回填到 job 上。
+    """
+    with maker() as s:
+        s.add(Account(platform="pixiv", instance_host="",
+                      platform_user_id="12345678", screen_name="えんぴつ"))
+        s.commit()
+
+    q = make_queue(cfg, maker)
+
+    async def fake_fetch(*_a, **_kw):
+        return FetchResult(account="えんぴつ", platform_user_id="12345678", posts_new=3)
+
+    monkeypatch.setattr(fq, "fetch_account", fake_fetch)
+    job = fq.Job(id=1, platform="pixiv", host="", acct="12345678", user_id=None)
+    with caplog.at_level("WARNING"):
+        asyncio.run(q._process(job))
+
+    with maker() as s:
+        a = s.query(Account).filter_by(platform="pixiv").one()
+    assert a.last_fetch_status == FetchStatus.OK.value
+    assert a.last_fetch_new_posts == 3
+    assert not any("找不到帳號" in r.message for r in caplog.records)
+
+
 def test_recording_failure_does_not_break_the_fetch(cfg, maker, account, monkeypatch):
     """記錄壞掉不可以連帶弄垮抓取本身。"""
     q = make_queue(cfg, maker)

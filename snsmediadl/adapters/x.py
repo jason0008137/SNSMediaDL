@@ -14,7 +14,12 @@ from datetime import datetime
 from typing import Any
 
 from ..db.enums import MediaKind
-from .base import CONSERVATIVE_RATE_LIMIT, NormalizedMedia, NormalizedPost
+from .base import (
+    CONSERVATIVE_RATE_LIMIT,
+    DEFAULT_CLIENT_PROFILE,
+    NormalizedMedia,
+    NormalizedPost,
+)
 
 # X 的 created_at 格式：'Tue Jul 08 11:43:52 +0000 2025'
 # 這是 v1.1 時代就在用的格式，GraphQL 的 legacy 物件原封不動沿用。
@@ -44,6 +49,10 @@ class XAdapter:
     # X 超速會**鎖整個帳號約一天**，所以 429 就停、不重試。
     # 這是最保守的政策，也是所有平台的預設。
     rate_limit_policy = CONSERVATIVE_RATE_LIMIT
+
+    # 誠實表明身分即可 —— 這三個平台的 API 不做客戶端指紋檢查
+    # （只有 pixiv 需要偽裝，理由寫在它自己的 adapter 裡）。
+    client_profile = DEFAULT_CLIENT_PROFILE
 
     def auth_headers(self, cfg: Any, host: str) -> dict[str, str]:
         # X 不走 backend 主動抓（公開 API 已死），永遠不會被呼叫到。

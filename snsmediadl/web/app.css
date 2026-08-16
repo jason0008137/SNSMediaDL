@@ -695,3 +695,63 @@ label.chk input { width: auto; }
   font-size: 11px; color: var(--muted);
   background: var(--bg); border: 1px dashed var(--line); border-radius: 6px;
 }
+
+/* ── 放大檢視器 ────────────────────────────────────────────────
+   z-index 60：在 overlay（50）之上、tooltip（100）之下 ——
+   詳情面板點開檢視器時它必須蓋住面板，但提示氣泡仍要看得見。 */
+.viewer {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0,0,0,.88);
+  display: grid; grid-template-rows: 1fr auto auto;
+  outline: none;
+}
+.viewer-stage {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  touch-action: none;               /* 拖曳平移時不要觸發瀏覽器的捲動手勢 */
+}
+.viewer-stage img {
+  max-width: none; max-height: none;
+  transform-origin: center center;
+  cursor: grab; user-select: none; -webkit-user-drag: none;
+}
+.viewer-stage img:active { cursor: grabbing; }
+/* 影片不縮放（會跟原生控制列打架），單純放到最大 */
+.viewer-stage video { max-width: 96vw; max-height: 100%; background: #000; }
+.viewer-missing {
+  color: var(--err-text); text-align: center; font-size: 13px; line-height: 1.7;
+}
+.viewer-close {
+  position: absolute; top: 12px; right: 16px; z-index: 2;
+  width: 38px; height: 38px; border-radius: 50%;
+  background: rgba(0,0,0,.5); border: 1px solid var(--line);
+  color: var(--text); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.viewer-close:hover { background: var(--panel-2); }
+.viewer-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 44px; height: 64px; border-radius: 8px;
+  background: rgba(0,0,0,.45); border: 1px solid var(--line);
+  color: var(--text); font-size: 18px; cursor: pointer;
+}
+.viewer-nav:hover { background: var(--panel-2); }
+.viewer-nav.prev { left: 12px; }
+.viewer-nav.next { right: 12px; }
+/* 只有一張時**不出現**（不是 disable）—— 沒有「等一下就能用」的可能 */
+.viewer.single .viewer-nav { display: none; }
+.viewer-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px; font-size: 12px; color: var(--muted);
+  background: var(--panel); border-top: 1px solid var(--line);
+}
+/* 倍率是數字，等寬才不會每次縮放都讓後面的按鈕跳動 */
+.viewer-bar .zoom { font-variant-numeric: tabular-nums; color: var(--text); }
+.viewer-hint {
+  margin: 0; padding: 6px 16px 10px; text-align: center;
+  font-size: 11px; color: var(--muted); background: var(--panel);
+}
+.viewer-hint.hidden { display: none; }
+/* 檢視器開著時背景不捲動 */
+body.viewer-open { overflow: hidden; }
+/* 詳情面板裡可放大的圖要看得出來可以點 */
+.detail img.zoomable { cursor: zoom-in; }

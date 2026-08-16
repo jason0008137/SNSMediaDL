@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import ssl
 from datetime import datetime
 from typing import Any
 
@@ -32,6 +33,7 @@ import httpx
 
 from ..db.enums import MediaKind
 from .base import (
+    ClientProfile,
     NormalizedMedia,
     NormalizedPost,
     RateLimitPolicy,
@@ -42,6 +44,66 @@ log = logging.getLogger("snsmediadl.pixiv")
 
 API_ROOT = "https://www.pixiv.net"
 REFERER = "https://www.pixiv.net/"
+
+# ── Cloudflare：`www.pixiv.net` 的 ajax API 擋 Python 的預設連線 ──────────
+#
+# 2026-08-16 實測（逐項對照，見 `ClientProfile` 的表格）：Cloudflare 同時看
+# **TLS ClientHello 指紋**與 **User-Agent**，兩者缺一就回 403 挑戰頁。
+# 症狀特別惡劣 —— 回的是 HTML 不是 JSON，而且和「帳號不存在」長得不像，
+# 使用者只會看到一大串 `<!DOCTYPE html>`。
+#
+# ⚠️ 這兩個常數是**成對**的，不要只改一個：只換 UA 或只換 cipher 都是 403。
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+)
+
+# Chrome 的 cipher 順序。OpenSSL 預設的順序與這個不同，而 Cloudflare 認的
+# 就是這個順序（JA3 把 cipher 清單也算進指紋）。
+#
+# ⚠️ 起作用的是 **TLS 1.2 那一段**：Chrome 把 AES128 排在 AES256 前面，
+# OpenSSL 預設相反。最前面那三個 TLS 1.3 套件其實**排不動** ——
+# Python 的 `set_ciphers()` 只管 1.2 以下，1.3 要 `SSL_CTX_set_ciphersuites`，
+# `ssl` 模組沒開放。列在這裡是為了完整表達 Chrome 的清單，不是因為它有效。
+# 「順手整理」這一串會讓 pixiv 變回 403，測試釘住了這件事。
+_CHROME_CIPHERS = ":".join([
+    "TLS_AES_128_GCM_SHA256",
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_CHACHA20_POLY1305_SHA256",
+    "ECDHE-ECDSA-AES128-GCM-SHA256",
+    "ECDHE-RSA-AES128-GCM-SHA256",
+    "ECDHE-ECDSA-AES256-GCM-SHA384",
+    "ECDHE-RSA-AES256-GCM-SHA384",
+    "ECDHE-ECDSA-CHACHA20-POLY1305",
+    "ECDHE-RSA-CHACHA20-POLY1305",
+    "ECDHE-RSA-AES128-SHA",
+    "ECDHE-RSA-AES256-SHA",
+    "AES128-GCM-SHA256",
+    "AES256-GCM-SHA384",
+    "AES128-SHA",
+    "AES256-SHA",
+])
+
+_ssl_context: ssl.SSLContext | None = None
+
+
+def chrome_ssl_context() -> ssl.SSLContext:
+    """帶 Chrome cipher 順序的 TLS 設定。建一次就重複用。
+
+    **憑證驗證照常** —— 這裡改的只有 cipher 順序，沒有降低任何安全性。
+    """
+    global _ssl_context
+    if _ssl_context is None:
+        ctx = ssl.create_default_context()
+        ctx.set_ciphers(_CHROME_CIPHERS)
+        _ssl_context = ctx
+    return _ssl_context
+
+
+PIXIV_CLIENT_PROFILE = ClientProfile(
+    user_agent=_BROWSER_UA, ssl_context_factory=chrome_ssl_context
+)
 
 # 取自 PBD 的 `slowCrawlDealy`（原碼拼字如此）。PBD 強制下限 1000ms。
 DETAIL_DELAY_SECONDS = 1.8
@@ -122,6 +184,12 @@ class PixivAdapter:
     # 但我們**不抄它的無限重試** —— 對一個會長時間跑的背景佇列，
     # 「無限次等 200 秒」的使用者體感是佇列卡死，不是錯誤。上限 2 次。
     rate_limit_policy = RateLimitPolicy(max_retries=2, wait_seconds=200.0)
+
+    # `www.pixiv.net` 的 ajax API 在 Cloudflare 後面，要瀏覽器 UA + Chrome
+    # 的 cipher 順序才進得去（見檔案上方的實測表格）。
+    # ⚠️ 這**只套用在平台 API**；CDN（`i.pximg.net`）走 `download_headers()`，
+    # 那邊維持誠實的 `SNSMediaDL/0.1`，實測 200。
+    client_profile = PIXIV_CLIENT_PROFILE
 
     def __init__(self, detail_delay: float = DETAIL_DELAY_SECONDS) -> None:
         # 間隔是**建構參數**不是全域設定：測試要能把它設成 0，
