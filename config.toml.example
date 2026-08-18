@@ -28,7 +28,7 @@ output_root = 'D:\SNS_Media'
 #
 # 匯入進來的既有媒體庫也放這裡。
 extra_media_roots = [
-  'D:\OldMedia	witter',
+  'D:\OldMedia\twitter',
 ]
 
 # 縮圖快取放哪。預設 `<output_root>/thumb`。
@@ -86,10 +86,38 @@ extra_media_roots = [
 # fetch_batch_size = 20
 
 
+# ── 縮圖 ──────────────────────────────────────────────────
+#
+# 影片縮圖要抽第一個影格，那需要 ffmpeg —— 一支**原生執行檔**，不是 Python
+# 套件（PyPI 上叫 `ffmpeg-python` 的那些只是包裝，本身不含執行檔）。
+#
+# 留空 = 走兩層偵測：
+#   1. 系統 PATH 上的（`shutil.which("ffmpeg")`）—— 自己裝的通常較新，優先
+#   2. `imageio-ffmpeg` 隨 wheel 帶的那支 —— 它是本專案的相依，所以
+#      `pip install -e .` 跑完就有，**一般情況你什麼都不用做**
+#
+# 設定頁會顯示實際命中的是哪一層。兩層都沒有時：格線上的影片格會說
+# 「影片縮圖需要 ffmpeg」，設定頁顯示「未安裝」。
+# **圖片與 pixiv 的 ugoira 動圖不受影響**（那兩種不經過 ffmpeg）。
+#
+# ⚠️ 明確指定了卻找不到，偵測會回報「未安裝」，**不會**偷偷退回其他來源 ——
+#    路徑打錯要看得出來。
+#
+# ⚠️ **不要**把 imageio-ffmpeg 的路徑抄到這裡。那個檔名帶版本號
+#    （`ffmpeg-win-x86_64-v7.1.exe`），套件升級的那天這條設定就會失效。
+#    留空讓第 2 層在執行時去問，就沒有這個問題。
+# ffmpeg_path = "C:/tools/ffmpeg/bin/ffmpeg.exe"
+
+# 同時最多幾個 ffmpeg 行程。一頁 60 格若全是影片，沒有這道閘就是 60 個
+# 行程同時起來（縮圖端點跑在 threadpool 上，沒有天然上限）。
+# 排隊超過 10 秒的請求會回 503「縮圖排隊逾時」，不會無限期掛著。
+# thumb_video_concurrency = 2
+
+
 # ── 憑證 ──────────────────────────────────────────────────
 #
 # ⚠️ 這一段是憑證。config.toml 已 gitignore，但仍請確認不要貼進
-#    測試 fixture、筆記或任何會進版控的地方。
+#    wiki、測試 fixture 或任何會進版控的地方。
 #
 # 各 Fediverse instance 的 access token（公開內容不需要）：
 # instance_tokens = { "baraag.net" = "<token>" }

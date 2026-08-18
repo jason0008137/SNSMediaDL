@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import mimetypes
+import subprocess
+import threading
+import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -16,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from ..config import Config
+from ..config import Config, find_ffmpeg
 from ..db.models import Media
 from .app import get_config, get_session
 
@@ -54,9 +58,48 @@ THUMB_QUALITY = 80
 
 # 能生縮圖的副檔名。**白名單而不是黑名單** —— 遇到沒看過的格式要明確回
 # 「不支援」，不要丟進 Pillow 賭賭看。
+#
+# 分三組是因為**三條產生路徑不同**，而且失敗的意義也不同：
+#   圖片    Pillow 直接開                 —— 失敗 = 原檔壞了
+#   影片    ffmpeg 抽一格再交給 Pillow    —— 失敗可能只是沒裝 ffmpeg（503）
+#   ugoira  zip 取第一張再交給 Pillow     —— **不需要 ffmpeg**
 THUMBABLE_SUFFIXES = frozenset({
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
 })
+# X 的 animated_gif 實際存成 .mp4，所以它跟影片是同一條路。
+VIDEO_SUFFIXES = frozenset({".mp4", ".webm", ".mov", ".m4v", ".mkv"})
+UGOIRA_SUFFIXES = frozenset({".zip"})
+
+# 從第 1 秒抽格。開頭常是黑畫面或淡入，抽第 0 格會得到一片黑 ——
+# 那不是「原檔就長這樣」，是抽錯位置。
+VIDEO_SEEK_SECONDS = 1
+# 單次 ffmpeg 的逾時。壞檔可能讓 ffmpeg 卡住不退出，而它佔著併發閘的名額。
+FFMPEG_TIMEOUT = 20
+# 排隊等併發閘的上限。等不到就 503，不要讓請求無限期掛著 ——
+# 瀏覽器那端會先放棄，而 server 這邊還在跑。
+THUMB_QUEUE_TIMEOUT = 10
+
+# ⚠️ 只圈住影片與 ugoira。**圖片不進閘** —— Pillow 開一張 jpg 是毫秒級，
+# 圈了只會讓 96% 的請求去排一個它們不需要的隊。
+#
+# 閘的大小在第一次使用時依 cfg 決定（模組載入時還沒有 cfg）。
+_video_gate: threading.BoundedSemaphore | None = None
+_gate_lock = threading.Lock()
+
+
+def _gate(cfg: Config) -> threading.BoundedSemaphore:
+    global _video_gate
+    with _gate_lock:
+        if _video_gate is None:
+            _video_gate = threading.BoundedSemaphore(max(1, cfg.thumb_video_concurrency))
+        return _video_gate
+
+
+def reset_thumb_gate() -> None:
+    """測試用：換一個併發上限。正式流程不呼叫（改了要重啟）。"""
+    global _video_gate
+    with _gate_lock:
+        _video_gate = None
 
 
 def _resolve_media_file(media_id: int, session: Session, cfg: Config) -> Path:
@@ -105,8 +148,67 @@ def _thumb_cache_path(cfg: Config, media_id: int) -> Path:
     return cfg.thumb_dir / f"{media_id % 256:02x}" / f"{media_id}.webp"
 
 
-def _render_thumb(src: Path, dst: Path) -> None:
+def _ffmpeg_frame(exe: str, src: Path, seconds: int) -> bytes:
+    """抽一格出來，回 PNG bytes。抽不到回空 bytes（不丟例外）。
+
+    `-ss` 放在 `-i` **之前**是關鍵：那是 input seeking，ffmpeg 直接跳到
+    關鍵格；放在後面會從頭解碼到那個位置，對一支 446 MB 的片子是好幾秒。
+    """
+    proc = subprocess.run(
+        [exe, "-nostdin", "-loglevel", "error",
+         "-ss", str(seconds), "-i", str(src),
+         "-frames:v", "1", "-f", "image2", "-vcodec", "png", "-"],
+        capture_output=True,
+        timeout=FFMPEG_TIMEOUT,
+    )
+    if proc.returncode != 0 and not proc.stdout:
+        log.debug("ffmpeg -ss %s 失敗：%s", seconds, proc.stderr[:200])
+    return proc.stdout
+
+
+def _video_frame_bytes(cfg: Config, src: Path) -> bytes:
+    """影片的第一張可用影格。ffmpeg 不可用丟 503，抽不到丟 500。"""
+    exe = find_ffmpeg(cfg)
+    if exe is None:
+        # ⚠️ 503 而不是 415：檔案格式沒問題，是**我們少了依賴**。
+        # 混用的話使用者分不出「裝一下 ffmpeg 就好」與「這個檔沒救」。
+        raise HTTPException(503, "影片縮圖需要 ffmpeg，但系統上找不到")
+
+    try:
+        data = _ffmpeg_frame(exe, src, VIDEO_SEEK_SECONDS)
+        if not data:
+            # 短於 1 秒的片子在第 1 秒沒有影格。退到第 0 秒再試一次 ——
+            # 這是**業務邏輯**不是掩蓋：兩次都失敗仍然明確回 500。
+            data = _ffmpeg_frame(exe, src, 0)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(500, f"ffmpeg 逾時（{FFMPEG_TIMEOUT} 秒）") from exc
+
+    if not data:
+        raise HTTPException(500, "ffmpeg 抽不出影格 —— 原檔可能壞了")
+    return data
+
+
+def _ugoira_frame_bytes(src: Path) -> bytes:
+    """ugoira（pixiv 的動圖）是一包 zip 裝一堆 jpg，取檔名排序的第一張。
+
+    **不需要 ffmpeg** —— 這一項在沒裝 ffmpeg 的機器上也要成立。
+    """
+    try:
+        with zipfile.ZipFile(src) as zf:
+            names = sorted(n for n in zf.namelist() if not n.endswith("/"))
+            if not names:
+                raise HTTPException(500, "ugoira 的 zip 是空的")
+            return zf.read(names[0])
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(500, f"ugoira 的 zip 讀不開：{exc}") from exc
+
+
+def _render_thumb(src: Path, dst: Path, *, data: bytes | None = None) -> None:
     """生一張縮圖到 `dst`。失敗就讓例外往上拋。
+
+    `data` 有值時從記憶體讀（影片抽出來的影格、ugoira 的第一張），
+    否則直接開 `src`。兩條路共用同一組尺寸與品質常數 ——
+    分開寫的話，縮圖規格遲早會在兩邊漂移。
 
     ⚠️ **不 fallback 成佔位圖。** 生不出來多半代表原檔壞了或格式沒支援，
     回一張灰方塊等於把壞檔藏起來 —— 使用者會以為那張圖本來就長那樣，
@@ -114,7 +216,7 @@ def _render_thumb(src: Path, dst: Path) -> None:
     """
     from PIL import Image, ImageOps
 
-    with Image.open(src) as im:
+    with Image.open(io.BytesIO(data) if data is not None else src) as im:
         # 手機拍的照片帶 EXIF 方向旗標。不轉的話縮圖是躺著的，
         # 而原圖在檢視器裡卻是正的 —— 看起來像縮圖抓錯檔案。
         im = ImageOps.exif_transpose(im)
@@ -149,26 +251,62 @@ def get_media_thumb(
     第一次要求時才生，生完存著。**不做批次預生成** —— 那要遍歷三顆碟上的
     224 萬個檔案，成本遠超過收益，而且那是使用者的媒體庫。
 
-    ### 影片不生縮圖
+    ### 影片與 ugoira
 
-    抽影格要 ffmpeg（外部執行檔依賴）。影片回 415，前端顯示佔位不掛
-    `<video>` 元素 —— 原本每格一個 `preload="metadata"` 等於 60 次開檔讀 moov。
+    影片抽第 1 秒那一格（ffmpeg），ugoira 取 zip 裡的第一張（不需要 ffmpeg）。
+    兩者都經過併發閘 —— 一頁 60 格全是影片時，沒有閘就是 60 個 ffmpeg
+    行程同時起來。
+
+    ### 狀態碼的分工（前端靠它決定顯示什麼，不可混用）
+
+    - 404 檔案不在了（被刪，或那顆碟沒插）
+    - 415 這個格式**真的**做不出縮圖
+    - 500 原檔壞了／抽不出影格
+    - 503 依賴缺失（沒裝 ffmpeg）或排隊逾時 —— 這兩種都是「等一下或裝一下就好」
     """
     path = _resolve_media_file(media_id, session, cfg)
+    suffix = path.suffix.lower()
 
-    if path.suffix.lower() not in THUMBABLE_SUFFIXES:
+    is_video = suffix in VIDEO_SUFFIXES
+    is_ugoira = suffix in UGOIRA_SUFFIXES
+    if not (is_video or is_ugoira or suffix in THUMBABLE_SUFFIXES):
         # 415 而不是 404：檔案在，只是這種格式做不出縮圖。
-        # 兩者混用的話，前端分不出「檔案不見了」與「這是影片」。
-        raise HTTPException(415, f"不支援為 {path.suffix} 生縮圖")
+        # 兩者混用的話，前端分不出「檔案不見了」與「這是不支援的格式」。
+        raise HTTPException(415, f"不支援為 {suffix} 生縮圖")
 
     cache = _thumb_cache_path(cfg, media_id)
-    if not cache.exists():
+    if cache.exists():
+        return FileResponse(
+            cache, media_type="image/webp", headers={"Cache-Control": IMMUTABLE}
+        )
+
+    if is_video or is_ugoira:
+        # ⚠️ 閘只圈住「取得原始影格」與「縮圖」這一段，不圈快取命中那條路 ——
+        # 已經生好的縮圖不該去排隊。
+        gate = _gate(cfg)
+        if not gate.acquire(timeout=THUMB_QUEUE_TIMEOUT):
+            raise HTTPException(503, "縮圖排隊逾時，稍後再看")
         try:
-            _render_thumb(path, cache)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("縮圖生成失敗 media#%s（%s）：%s", media_id, path, exc)
-            raise HTTPException(500, f"縮圖生成失敗：{exc}") from exc
+            data = (_video_frame_bytes(cfg, path) if is_video
+                    else _ugoira_frame_bytes(path))
+            _render_thumb_or_500(media_id, path, cache, data=data)
+        finally:
+            gate.release()
+    else:
+        _render_thumb_or_500(media_id, path, cache)
 
     return FileResponse(
         cache, media_type="image/webp", headers={"Cache-Control": IMMUTABLE}
     )
+
+
+def _render_thumb_or_500(
+    media_id: int, path: Path, cache: Path, *, data: bytes | None = None
+) -> None:
+    try:
+        _render_thumb(path, cache, data=data)
+    except HTTPException:
+        raise            # 已經是講得清楚的狀態碼，不要蓋成 500
+    except Exception as exc:  # noqa: BLE001
+        log.warning("縮圖生成失敗 media#%s（%s）：%s", media_id, path, exc)
+        raise HTTPException(500, f"縮圖生成失敗：{exc}") from exc

@@ -18,6 +18,24 @@ const MIN_SCALE_OF_FIT = 0.5;
 const MAX_SCALE = 8;
 const WHEEL_STEP = 1.1;
 
+// 超過這個位移就算「拖曳」而不是「點擊」。手不穩的點擊會晃個一兩像素，
+// 沒有這條容差的話，那種點擊會被當成拖曳（反過來也一樣糟）。
+const DRAG_SLOP = 4;
+
+/** 這一次點擊該不該關掉檢視器？
+ *
+ *  ⚠️ 必須看 **pointerdown 的目標**，不能看 click 的 `ev.target` ——
+ *  拖曳平移時我們對 stage 呼叫 `setPointerCapture`，之後的 pointer 事件
+ *  （包含由它們合成的 `click`）全部被重新指向 stage。於是在影像上按著拖曳、
+ *  放開滑鼠，click 的 target 會是 stage，一路撞進「點背景 = 關閉」那條分支：
+ *  拖曳到一半放手就關掉整個檢視器。純點影像也會誤關，同一個根因。
+ *
+ *  純函式方便測試（見 `test_viewer.mjs`）。*/
+export function shouldCloseOnClick({ downTarget, dragged, stage, root }) {
+  if (dragged) return false;
+  return downTarget === stage || downTarget === root;
+}
+
 // 操作提示只在第一次開啟時顯示。每次都顯示是噪音，永遠不顯示則是
 // [[指意才是缺口]] 說的那種「功能存在但沒人知道」。
 const HINT_SEEN_KEY = 'snsmediadl.viewerHintSeen';
@@ -199,6 +217,11 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   load(ids[index]);
 
   // ── 互動 ────────────────────────────────────────────
+  // 拖曳狀態要在 click 監聽之前宣告 —— click 的判斷讀得到它們。
+  let drag = null;
+  let dragged = false;
+  let downTarget = null;
+
   el.addEventListener('click', (ev) => {
     const act = ev.target.closest('[data-act]')?.dataset.act;
     if (act === 'close') close();
@@ -206,7 +229,7 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
     else if (act === 'next') go(1);
     else if (act === 'reset') computeFit();
     // 點背景（stage 本身，不是影像）也關閉 —— 與 overlay 的背板一致
-    else if (ev.target === stage || ev.target === el) close();
+    else if (shouldCloseOnClick({ downTarget, dragged, stage, root: el })) close();
   });
 
   // `passive: false` 是必要的：預設 wheel 是 passive，preventDefault 會被忽略，
@@ -228,16 +251,24 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
     else { scale = 1 / fit; tx = 0; ty = 0; paint(); }     // 否則跳到 100%
   });
 
-  let drag = null;
-  stage.addEventListener('pointerdown', (ev) => {
-    if (!img) return;
+  // pointerdown 掛在 el（不是 stage）上：click 的判斷需要知道「按下去的當下
+  // 手指在哪」，而按鈕與底部狀態列都在 stage 外面。
+  el.addEventListener('pointerdown', (ev) => {
+    downTarget = ev.target;
+    dragged = false;
+    if (!img || !stage.contains(ev.target)) return;
     drag = { x: ev.clientX, y: ev.clientY, tx, ty };
     stage.setPointerCapture(ev.pointerId);
   });
   stage.addEventListener('pointermove', (ev) => {
     if (!drag) return;
-    tx = drag.tx + (ev.clientX - drag.x);
-    ty = drag.ty + (ev.clientY - drag.y);
+    const dx = ev.clientX - drag.x;
+    const dy = ev.clientY - drag.y;
+    // 超過容差才開始真的平移，否則點擊時的手震會讓畫面跳一下。
+    if (!dragged && Math.hypot(dx, dy) <= DRAG_SLOP) return;
+    dragged = true;
+    tx = drag.tx + dx;
+    ty = drag.ty + dy;
     paint();
   });
   const endDrag = () => { drag = null; };

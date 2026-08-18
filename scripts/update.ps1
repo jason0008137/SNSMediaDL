@@ -16,6 +16,9 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# 一律用專案自己的 .venv，不用全域（理由見 scripts/_venv.ps1）。
+. (Join-Path $PSScriptRoot '_venv.ps1')
+
 # $hints 標成 [string[]]：只有一行時 git 的輸出是單一字串而不是陣列，
 # 不標型別的話 `字串 + @(...)` 會變成字串串接，整段訊息塌成一行。
 function Fail([string] $msg, [string[]] $hints) {
@@ -150,15 +153,21 @@ $extensionChanged = Changed 'extension'
 # ---------------------------------------------------------------- 相依套件
 
 Write-Host ""
+# ⚠️ 這一整段的 python 都必須是 venv 那支。漏掉任何一處，更新就會把套件
+# 裝回全域，而畫面上完全看不出來 —— 下次啟動才會發現 venv 裡少東西。
+$py = Resolve-VenvPython -Root $root
+if (-not $py) {
+    Fail "找不到 python，或建立 .venv 失敗。" @("請安裝 Python 3.10 以上並加入 PATH。")
+}
+
 if ($depsChanged) {
     Write-Host "[1/3] 相依套件有更新，安裝中..."
-    python -m pip install -e ".[dev]"
+    & $py -m pip install -e ".[dev]"
     if ($LASTEXITCODE -ne 0) { Fail "套件安裝失敗。" @("先執行 start.bat 看完整錯誤訊息。") }
 } else {
-    python -c "import fastapi, sqlalchemy, alembic, httpx" 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-VenvDeps $py)) {
         Write-Host "[1/3] 套件還沒裝，安裝中..."
-        python -m pip install -e ".[dev]"
+        & $py -m pip install -e ".[dev]"
         if ($LASTEXITCODE -ne 0) { Fail "套件安裝失敗。" @("先執行 start.bat 看完整錯誤訊息。") }
     } else {
         Write-Host "[1/3] 相依套件無變動"
@@ -171,7 +180,7 @@ if ($migrationsAdded) {
     Write-Host "[2/3] 資料庫結構有更新"
 
     # 備份放在 DB 真正的所在位置（config.toml 可以改 db_path）。
-    $dbPath = (python -c "from snsmediadl.config import load_config; print(load_config().db_path)" 2>$null)
+    $dbPath = (& $py -c "from snsmediadl.config import load_config; print(load_config().db_path)" 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $dbPath) {
         Fail "讀不到資料庫位置，不敢動 schema。" @("先執行 start.bat，看它報什麼錯。")
     }
@@ -183,7 +192,7 @@ if ($migrationsAdded) {
         Write-Host "      已備份：$(Split-Path -Leaf $bak)" -ForegroundColor DarkGray
     }
 
-    python -m alembic upgrade head
+    & $py -m alembic upgrade head
     if ($LASTEXITCODE -ne 0) {
         Fail "資料庫更新失敗。" @(
             "你的資料還在，備份也還在（副檔名 .bak-*）。",

@@ -252,6 +252,10 @@ def ingest_posts(
                     source_url=nm.source_url,
                     status=MediaStatus.PENDING.value,
                     meta_json=json.dumps(nm.meta, ensure_ascii=False) if nm.meta else None,
+                    # ⚠️ **這裡是 `media.posted_at` 的唯一寫入點。**
+                    # 它是 `posts.posted_at` 的副本（見 db/models.py 的說明），
+                    # 其他模組一律唯讀。多一個地方寫，兩表就會開始漂移。
+                    posted_at=post.posted_at,
                 )
             )
             result.media_new += 1

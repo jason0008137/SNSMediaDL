@@ -84,6 +84,37 @@ function verdict(a) {
   return { text: `上次 ${md} 檢查，沒有新的`, full: a.last_fetched_at };
 }
 
+/** 自動退訂的告示 + 反悔按鈕。
+ *
+ *  ⚠️ 判斷用後端算好的 `auto_untracked` 布林，**不比對 note 的文字** ——
+ *  改一次文案前端就靜默失效。
+ *
+ *  退訂本身不刪任何資料，這句話一定要寫出來：使用者看到「已移出追蹤」
+ *  的第一個念頭是「我的東西還在嗎」。 */
+function untrackedHtml(a) {
+  if (!a.auto_untracked) return '';
+  return `<span class="card-verdict bad">⚠ 已自動移出追蹤（連續 ${
+    a.not_found_streak} 次找不到）—— 既有資料一筆都沒動
+    <button type="button" class="linkish" data-act="retrack">恢復追蹤</button></span>`;
+}
+
+/** 「↗ 在 … 開啟」。網址與問題說明都由後端的 links.py 給 ——
+ *  **這裡不拼任何平台網址** —— 寫死某個平台的網址會讓其他平台連到
+ *  不存在的位址，那不是報錯而是連到錯的地方，比 404 更難發現。
+ *
+ *  ⚠️ 刻意**不加 `data-act`**：卡片的 click 委派只處理 `[data-act]`，
+ *  沒有它這個 `<a>` 才會走原生導覽。加了反而要自己 `window.open`，
+ *  中鍵開新分頁、複製網址那些原生行為就全沒了。 */
+function platformLinkHtml(a) {
+  if (a.profile_url) {
+    return `<a class="ext-link" href="${esc(a.profile_url)}" target="_blank"
+              rel="noreferrer">↗ 在 ${esc(a.platform_label || a.platform)} 開啟</a>`;
+  }
+  // 拼不出來時顯示**原因**而不是一個壞連結。灰階 + ⚠ 字符，不只靠顏色分辨。
+  return `<span class="ext-link off" data-tip="${esc(a.link_problem || '')}"
+            tabindex="0">⚠ 無法連結</span>`;
+}
+
 function cardHtml(a) {
   const v = verdict(a);
   const n = (x) => (x || 0).toLocaleString();
@@ -95,7 +126,10 @@ function cardHtml(a) {
       <h3>${esc(acctName(a))}</h3>
       ${starsHtml(a.stars, 'aStars')}
     </div>
-    <div class="card-id">${esc(a.platform)} · id ${esc(a.platform_user_id)}</div>
+    <div class="card-id">
+      <span>${esc(a.platform)} · id ${esc(a.platform_user_id)}</span>
+      ${platformLinkHtml(a)}
+    </div>
     <div class="card-stats">
       <button type="button" class="linkish" data-act="viewmedia"
               ${a.media_count ? '' : 'disabled'}
@@ -106,6 +140,7 @@ function cardHtml(a) {
       最後發文 ${esc(fmtWhen(a.last_post_at))}
       <span class="card-verdict${v.bad ? ' bad' : ''}"${
         v.full ? ` data-tip="${esc(v.full)}"` : ''}>${esc(v.text)}</span>
+      ${untrackedHtml(a)}
     </div>
     ${previewHtml(a)}
     <div class="card-foot">
@@ -120,9 +155,11 @@ function cardHtml(a) {
 /** 預覽縮圖。**最新的幾張，不濾分級**（使用者拍板：濾了會出現缺口，
  *  而預覽的用途是快速認出這是誰）。
  *
- *  ⚠️ 影片沒有縮圖（`/thumb` 對非圖片回 415），所以載入失敗要顯示 ▶ 佔位而不是
- *  破圖。這件事在 SQL 那層不處理 —— 加 `kind='photo'` 會讓查詢從 359 ms
- *  變成 3.6 分鐘（planner 改從 ix_media_status 驅動）。
+ *  ⚠️ 影片**現在有縮圖了**（ffmpeg 抽格），所以多數格子會正常顯示。
+ *  但載入仍可能失敗：沒裝 ffmpeg（503）、原檔不在（404）、格式沒救（415）。
+ *  失敗時顯示 ▶ 佔位而不是破圖。這件事在 SQL 那層不處理 ——
+ *  加 `kind='photo'` 會讓查詢從 359 ms 變成 3.6 分鐘
+ *  （planner 改從 ix_media_status 驅動）。
  *
  *  src 留空，由 IntersectionObserver 捲到才填（一頁 100 張卡 = 400 張縮圖）。 */
 function previewHtml(a) {
@@ -343,6 +380,25 @@ $('accountList').addEventListener('click', async (ev) => {
 
   if (btn.dataset.act === 'viewmedia') {
     jumpToMedia({ account: a.id, label: acctName(a) });
+  } else if (btn.dataset.act === 'retrack') {
+    // 恢復追蹤。後端會一併把 not_found_streak 歸零 —— 不歸零的話
+    // 下一次找不到就是第 3 次，馬上又被退訂。
+    btn.disabled = true;
+    try {
+      await api(`/api/accounts/${a.id}/prefs`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ is_tracked: true }),
+      });
+      a.is_tracked = true;
+      a.auto_untracked = false;
+      a.not_found_streak = 0;
+      // 這一張重畫就好 —— 整份重載會讓捲動位置跳掉。
+      card.outerHTML = cardHtml(a);
+    } catch (e) {
+      btn.disabled = false;
+      say(card, `恢復追蹤失敗：${e.message}`, 'err');
+    }
   } else if (btn.dataset.act === 'edit') {
     openAccountDrawer(a, card);
   } else if (btn.dataset.act === 'fav') {

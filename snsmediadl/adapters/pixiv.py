@@ -123,6 +123,46 @@ class PixivFieldError(ValueError):
     """
 
 
+class PixivNotFound(PixivFieldError):
+    """這個 user id 在 pixiv 上不存在（刪除或從來沒有過）。
+
+    ⚠️ **只在 recon 驗證過的形狀上丟出**，因為它會餵給自動退訂
+    （連續 2 次就把帳號移出追蹤名單）。判寬了，pixiv 改一次版就會把
+    一整批還活著的帳號退訂掉 —— 那比不退訂糟得多。
+
+    驗證過的形狀（2026-08-18，見 recon 筆記「帳號不存在長什麼樣」）：
+    **HTTP 404 + 合法 JSON + `error: true`**，三者缺一不算。
+
+    - 端點被移掉（平台改版）回的是 HTML 404 → 不合法 JSON → 不是這個型別
+    - Cloudflare 擋掉是 HTML 403 → 連 404 都不是
+    - **凍結帳號未取樣** → 若它是別種形狀，會落到 `PixivFieldError`／`FAILED`，
+      不會被誤判成「不存在」
+
+    訊息文字**刻意不比對**：實測 `Accept-Language` 無效，語言跟著帳號設定走，
+    換一組 cookie 就換一種語言，比對必然靜默失效。
+    """
+
+
+def raise_if_not_found(response: httpx.Response, where: str) -> None:
+    """404 + JSON + `error: true` → `PixivNotFound`。其餘一律不動。
+
+    放在 `raise_for_status()` **之前**呼叫 —— pixiv 的「找不到」是真的 404，
+    不是本檔上面說的那種「200 + error」，所以 `_body()` 這條路走不到。
+    """
+    if response.status_code != 404:
+        return
+    try:
+        payload = response.json()
+    except ValueError:
+        # HTML 的 404 = 端點沒了 = 平台改版。**不可以當成帳號不存在**，
+        # 那會在改版當天把所有 pixiv 帳號退訂。留給 raise_for_status()。
+        return
+    if isinstance(payload, dict) and payload.get("error"):
+        raise PixivNotFound(
+            f"{where}：這個 pixiv 使用者不存在或已離開 pixiv（HTTP 404）"
+        )
+
+
 def _need(obj: Any, key: str, where: str) -> Any:
     if not isinstance(obj, dict):
         raise PixivFieldError(f"{where} 應該是物件，實際是 {type(obj).__name__}")
@@ -240,6 +280,7 @@ class PixivAdapter:
             )
 
         r = await client.get(f"{API_ROOT}/ajax/user/{user_id}", params={"full": "0"})
+        raise_if_not_found(r, f"ajax/user/{user_id}")
         r.raise_for_status()
         body = _body(r.json(), f"ajax/user/{user_id}")
         return RemoteAccount(
@@ -264,6 +305,9 @@ class PixivAdapter:
         r = await client.get(
             f"{API_ROOT}/ajax/user/{account.platform_user_id}/profile/all"
         )
+        # 帳號可能在「解析」與「列舉」之間被刪掉，而且更新既有帳號時
+        # 走的是 resolve_account_by_id → 這裡，兩個端點都要判。
+        raise_if_not_found(r, "profile/all")
         r.raise_for_status()
         body = _body(r.json(), "profile/all")
 

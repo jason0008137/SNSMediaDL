@@ -145,6 +145,16 @@ class Account(Base):
     last_fetch_note: Mapped[str | None] = mapped_column(Text, default=None)
     last_fetch_new_posts: Mapped[int | None] = mapped_column(Integer, default=None)
 
+    # 連續幾次「這個帳號不存在」。連續 2 次會自動移出追蹤名單（只有 pixiv）。
+    #
+    # ⚠️ 為什麼要記連續次數而不是「上次是不是 404」：單次 404 的原因太多
+    # （手滑打錯 id、暫時性的平台故障）。而且**只有 recon 驗證過的形狀**
+    # 才會加一，見 `adapters/pixiv.py::PixivNotFound`。
+    # 任何一次成功都歸零 —— 計數是「連續」，不是「累計」。
+    not_found_streak: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+
     # ── 聚合欄（去正規化的快取值）──
     #
     # ⚠️ 這四個是**算出來的**，不是輸入的。真值永遠在 posts / media 那邊。
@@ -232,6 +242,9 @@ class Media(Base):
         Index("ix_media_hash", "file_hash",
               sqlite_where=text("file_hash IS NOT NULL")),
         Index("ix_media_stars", "stars", "id"),
+        # · posted_at 用**完整**複合 `(posted_at, id)`，與 stars 同一個理由：
+        #   排序需要完整的鍵序列，partial 會讓 NULL 那 56,631 筆進不了索引。
+        Index("ix_media_posted", "posted_at", "id"),
         _check("kind", MediaKind, nullable=False),
         _check("status", MediaStatus, nullable=False),
     )
@@ -256,6 +269,17 @@ class Media(Base):
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     meta_json: Mapped[str | None] = mapped_column(Text, default=None)
+
+    # ⚠️ **這是 `posts.posted_at` 的副本（刻意的反正規化）。**
+    #
+    # 為什麼：媒體頁要能「依推文時間排序」，而 posted_at 在 posts、媒體在
+    # media（224 萬列）。join 之後在深頁排序必然慢，keyset 分頁跨表也很容易寫錯。
+    #
+    # 代價是它會漂移。防線只有一條：**單一寫入點** ——
+    # 只有 `services/ingest.py` 建立或更新 media 時會寫它，其他模組一律唯讀。
+    # 另有 `snsmediadl check-posted-at` 可以查兩表是否一致
+    # （反正規化的代價要有工具查，不能靠「排序看起來怪怪的」發現）。
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     # 五星評分。掛在 media 不掛 post —— rating（sfw/r18）是**貼文內容**的性質，
     # 同一則的四張圖不會一張 sfw 一張 r18；stars 是**對單張圖的偏好**，

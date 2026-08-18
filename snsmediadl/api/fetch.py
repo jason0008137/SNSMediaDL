@@ -114,9 +114,23 @@ def _existing_account(session: Session, target: Target) -> Account | None:
     return session.scalars(stmt).first()
 
 
+def missing_credential(cfg: Config, platform: str) -> str | None:
+    """這個平台要憑證但沒設定嗎？回平台名（有問題）或 None。
+
+    在**動手之前**就講。沒有這個判斷，沒填 PHPSESSID 的人會先抓一輪、
+    再從佇列深處撈出一個失敗訊息 —— 而那個失敗長得像 Cloudflare 擋人
+    （403 挑戰頁），完全看不出真正的原因是「沒填憑證」。
+    """
+    if platform != "pixiv":
+        return None
+    return None if (cfg.platform_credentials or {}).get("pixiv") else "pixiv"
+
+
 @router.post("/fetch/parse")
 def post_parse(
-    body: ParseRequest, session: Session = Depends(get_session)
+    body: ParseRequest,
+    session: Session = Depends(get_session),
+    cfg: Config = Depends(get_config),
 ) -> dict:
     """解析多行網址。**只讀，不寫入任何東西。**
 
@@ -132,8 +146,12 @@ def post_parse(
             # 'x' / 'instagram'：貼對了但要換工具。介面要把它與「打錯字」
             # 分成兩種結論 —— 正式庫 90.5% 的帳號是 X。
             "unsupported_platform": line.unsupported_platform,
+            # 這一行看得懂、平台也抓得動，但**憑證還沒設**。
+            # 與 error 是兩件事：這行沒有錯，只是現在跑會失敗。
+            "needs_credential": None,
         }
         if line.target is not None:
+            item["needs_credential"] = missing_credential(cfg, line.target.platform)
             existing = _existing_account(session, line.target)
             item["target"] = {
                 "platform": line.target.platform,

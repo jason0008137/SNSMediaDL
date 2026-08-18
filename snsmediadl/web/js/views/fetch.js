@@ -59,17 +59,27 @@ async function parseUrls() {
       return `<tr class="muted"><td>${esc(ln.raw)}</td>
               <td>${esc(ln.target.label)}</td><td>這批裡重複</td></tr>`;
     }
+    // 看得懂、也抓得動，但憑證沒設 —— 現在送出一定失敗。
+    // 與「看不懂」分成兩種結論：這一行本身是對的。
+    if (ln.needs_credential) {
+      return `<tr class="wrongtool"><td>${esc(ln.raw)}</td>
+              <td>${esc(ln.target.label)}</td>
+              <td>⚠ 會失敗 —— 尚未設定 ${esc(ln.needs_credential)} 憑證
+                  （設定頁有填法）</td></tr>`;
+    }
     return `<tr><td>${esc(ln.raw)}</td><td>${esc(ln.target.label)}</td>
             <td>${ln.in_db ? '已在資料庫（會做增量）' : '新帳號'}</td></tr>`;
   });
 
   const ok = body.lines.filter((l) => !l.error && !l.duplicate).length;
+  const noCred = body.lines.filter((l) => l.needs_credential).length;
   const wrongTool = body.lines.filter((l) => l.unsupported_platform).length;
   const bad = body.lines.filter((l) => l.error && !l.unsupported_platform).length;
 
   // 結論先講，逐行在後面。
   const summary = [
     `可抓 ${ok} 個`,
+    noCred ? `${noCred} 行缺憑證會失敗` : '',
     wrongTool ? `${wrongTool} 行只能用 extension` : '',
     bad ? `${bad} 行看不懂` : '',
   ].filter(Boolean).join(' · ');
@@ -128,8 +138,33 @@ const mins = (sec) => (sec < 60 ? `${Math.round(sec)} 秒` : `${Math.round(sec /
 /** 按下去**之前**就要看得見「可抓幾個、抓不動幾個」。
  *  正式庫 4,211 個帳號（90.5%）backend 抓不動 —— 那是多數情況，
  *  不是送出後才報「跳過」的邊緣狀況。 */
+/** 沒設 PHPSESSID 就不讓勾「包含 pixiv」，**並且把原因寫在旁邊**。
+ *
+ *  只 disable 不說原因，使用者只會覺得那個勾選框壞了。
+ *  ⚠️ 這裡讀的是 `state.settings`（由 queue.js 載入）—— 還沒載到時
+ *  不動它，寧可讓它可勾，也不要用「我還不知道」去擋人。 */
+function applyPixivCredentialGate() {
+  const s = state.settings;
+  if (!s?.credentials) return;
+  const box = $('includePixiv');
+  const has = s.credentials.pixiv;
+  box.disabled = !has;
+  const label = box.closest('label');
+  if (!has) {
+    box.checked = false;
+    label.dataset.tip = '尚未設定 pixiv 憑證（PHPSESSID），抓了一定會失敗';
+    if (!label.querySelector('.credwhy')) {
+      label.insertAdjacentHTML('beforeend',
+        '<span class="credwhy muted"> —— 未設定憑證，見設定頁</span>');
+    }
+  } else {
+    label.querySelector('.credwhy')?.remove();
+  }
+}
+
 export async function refreshScope() {
   const box = $('refreshScope');
+  applyPixivCredentialGate();
   try {
     const s = await api(`/api/fetch/refresh-preview?include_pixiv=${$('includePixiv').checked}`);
     const by = Object.entries(s.by_platform)
@@ -242,6 +277,14 @@ function renderVerdict(st) {
   }
   if (skipped.length) {
     lines.push(`<div class="muted">⊘ ${skipped.length} 個跳過（多半是只能用 extension 採集的 X 帳號）。</div>`);
+  }
+  // 自動退訂一定要講。靜默退訂就算技術上正確，使用者也只會覺得
+  // 帳號自己不見了 —— 然後在帳號頁上找半天。
+  const untracked = st.auto_untracked || [];
+  if (untracked.length) {
+    lines.push(`<div class="warn">⚠ 本輪自動退訂 ${untracked.length} 個帳號
+      （連續找不到）：${esc(untracked.join('、'))}。<br>
+      資料一筆都沒動，只是不再自動抓；帳號頁上可以「恢復追蹤」。</div>`);
   }
   if (!cappedJobs.length && !failed.length && done.length) {
     // **沒有壞消息本身就是一則消息** —— 不說的話使用者得自己逐行檢查。

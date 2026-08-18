@@ -413,6 +413,59 @@ def cmd_recount_accounts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_posted_at(args: argparse.Namespace) -> int:
+    """檢查（或修正）`media.posted_at` 與 `posts.posted_at` 是否一致。
+
+    `media.posted_at` 是刻意的反正規化（媒體頁要依推文時間排序，
+    而 join 224 萬列在深頁必然慢）。**反正規化的代價就是要有工具查** ——
+    不能靠「排序看起來怪怪的」來發現漂移，那種症狀沒有人認得出來。
+
+    與 `recount-accounts` 同樣的原則：`--check` 是預設，`--fix` 才寫入。
+    不一致代表某條寫入路徑漏了維護，數字是那條路徑存在的唯一線索。
+    """
+    from sqlalchemy import select
+
+    from .db.models import Media, Post
+
+    _cfg, maker = _bootstrap()
+    with maker() as session:
+        # IS NOT 而不是 !=：兩邊都可能是 NULL，而 SQL 的 NULL != NULL 是 NULL
+        # （不是 true）—— 用 != 的話「一邊 NULL 一邊有值」這種真的不一致
+        # 反而檢查不出來，正是最需要抓到的那一種。
+        mismatched = session.execute(
+            select(Media.id, Media.posted_at, Post.posted_at)
+            .join(Post, Media.post_id == Post.id)
+            .where(Media.posted_at.is_not(Post.posted_at))
+            .order_by(Media.id)
+        ).all()
+
+        if not mismatched:
+            print("media.posted_at 與 posts.posted_at 一致。")
+            return 0
+
+        print(f"⚠️ {len(mismatched)} 筆 media 的 posted_at 與所屬貼文不一致：\n")
+        for mid, cached, real in mismatched[:args.limit]:
+            print(f"  media#{mid}　存的 {cached!r} → 真值 {real!r}")
+        if len(mismatched) > args.limit:
+            print(f"  …另有 {len(mismatched) - args.limit} 筆（用 --limit 看更多）")
+
+        if not args.fix:
+            print("\n這是檢查，什麼都沒改。要修正請加 --fix。")
+            print("⚠️ 修正之前先想一下：是哪條路徑寫了 media 卻沒帶 posted_at？"
+                  "（唯一該寫的地方是 services/ingest.py）")
+            return 1
+
+        session.execute(
+            Media.__table__.update()
+            .where(Media.id.in_([m[0] for m in mismatched]))
+            .values(posted_at=select(Post.posted_at)
+                    .where(Post.id == Media.post_id).scalar_subquery())
+        )
+        session.commit()
+        print(f"\n已修正 {len(mismatched)} 筆。")
+    return 0
+
+
 def cmd_delete_account(args: argparse.Namespace) -> int:
     """刪掉一個帳號的全部記錄。**dry-run 是預設，不是選項。**"""
     from .services import deletion
@@ -538,6 +591,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rc.add_argument("--limit", type=int, default=20, help="最多列出幾筆差異")
     rc.set_defaults(func=cmd_recount_accounts)
+
+    cp = sub.add_parser(
+        "check-posted-at",
+        help="檢查 media.posted_at 有沒有跟所屬貼文對上。預設只檢查不修正",
+    )
+    cp.add_argument(
+        "--fix", action="store_true",
+        help="真的寫回。不加這個就只是回報差異（不一致時 exit code 1）",
+    )
+    cp.add_argument("--limit", type=int, default=10, help="最多列出幾筆差異")
+    cp.set_defaults(func=cmd_check_posted_at)
 
     idt = sub.add_parser(
         "identity",

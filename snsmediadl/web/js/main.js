@@ -67,7 +67,11 @@ async function init() {
 
   // 排序偏好記住。GUI 預設 favorite，而 API 預設是 id（= 舊行為，extension 靠它）
   $('aSort').value = localStorage.getItem('accountSort') || 'favorite';
-  $('fSort').value = localStorage.getItem('mediaSort') || 'newest';
+  // ⚠️ 分段控制那一版（已回朔）把偏好存成「鍵:方向」，例如 `added:desc`。
+  // 那個字串塞進 <select> 會變成空值 —— 症狀是送出 `sort=` 而不是報錯。
+  const savedSort = localStorage.getItem('mediaSort');
+  $('fSort').value = ['newest', 'oldest', 'stars'].includes(savedSort)
+    ? savedSort : 'newest';
 
   // 佇列狀態更新時，媒體頁「更多篩選」裡那句「目前沒有待下載或失敗的項目」
   // 要跟著變 —— 它讀的就是這份資料，不另外請求。

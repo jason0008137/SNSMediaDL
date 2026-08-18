@@ -143,6 +143,25 @@ def test_media_detail_returns_media_post_and_account(client, loaded):
     assert d["account"]["screen_name"] == "sample_account"
 
 
+def test_accounts_carry_profile_url(client, loaded):
+    """帳號清單要帶「連回平台」的網址 —— 前端不得自行拼接。"""
+    a = client.get("/api/accounts").json()[0]
+    assert a["profile_url"] == "https://x.com/sample_account"
+    assert a["link_problem"] is None
+    assert a["platform_label"] == "X"
+    # 既有欄位一個都不能少，否則現有前端會靜默壞掉
+    for key in ("id", "platform", "screen_name", "platform_user_id", "is_tracked"):
+        assert key in a
+
+
+def test_media_detail_carries_post_url(client, loaded):
+    media_id = media_of(client)[0]["id"]
+    d = client.get(f"/api/media/{media_id}").json()
+    post_id = d["post"]["platform_post_id"]
+    assert d["post"]["post_url"] == f"https://x.com/sample_account/status/{post_id}"
+    assert d["post"]["link_problem"] is None
+
+
 def test_media_detail_works_beyond_list_page_size(client, session):
     """詳情面板不可依賴清單分頁 —— 早期版本抓 500 筆再從裡面找，
     媒體一多就必然找不到。"""

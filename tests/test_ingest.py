@@ -146,3 +146,28 @@ def test_all_media_start_pending(session, sample_account):
     ingest(session, "x", sample_account, screen_name="sample_account")
     statuses = {m.status for m in session.scalars(select(Media))}
     assert statuses == {"pending"}
+
+
+def test_media_posted_at_mirrors_the_post(session, sample_account):
+    """`media.posted_at` 是 `posts.posted_at` 的副本（刻意的反正規化）。
+
+    ⚠️ ingest 是**唯一寫入點**。多一個地方寫，兩表就會開始漂移，
+    而漂移的症狀是「排序看起來怪怪的」—— 沒有人認得出那是資料不一致。
+    """
+    ingest(session, "x", sample_account, screen_name="sample_account")
+    rows = session.execute(
+        select(Media.posted_at, Post.posted_at).join(Post, Media.post_id == Post.id)
+    ).all()
+    assert rows
+    for media_at, post_at in rows:
+        assert media_at == post_at
+
+
+def test_media_posted_at_is_null_when_the_post_has_no_time(session):
+    """NULL 要照抄成 NULL，**不可以填一個「現在」** ——
+    那會讓 56,631 筆時間未知的媒體全部擠到時間軸的今天。"""
+    ingest(session, "x", _one_post(createdAt=None))
+    m = session.scalar(select(Media))
+    p = session.scalar(select(Post))
+    assert p.posted_at is None
+    assert m.posted_at is None

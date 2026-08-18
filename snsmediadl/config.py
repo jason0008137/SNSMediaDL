@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.toml"
 
 ENV_PREFIX = "SNSMEDIADL_"
+
+log = logging.getLogger("snsmediadl")
 
 
 @dataclass
@@ -99,6 +102,17 @@ class Config:
     # 絕不進版控、不進 wiki、不進測試 fixture。
     platform_credentials: dict[str, str] = field(default_factory=dict)
 
+    # ── 縮圖 ────────────────────────────────────────────
+    # 影片抽格要 ffmpeg。None = 走偵測（系統 PATH → imageio-ffmpeg 自帶的，
+    # 見本檔下方的「ffmpeg 偵測」一節）。
+    # 指到一個不存在的檔案時，偵測回「未安裝」而不是丟例外 ——
+    # 打錯路徑不該讓整個設定頁掛掉，但也**不會**偷偷退回其他來源：
+    # 明確指定了就是明確指定了，回報它不在。
+    ffmpeg_path: str | None = None
+    # 同時最多幾個 ffmpeg 行程。一頁 60 格若全是影片，沒有閘就是 60 個
+    # 行程同時起來 —— 縮圖端點是同步函式，跑在 threadpool 上沒有天然上限。
+    thumb_video_concurrency: int = 2
+
     # 開發用：extension 偵測到檔案變動就自己 chrome.runtime.reload()。
     # 正式使用時關掉即可（它會一直輪詢版本端點）。
     dev_reload: bool = True
@@ -166,6 +180,95 @@ def ensure_output_root(root: Path) -> Path:
 # 拼路徑時才炸（或更糟：`str + str` 拼出一個看起來對的錯路徑）。
 # 新增 `X | None` 的路徑設定時**必須**加進這裡。
 _OPTIONAL_PATH_FIELDS = frozenset({"thumb_root"})
+
+
+# ── ffmpeg 偵測 ─────────────────────────────────────────
+#
+# 三層，由明確到通用：
+#   1. `cfg.ffmpeg_path`        —— 使用者指定的
+#   2. `shutil.which("ffmpeg")` —— 系統 PATH 上的
+#   3. imageio-ffmpeg 自帶的    —— pip 相依，所以裝完專案就有
+#
+# ⚠️ 這**不是**「找不到就退而求其次」的那種 fallback。三層是**探索順序**，
+# 判準在於事後系統能不能誠實說出發生了什麼 —— 所以 `ffmpeg_info()` 一併回報
+# **來源**，設定頁把它顯示出來。使用者永遠看得到自己在用哪一支。
+#
+# 第 1 層有值時**絕不往下掉**：明確指定了就是指定了，不在就回報不在。
+# 退回去等於設定被忽略，而症狀是縮圖不知為何來自另一個版本。
+#
+# 快取在模組層：`shutil.which` 會掃整條 PATH，而縮圖端點每一格都會問一次。
+# 但**必須提供 refresh()** —— 設定頁改過路徑、或使用者剛裝好 ffmpeg 之後，
+# 不該為了讓偵測結果更新而重啟 backend。
+_ffmpeg_cache: tuple[str | None, str | None, str] | None = None
+
+# `ffmpeg_info()` 第二個回傳值的值域。設定頁靠它講出「你現在用的是哪一支」。
+FFMPEG_SOURCES = ("config", "path", "bundled", "")
+
+
+def _bundled_ffmpeg() -> str | None:
+    """imageio-ffmpeg 隨 wheel 帶的那支 static build，沒有就回 None。
+
+    ⚠️ **一定要用 `get_ffmpeg_exe()` 去問，不可以把路徑抄進 config.toml。**
+    那個檔名帶版本號（`ffmpeg-win-x86_64-v7.1.exe`），抄下來的路徑會在
+    套件升級的那天失效，而失效的樣子是設定頁顯示「未安裝」—— 誠實但莫名其妙。
+    執行時問就沒有這個問題。
+    """
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None                      # 沒裝這個選用相依，正常情形
+    try:
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:                    # noqa: BLE001
+        # 這個平台沒有預先打包的 binary。它是第三層，缺席不是錯誤 ——
+        # 但也不猜路徑：回 None，讓 ffmpeg_info() 如實回報「沒有」。
+        log.debug("imageio-ffmpeg 沒有可用的 binary", exc_info=True)
+        return None
+    return exe if Path(exe).is_file() else None
+
+
+def ffmpeg_info(cfg: Config) -> tuple[str | None, str]:
+    """`(路徑, 來源)`。找不到時是 `(None, "")`。
+
+    來源是 `config` / `path` / `bundled`，給設定頁顯示用 —— 只說「已安裝」
+    的話，使用者分不出自己用的是系統那支還是 pip 帶的那支，而那兩支的
+    版本與編解碼覆蓋面可能不同。
+    """
+    global _ffmpeg_cache
+    key = cfg.ffmpeg_path
+    if _ffmpeg_cache is not None and _ffmpeg_cache[0] == key:
+        return _ffmpeg_cache[1], _ffmpeg_cache[2]
+
+    import shutil
+
+    if key:
+        # which() 也吃絕對路徑，順便驗可執行；不可執行就等於沒有。
+        found = shutil.which(key)
+        if found is None and Path(key).is_file():
+            # Windows 上沒有 .exe 副檔名的情況：which 會漏，但檔案真的在。
+            found = key
+        # ⚠️ 這裡**故意不往下掉**到 PATH 或 bundled。見本節開頭。
+        source = "config" if found else ""
+    else:
+        found = shutil.which("ffmpeg")
+        source = "path" if found else ""
+        if found is None:
+            found = _bundled_ffmpeg()
+            source = "bundled" if found else ""
+
+    _ffmpeg_cache = (key, found, source)
+    return found, source
+
+
+def find_ffmpeg(cfg: Config) -> str | None:
+    """ffmpeg 的可執行檔路徑，找不到回 None。來源不重要時用這個。"""
+    return ffmpeg_info(cfg)[0]
+
+
+def refresh_ffmpeg() -> None:
+    """丟掉偵測結果快取。設定改過或剛裝好 ffmpeg 時呼叫。"""
+    global _ffmpeg_cache
+    _ffmpeg_cache = None
 
 
 def _coerce(value: str, sample: object) -> object:

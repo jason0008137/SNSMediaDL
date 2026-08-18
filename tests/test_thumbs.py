@@ -125,9 +125,13 @@ def test_both_endpoints_set_immutable_cache_header(client, session, cfg):
 
 # ── 失敗路徑：每一種都要能被分辨 ─────────────────────────
 
-def test_video_returns_415_not_404(client, session, cfg):
-    """415 而不是 404 —— 前端要能分辨「這是影片」與「檔案不見了」。"""
-    mid = _make_media(session, cfg, "clip.mp4", fmt="RAW")
+def test_unsupported_format_returns_415_not_404(client, session, cfg):
+    """415 而不是 404 —— 前端要能分辨「這種格式沒救」與「檔案不見了」。
+
+    ⚠️ 影片**不再**走這條路（它現在有縮圖，見 test_video_thumbs.py）。
+    415 現在只留給真正不支援的格式。
+    """
+    mid = _make_media(session, cfg, "weird.psd", fmt="RAW")
     r = client.get(f"/api/media/{mid}/thumb")
     assert r.status_code == 415
 

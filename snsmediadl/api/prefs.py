@@ -35,6 +35,10 @@ class BulkStarsIn(BaseModel):
 class AccountPrefsIn(BaseModel):
     stars: int | None = None
     is_favorite: bool | None = None
+    # 恢復追蹤（自動退訂之後的反悔路）。**必須連 streak 一起歸零** ——
+    # 只把 is_tracked 打開的話，下一次找不到就是第 3 次，立刻又被退訂，
+    # 使用者會覺得「恢復追蹤」這個按鈕根本沒有用。
+    is_tracked: bool | None = None
 
 
 def _validate_stars(stars: int | None) -> None:
@@ -93,10 +97,19 @@ def set_account_prefs(
         account.stars = body.stars
     if "is_favorite" in provided and body.is_favorite is not None:
         account.is_favorite = body.is_favorite
+    if "is_tracked" in provided and body.is_tracked is not None:
+        account.is_tracked = body.is_tracked
+        if body.is_tracked:
+            # 恢復追蹤 = 使用者說「這個帳號是好的」。連續計數必須跟著歸零，
+            # 否則下一次找不到就達標，按鈕等於沒按。
+            account.not_found_streak = 0
+            account.last_fetch_note = None
     session.commit()
 
     return {
         "id": account.id,
         "stars": account.stars,
         "is_favorite": account.is_favorite,
+        "is_tracked": account.is_tracked,
+        "not_found_streak": account.not_found_streak,
     }

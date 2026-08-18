@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy import select
 
 from ..adapters import AuthRequired, IdListSource, SourceAdapter, get_adapter
+from ..adapters.pixiv import PixivNotFound
 from ..config import Config
 from ..db.enums import FetchStatus
 from ..db.models import Account
@@ -69,6 +70,69 @@ def _error_detail(response: httpx.Response) -> str:
             desc = body.get("error_description")
             return f"{err}{f'：{desc}' if desc else ''}"[:200]
     return str(body)[:200]
+
+
+# 連續幾次「找不到」就自動移出追蹤名單。
+#
+# 一次不夠 —— 手滑打錯 id、平台暫時性故障
+# 都會給出一次 404。先寫成模組常數，真的需要調整時再拉到 config。
+NOT_FOUND_UNTRACK_AT = 2
+
+# **只有 pixiv**。Fediverse 的 404 最常見原因是改名，而改名有 `sn:` 哨符
+# 治療那條路（services/identity.py），自動退訂會打斷它。
+AUTO_UNTRACK_PLATFORMS = frozenset({"pixiv"})
+
+# 這些結果**不動** streak：它們都不是「這個帳號不存在」的證據。
+#   skipped        —— 那一輪根本沒查（站台被限速）
+#   rate_limited   —— 對方在擋，與帳號存不存在無關
+#   auth_required  —— 我們的憑證問題
+#   failed         —— 包含「平台改版」，正是不可以拿來退訂的那一種
+# 也不歸零：一次限速不該把前面兩次真的找不到洗掉。
+_STREAK_NEUTRAL = frozenset({
+    FetchStatus.SKIPPED.value,
+    FetchStatus.RATE_LIMITED.value,
+    FetchStatus.AUTH_REQUIRED.value,
+    FetchStatus.FAILED.value,
+})
+
+
+def _apply_not_found_streak(
+    acc: Account, status: str, job: Job, now: datetime
+) -> bool:
+    """更新連續「找不到」計數，必要時自動退訂。回傳「這一輪退訂了嗎」。
+
+    抽成模組層函式而不是寫在 `_record()` 裡面，是為了能單獨測 ——
+    這段邏輯的每一條分支都是「什麼情況下**不該**退訂」，
+    而那正是最需要被釘住、也最容易在日後被順手放寬的東西。
+    """
+    if status in _STREAK_NEUTRAL:
+        return False
+
+    if status != FetchStatus.NOT_FOUND.value:
+        # ok / no_new = 這個帳號活著。連續中斷，歸零。
+        acc.not_found_streak = 0
+        return False
+
+    # ⚠️ 泛用的 HTTP 404 **不算數**。只有 recon 驗證過的形狀才累積
+    # （見 `PixivNotFound`）—— 否則 pixiv 改版當天會把整批帳號退訂掉。
+    if not job.not_found_confirmed:
+        return False
+
+    acc.not_found_streak = (acc.not_found_streak or 0) + 1
+    if (acc.platform not in AUTO_UNTRACK_PLATFORMS
+            or acc.not_found_streak < NOT_FOUND_UNTRACK_AT
+            or not acc.is_tracked):
+        return False
+
+    acc.is_tracked = False
+    acc.last_fetch_note = (
+        f"連續 {acc.not_found_streak} 次找不到（{now:%Y-%m-%d}），已自動移出追蹤名單"
+    )
+    log.warning(
+        "自動移出追蹤名單：%s（連續 %d 次找不到）",
+        account_label(acc), acc.not_found_streak,
+    )
+    return True
 
 
 def can_fetch(platform: str) -> bool:
@@ -147,6 +211,10 @@ class Job:
     result: dict[str, Any] | None = None
     error: str | None = None
     reason: str | None = None
+    # 這一輪的「找不到」是 **recon 驗證過的形狀**嗎？只有它才累積退訂計數。
+    # 泛用的 HTTP 404（可能只是端點沒了、或 Fediverse 改名）不算 ——
+    # 見 `PixivNotFound` 的說明。
+    not_found_confirmed: bool = False
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -187,6 +255,9 @@ class FetchQueue:
     # 已排入或正在跑的帳號，避免同一個帳號排兩次（兩次會列舉同一批，純浪費額度）
     _active: set[tuple[str, str, str]] = field(default_factory=set, init=False)
     _rate_limited: dict[tuple[str, str], str] = field(default_factory=dict, init=False)
+    # 本輪自動退訂的帳號標籤。與 `_history` 同樣是記憶體狀態（重啟就沒了），
+    # 但退訂本身寫在 DB 裡，這裡只是給摘要用的「剛剛發生了什麼」。
+    _auto_untracked: list[str] = field(default_factory=list, init=False)
     _want_download: bool = field(default=False, init=False)
     _next_id: int = field(default=1, init=False)
     _wake: asyncio.Event = field(default_factory=asyncio.Event, init=False)
@@ -206,6 +277,13 @@ class FetchQueue:
         key = (target.platform, target.host, target.acct.lower())
         if key in self._active:
             return None
+
+        # 佇列本來是空的 = 這是新的一批。退訂清單只講「這一批」發生了什麼，
+        # 不清掉的話，昨天的退訂會一直掛在今天的摘要上。
+        # ⚠️ 清在這裡而不是 `_drain()`：介面是在跑完之後才去讀的，
+        # 在 drain 清掉等於使用者永遠看不到。
+        if not self._pending and self._running is None:
+            self._auto_untracked.clear()
 
         job = Job(
             id=self._next_id,
@@ -257,6 +335,9 @@ class FetchQueue:
             # 站台 -> 原因。介面要能說出「為什麼這些被跳過」
             "rate_limited": {f"{p}@{h}" if h else p: why
                              for (p, h), why in self._rate_limited.items()},
+            # 這一批裡被自動移出追蹤名單的帳號。**一定要回**：
+            # 靜默退訂就算技術上正確，使用者也只會覺得帳號自己不見了。
+            "auto_untracked": list(self._auto_untracked),
             # 重啟就沒了，介面要講明
             "volatile": True,
         }
@@ -400,6 +481,14 @@ class FetchQueue:
                 why = _error_detail(exc.response)
                 job.error = f"HTTP {code}：{job.label}" + (f" —— {why}" if why else "")
                 outcome = (FetchStatus.FAILED.value, job.error, None)
+        except PixivNotFound as exc:
+            # ⚠️ 必須排在 `except Exception` 之前，否則永遠走不到這裡。
+            # 與上面那個泛用 404 分支的差別：這一個是 recon 驗證過的形狀
+            # （404 + JSON + error:true），**只有它才算數**去累積退訂計數。
+            job.state = "failed"
+            job.error = str(exc)
+            job.not_found_confirmed = True
+            outcome = (FetchStatus.NOT_FOUND.value, job.error, None)
         except AuthRequired as exc:
             job.state = "failed"
             job.error = str(exc)
@@ -464,10 +553,15 @@ class FetchQueue:
                         job.label, job.user_id,
                     )
                     return
-                acc.last_fetched_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                acc.last_fetched_at = now
                 acc.last_fetch_status = status
                 acc.last_fetch_note = (note or None)
                 acc.last_fetch_new_posts = new_posts
+                if _apply_not_found_streak(acc, status, job, now):
+                    # 統計給一鍵更新的摘要用。靜默退訂就算技術上正確，
+                    # 使用者也只會覺得帳號自己不見了。
+                    self._auto_untracked.append(account_label(acc))
                 session.commit()
 
         try:

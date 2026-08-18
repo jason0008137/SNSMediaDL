@@ -371,6 +371,20 @@ body.overlay-open { overflow: hidden; }
 .cell .placeholder .play { font-size: 26px; color: var(--text); line-height: 1; }
 .cell .placeholder .sz { font-size: 10px; color: var(--muted); }
 
+/* 影片／動圖的縮圖上疊 ▶ 角標與檔案大小。
+   ▶ 是**形狀**載體：一張抽出來的靜止影格與一張照片長得一模一樣，
+   沒有這個角標就分不出哪一格點下去會動。
+   底下墊一層半透明黑：白色影格上的白色 ▶ 會看不見。 */
+.cell .play-badge, .cell .sz {
+  position: absolute; pointer-events: none;
+  background: rgba(0, 0, 0, .55); color: #fff; border-radius: 4px;
+}
+.cell .play-badge {
+  left: 50%; top: 50%; transform: translate(-50%, -50%);
+  font-size: 22px; line-height: 1; padding: 6px 10px;
+}
+.cell .sz { left: 4px; bottom: 4px; font-size: 10px; padding: 1px 4px; }
+
 /* 縮圖還沒載入時（src 未填）不要顯示破圖圖示 */
 .cell img.thumb:not([src]) { visibility: hidden; }
 .cell.st-pending { opacity: .55; }
@@ -450,6 +464,12 @@ body.overlay-open { overflow: hidden; }
 .card-head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 .card-head .stars { flex: none; }
 .card-id { font-size: 11px; color: var(--muted); margin: 4px 0 8px; overflow-wrap: anywhere; }
+/* id 那一行左邊是身分、右邊是「連回平台」。gap 讓長 id 換行時不會黏在一起。 */
+.card-id { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.ext-link { flex: none; white-space: nowrap; }
+/* 連不出來時是**說明**不是連結：拿掉底線與手指游標，不讓人以為點得動。
+   ⚠ 字符讓它在只有灰階的螢幕上仍然與可點的連結不同。 */
+.ext-link.off { color: var(--muted); opacity: .75; cursor: help; text-decoration: none; }
 
 /* 內層共域：統計 + 結論。它們回答的是同一個問題（這個帳號的狀況如何）。 */
 .card-stats {

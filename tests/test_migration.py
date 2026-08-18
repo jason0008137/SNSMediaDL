@@ -291,3 +291,60 @@ def test_baraag_rename_aborts_instead_of_clobbering_a_clash(tmp_path):
     r = _alembic(db, "upgrade", "head")
     assert r.returncode != 0
     assert "撞唯一鍵" in (r.stderr + r.stdout)
+
+
+@pytest.mark.slow
+def test_posted_at_backfill_copies_the_post_time(tmp_path):
+    """`e1f2a3b4c5d6` 的回填：每一列 media 都要拿到所屬貼文的時間。
+
+    ⭐ 連 **NULL 也要照抄成 NULL** —— 回填時給一個「現在」或 epoch，
+    會讓時間未知的媒體（正式庫 56,631 筆）全部擠到時間軸的某一天，
+    而那看起來完全正常，不會有人發現。
+    """
+    db = tmp_path / "backfill.db"
+    assert _alembic(db, "upgrade", "d0e1f2a3b4c5").returncode == 0
+
+    con = sqlite3.connect(db)
+    con.executescript(
+        """
+        INSERT INTO accounts (id, platform, instance_host, platform_user_id,
+                              screen_name, is_tracked, created_at)
+        VALUES (1, 'x', '', 'u1', 'someone', 1, '2026-01-01 00:00:00');
+
+        INSERT INTO posts (id, platform, instance_host, platform_post_id,
+                           account_id, posted_at, is_retweet, ingested_at)
+        VALUES (1, 'x', '', 'p1', 1, '2026-01-05 10:00:00', 0, '2026-01-01 00:00:00'),
+               (2, 'x', '', 'p2', 1, '2026-02-06 11:00:00', 0, '2026-01-01 00:00:00'),
+               (3, 'x', '', 'p3', 1, NULL,                  0, '2026-01-01 00:00:00');
+
+        INSERT INTO media (id, post_id, ordinal, kind, source_url, status,
+                           attempt_count)
+        VALUES (1, 1, 0, 'photo', 'https://e.invalid/a', 'done', 1),
+               (2, 1, 1, 'photo', 'https://e.invalid/b', 'done', 1),
+               (3, 2, 0, 'photo', 'https://e.invalid/c', 'done', 1),
+               (4, 3, 0, 'photo', 'https://e.invalid/d', 'done', 1);
+        """
+    )
+    con.commit()
+    con.close()
+
+    r = _alembic(db, "upgrade", "head")
+    assert r.returncode == 0, r.stderr
+
+    con = sqlite3.connect(db)
+    rows = dict(con.execute("SELECT id, posted_at FROM media").fetchall())
+    # 同一則貼文的兩張圖拿到同一個時間
+    assert rows[1] == rows[2] == "2026-01-05 10:00:00"
+    assert rows[3] == "2026-02-06 11:00:00"
+    # ⭐ 來源是 NULL 就維持 NULL
+    assert rows[4] is None
+
+    mismatched = con.execute(
+        "SELECT COUNT(*) FROM media JOIN posts ON media.post_id = posts.id"
+        " WHERE media.posted_at IS NOT posts.posted_at"
+    ).fetchone()[0]
+    indexes = [r[1] for r in con.execute("PRAGMA index_list(media)").fetchall()]
+    con.close()
+
+    assert mismatched == 0
+    assert "ix_media_posted" in indexes, "排序要用的索引沒建起來"

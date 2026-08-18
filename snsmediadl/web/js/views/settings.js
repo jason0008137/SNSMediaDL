@@ -13,6 +13,42 @@ import { state, safeMode, setSafeMode, onSafeModeChange } from '../state.js';
 import { openOverlay } from '../overlay.js';
 import { loadSettings, setAutoDownload } from '../queue.js';
 
+/** pixiv 憑證：**只說有沒有設，永遠不顯示值的任何片段。**
+ *
+ *  沒設的時候要說「會怎樣 + 怎麼填」。只寫「未設定」的話，使用者仍然
+ *  會去抓一輪，然後撞上一個看起來像 Cloudflare 擋人的 403。 */
+function credentialRow(s) {
+  const has = s.credentials?.pixiv;
+  if (has) return '已設定';
+  return `<span class="warn">未設定</span> —— pixiv 抓取一定會失敗。<br>
+    在 <code>config.toml</code> 填
+    <code>platform_credentials = { pixiv = "&lt;PHPSESSID&gt;" }</code>
+    後重啟 backend（填法見 <code>config.toml.example</code>）。`;
+}
+
+/** 偵測到的來源。**一定要講出來，不能只說「已安裝」** ——
+ *  三層偵測（你指定的 / 系統 PATH / pip 帶的）命中哪一層，決定了你在用
+ *  哪個版本的 ffmpeg，而那正是「這個檔為什麼抽不出影格」的第一個問題。 */
+const FFMPEG_SOURCE = {
+  config: 'config.toml 指定的',
+  path: '系統 PATH 上的',
+  bundled: 'imageio-ffmpeg 隨套件帶的',
+};
+
+/** ffmpeg 偵測結果。沒裝的時候要說**影響範圍** ——
+ *  「未安裝」三個字不足以讓人判斷要不要去裝。 */
+function ffmpegRow(s) {
+  const f = s.ffmpeg;
+  if (!f) return '（後端沒有回報）';
+  if (!f.available) {
+    return `<span class="warn">未安裝</span> —— 影片縮圖不可用（格線會顯示原因）。
+       圖片與 ugoira 動圖<b>不受影響</b>。`;
+  }
+  // 來源不認得時就不硬掰一個標籤 —— 路徑本身仍然是完整的答案。
+  const from = FFMPEG_SOURCE[f.source];
+  return `${esc(f.path)}${from ? `<br><span class="note">來源：${esc(from)}</span>` : ''}`;
+}
+
 function readonlyRows(s) {
   if (!s) return '<div class="err">讀不到設定（backend 沒有回應）</div>';
   const extra = s.extra_media_roots || [];
@@ -24,6 +60,8 @@ function readonlyRows(s) {
         ? `${extra.length} 個<br>${extra.map(esc).join('<br>')}`
         : '（沒有）'}</dd>
       <dt>抓取頁數上限</dt><dd>${esc(s.fetch_max_pages)} 頁／帳號</dd>
+      <dt>pixiv 憑證</dt><dd>${credentialRow(s)}</dd>
+      <dt>ffmpeg</dt><dd>${ffmpegRow(s)}</dd>
     </dl>
     <p class="note">改這些要編輯 <code>config.toml</code> 並重啟 backend。
       不是漏做的執行期開關 —— 它們決定檔案落在哪裡，執行到一半換掉會讓

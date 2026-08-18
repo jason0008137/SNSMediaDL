@@ -122,7 +122,10 @@ def test_account_prefs_roundtrip(client, loaded):
     aid = client.get("/api/accounts").json()[0]["id"]
 
     r = client.patch(f"/api/accounts/{aid}/prefs", json={"stars": 5, "is_favorite": True})
-    assert r.json() == {"id": aid, "stars": 5, "is_favorite": True}
+    # is_tracked / not_found_streak 也在回應裡（自動退訂的「恢復追蹤」走的是
+    # 同一個端點）—— 沒改到它們，但呼叫端要看得到現值。
+    assert r.json() == {"id": aid, "stars": 5, "is_favorite": True,
+                        "is_tracked": True, "not_found_streak": 0}
 
     a = client.get("/api/accounts").json()[0]
     assert a["stars"] == 5 and a["is_favorite"] is True

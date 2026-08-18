@@ -16,6 +16,13 @@ dependencies = [
     "pydantic>=2.6",
     # 格線縮圖。沒有它，一頁 60 格要傳上百 MB 的原檔。
     "Pillow>=10",
+    # 影片縮圖要抽第一個影格，那需要 ffmpeg —— 一支**原生執行檔**，不是
+    # Python 套件。這個 wheel 自帶一支 static build，所以裝完專案就有，
+    # 使用者不必自己去安裝 ffmpeg。
+    #
+    # ⚠️ 系統 PATH 上的 ffmpeg **優先於**它（見 config.py 的偵測三層）：
+    # 自己裝的通常較新、編解碼覆蓋面較廣。這裡只是保證「至少有一支」。
+    "imageio-ffmpeg>=0.4",
     "tomli>=2.0; python_version < '3.11'",
 ]
 

@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
-from ..config import Config
-from ..db.enums import ContentType, FetchStatus, MediaStatus, Rating
+from .. import links
+from ..config import Config, ffmpeg_info, refresh_ffmpeg
+from ..db.enums import ContentType, FetchStatus, MediaKind, MediaStatus, Rating
 from ..db.models import Account, Creator, IdentityHeal, Media, Post
 from ..downloader import runner
+from ..services.fetch_queue import NOT_FOUND_UNTRACK_AT
 from ..services.ingest import last_ingest
 from . import logbuf
 from .app import get_config, get_maker, get_session, get_transport
@@ -45,13 +48,28 @@ def _paged(session: Session, stmt, limit: int, offset: int, mapper) -> dict:
 
 
 def _account_dict(a: Account) -> dict:
+    # 「連回平台」的網址一律由 links.py 產生 —— 前端不得自行拼接。
+    # 前端曾經寫死 `https://x.com/...`，於是 misskey / pixiv 的貼文會連到
+    # x.com 上不存在的位址：不是報錯，是連到錯的地方，比 404 更難發現。
+    url, problem = links.profile_url(
+        a.platform, a.instance_host, a.platform_user_id, a.screen_name
+    )
     return {
         "id": a.id,
         "platform": a.platform,
+        "platform_label": links.display_name(a.platform, a.instance_host),
+        "profile_url": url,
+        "link_problem": problem,
         "instance_host": a.instance_host,
         "platform_user_id": a.platform_user_id,
         "screen_name": a.screen_name,
         "is_tracked": a.is_tracked,
+        "not_found_streak": a.not_found_streak,
+        # 「這是自動退訂的」由**資料**判定，不靠比對 note 的文字 ——
+        # 文案改一次，前端的判斷就會靜默失效（`UnsupportedTarget` 的同一個教訓）。
+        "auto_untracked": (
+            not a.is_tracked and a.not_found_streak >= NOT_FOUND_UNTRACK_AT
+        ),
         "creator_id": a.creator_id,
         "role": a.role,
         "default_rating": a.default_rating,
@@ -433,18 +451,86 @@ def list_posts(
     return _paged(session, stmt, limit, offset, _post_dict)
 
 
-MEDIA_SORTS = ("newest", "oldest", "stars")
+# 排序鍵與方向**拆開**。黏在一起的話，加一個「推文時間」就要變六個選項。
+#   added  = 加入這個庫的順序（media.id，也就是原本的 newest / oldest）
+#   posted = 推文時間（media.posted_at 這個反正規化欄位）
+#   stars  = 五星評分
+MEDIA_SORT_KEYS = ("added", "posted", "stars")
+MEDIA_ORDERS = ("desc", "asc")
+
+# 舊值保留成 alias。既有測試、書籤網址、任何外部呼叫端都不該因為這次改動而壞掉。
+_SORT_ALIASES = {"newest": ("added", "desc"), "oldest": ("added", "asc")}
+
+# 每個鍵的預設方向。「最舊的評分」不是任何人想要的第一眼。
+_DEFAULT_ORDER = {"added": "desc", "posted": "desc", "stars": "desc"}
+
+
+def _norm_sort(sort: str, order: str | None) -> tuple[str, str]:
+    """`sort` / `order` 正規化。不認得就 422（**不默默改用預設**）。"""
+    if sort in _SORT_ALIASES:
+        key, alias_order = _SORT_ALIASES[sort]
+        # 明確給了 order 就以它為準：`sort=newest&order=asc` 是矛盾的寫法，
+        # 但呼叫端的意圖很清楚（他要 asc），照做比報錯有用。
+        return key, (order or alias_order)
+    if sort not in MEDIA_SORT_KEYS:
+        raise HTTPException(
+            422, f"sort 必須是 {' / '.join(MEDIA_SORT_KEYS)} 之一"
+                 f"（或舊值 {' / '.join(_SORT_ALIASES)}）")
+    if order is not None and order not in MEDIA_ORDERS:
+        raise HTTPException(422, f"order 必須是 {' / '.join(MEDIA_ORDERS)} 之一")
+    return sort, (order or _DEFAULT_ORDER[sort])
+
+
+# 多選篩選的值域。**不認得的值一律 422** ——
+# 靜默忽略錯字會讓使用者看到一份「篩選好像沒生效」的畫面，然後懷疑資料錯了。
+_ENUM_VALUES = {
+    "rating": {r.value for r in Rating},
+    "content_type": {c.value for c in ContentType},
+    "status": {s.value for s in MediaStatus},
+}
+
+
+def _multi(
+    raw: list[str] | None, field: str, *, allowed: set[str] | None = None
+) -> list[str]:
+    """多值參數 → 清單。
+
+    接受兩種寫法：重複參數（`?kind=video&kind=animated_gif`，前端用的）
+    與逗號分隔（`?kind=video,animated_gif`，手打網址用的）。
+
+    空字串忽略 —— `?kind=` 的意思是「這個欄位不篩選」，不是「篩選空字串」。
+    """
+    if not raw:
+        return []
+    out: list[str] = []
+    for chunk in raw:
+        for value in str(chunk).split(","):
+            value = value.strip()
+            if not value:
+                continue
+            if allowed is not None and value not in allowed:
+                raise HTTPException(
+                    422, f"{field} 不認得 {value!r}（可用：{sorted(allowed)}）")
+            if value not in out:
+                out.append(value)
+    return out
+
+
+def _in_or_eq(column, values: list[str]):
+    """一律 `.in_()`。單值時 planner 對 IN 單元素的處理與 `=` 相同，
+    但寫法一致比省那一點好 —— 兩種寫法並存時，加條件的人會挑錯邊。"""
+    return column.in_(values)
 
 
 def _media_stmt(
     *,
-    status: str | None,
-    kind: str | None,
-    rating: str | None,
+    status: list[str],
+    kind: list[str],
+    rating: list[str],
     exclude_rating: str | None,
-    content_type: str | None,
+    content_type: list[str],
     account_id: int | None,
-    creator_id: int | None,
+    creator_id: list[str] | list[int],
     platform: str | None,
     min_stars: int | None,
 ):
@@ -452,31 +538,42 @@ def _media_stmt(
 
     兩邊各寫一次條件的話，改了一邊忘了另一邊，症狀是「總數與實際看到的筆數對不上」
     —— 而那看起來像分頁壞了，不像篩選寫錯，會查很久。
+
+    ### 語意：欄位之間 AND，欄位之內 OR
+
+    `?kind=video&kind=animated_gif&rating=sfw`
+      = （kind 是 video 或 animated_gif）**且**（rating 是 sfw）
+
+    ⚠️ **全勾 ≠ 不勾。** `rating IN ('sfw','r18')` 會濾掉 rating 為 NULL 的
+    那 1,072 筆；不勾是全都要。刻意**不做**「全勾自動視為不勾」的貼心處理 ——
+    那會讓使用者永遠看不到未分級的資料，而且沒有任何提示。
     """
     stmt = select(Media)
-    needs_post = any(
-        [rating, exclude_rating, content_type, account_id, creator_id, platform]
-    )
+    needs_post = bool(
+        rating or exclude_rating or content_type or platform
+    ) or account_id is not None or bool(creator_id)
     if needs_post:
         stmt = stmt.join(Post, Media.post_id == Post.id)
-    if creator_id is not None:
+    if creator_id:
         stmt = stmt.join(Account, Post.account_id == Account.id).where(
-            Account.creator_id == creator_id
+            Account.creator_id.in_([int(c) for c in creator_id])
         )
     if account_id is not None:
         stmt = stmt.where(Post.account_id == account_id)
     if platform:
         stmt = stmt.where(Post.platform == platform)
     if status:
-        stmt = stmt.where(Media.status == status)
+        stmt = stmt.where(_in_or_eq(Media.status, status))
     if kind:
-        stmt = stmt.where(Media.kind == kind)
+        stmt = stmt.where(_in_or_eq(Media.kind, kind))
     if rating:
-        stmt = stmt.where(Post.rating == rating)
+        stmt = stmt.where(_in_or_eq(Post.rating, rating))
     if exclude_rating:
+        # NULL 是「未知」，不等於被排除的那一級 —— 必須明確保留，
+        # 否則 `!= 'r18'` 在 SQL 裡會把 NULL 一起濾掉。
         stmt = stmt.where((Post.rating.is_(None)) | (Post.rating != exclude_rating))
     if content_type:
-        stmt = stmt.where(Post.content_type == content_type)
+        stmt = stmt.where(_in_or_eq(Post.content_type, content_type))
     if min_stars is not None:
         stmt = stmt.where(Media.stars >= min_stars)
     return stmt
@@ -484,28 +581,35 @@ def _media_stmt(
 
 @router.get("/media")
 def list_media(
-    status: str | None = None,
-    kind: str | None = None,
-    rating: str | None = None,
+    status: list[str] | None = Query(default=None),
+    kind: list[str] | None = Query(default=None),
+    rating: list[str] | None = Query(default=None),
     exclude_rating: str | None = None,
-    content_type: str | None = None,
+    content_type: list[str] | None = Query(default=None),
     account_id: int | None = None,
-    creator_id: int | None = None,
+    creator_id: list[str] | None = Query(default=None),
     platform: str | None = None,
     min_stars: int | None = Query(
         default=None, ge=1, le=5,
         description="只回 ≥ N 星。⚠️ 這是五星評分，與 rating（sfw/r18 分級）無關",
     ),
-    sort: str = Query(default="newest", description="newest / oldest / stars"),
+    sort: str = Query(default="added",
+                      description="added / posted / stars（舊值 newest / oldest 仍可用）"),
+    order: str | None = Query(default=None, description="desc / asc"),
     limit: int = Query(default=60, le=500),
     offset: int = 0,
     before_id: int | None = Query(
         default=None,
-        description="keyset 分頁游標：只回 id 比它小的（配 sort=newest）。"
+        description="keyset 分頁游標：只回 id 比它小的（配 sort=added&order=desc）。"
                     "與 offset 互斥，有給就忽略 offset",
     ),
     after_id: int | None = Query(
-        default=None, description="keyset 分頁游標：只回 id 比它大的（配 sort=oldest）",
+        default=None,
+        description="keyset 分頁游標：只回 id 比它大的（配 sort=added&order=asc）",
+    ),
+    cursor: str | None = Query(
+        default=None,
+        description="sort=posted 的兩段式游標：`p:<iso>|<id>` 或 `n:<id>`",
     ),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -530,42 +634,61 @@ def list_media(
 
     ### 分頁：keyset 與 offset
 
-    `sort=newest` / `oldest` 走 **keyset**（`before_id` / `after_id`）：
+    `sort=added` 走 **keyset**（`before_id` / `after_id`，或新的 `cursor`）：
     翻到第幾頁都是同樣的成本。
+
+    `sort=posted` 走**兩段式游標**，理由見 `_posted_page()`。
 
     `sort=stars` 仍走 offset。它的排序鍵是 `(stars, id)` 複合又含 NULL，
     keyset 條件寫起來容易錯，而正式庫裡 `stars` 目前 100% 是 NULL ——
     為一條沒人走的路加一段難驗證的邏輯不划算。深頁時會慢，這一點寫在這裡，
     不是靜默的。
     """
-    if sort not in MEDIA_SORTS:
-        raise HTTPException(422, f"sort 必須是 {' / '.join(MEDIA_SORTS)} 之一")
+    key, direction = _norm_sort(sort, order)
     if before_id is not None and after_id is not None:
         raise HTTPException(422, "before_id 與 after_id 不能同時給")
-    if sort == "stars" and (before_id is not None or after_id is not None):
+    if key == "stars" and (before_id is not None or after_id is not None
+                           or cursor is not None):
         # 默默改用 offset 會讓呼叫端以為自己在做 keyset，翻頁時靜默跳筆。
         raise HTTPException(422, "sort=stars 不支援 keyset 分頁，請用 offset")
+    if cursor is not None and (before_id is not None or after_id is not None):
+        raise HTTPException(422, "cursor 與 before_id / after_id 不能同時給")
 
     stmt = _media_stmt(
-        status=status, kind=kind, rating=rating, exclude_rating=exclude_rating,
-        content_type=content_type, account_id=account_id, creator_id=creator_id,
+        status=_multi(status, "status", allowed=_ENUM_VALUES["status"]),
+        kind=_multi(kind, "kind", allowed={k.value for k in MediaKind}),
+        rating=_multi(rating, "rating", allowed=_ENUM_VALUES["rating"]),
+        exclude_rating=exclude_rating,
+        content_type=_multi(content_type, "content_type",
+                            allowed=_ENUM_VALUES["content_type"]),
+        account_id=account_id,
+        creator_id=_multi(creator_id, "creator_id"),
         platform=platform, min_stars=min_stars,
     )
 
+    if key == "posted":
+        return _posted_page(session, stmt, direction, cursor, limit)
+
+    # ── added / stars ──
     if before_id is not None:
         stmt = stmt.where(Media.id < before_id)
     if after_id is not None:
         stmt = stmt.where(Media.id > after_id)
+    if cursor is not None:
+        # `sort=added` 也接受新的 cursor 形式（前端只想記一個字串）
+        stmt = stmt.where(Media.id < _int_cursor(cursor) if direction == "desc"
+                          else Media.id > _int_cursor(cursor))
 
-    if sort == "stars":
+    if key == "stars":
         # nullslast：未評分不能壓在五星前面。id 收尾讓同星等內順序穩定。
-        stmt = stmt.order_by(Media.stars.desc().nullslast(), Media.id.desc())
-    elif sort == "oldest":
-        stmt = stmt.order_by(Media.id.asc())
+        stmt = (stmt.order_by(Media.stars.desc().nullslast(), Media.id.desc())
+                if direction == "desc"
+                else stmt.order_by(Media.stars.asc().nullsfirst(), Media.id.asc()))
     else:
-        stmt = stmt.order_by(Media.id.desc())
+        stmt = stmt.order_by(Media.id.asc() if direction == "asc" else Media.id.desc())
 
-    using_keyset = before_id is not None or after_id is not None
+    using_keyset = (before_id is not None or after_id is not None
+                    or cursor is not None)
     # 多撈一筆來判斷「還有沒有下一頁」。這是 has_more 唯一不需要 COUNT 的做法。
     rows = list(session.scalars(
         stmt.limit(limit + 1).offset(0 if using_keyset else offset)
@@ -573,15 +696,126 @@ def list_media(
     has_more = len(rows) > limit
     rows = rows[:limit]
 
-    cursor = rows[-1].id if rows else None
+    last_id = rows[-1].id if rows else None
+    keyset_ok = key == "added"
     return {
         "items": [_media_dict(m) for m in rows],
         "limit": limit,
         "offset": 0 if using_keyset else offset,
         "has_more": has_more,
-        # 下一頁的游標。sort=oldest 時呼叫端要拿它當 after_id。
-        "next_before_id": cursor if sort == "newest" else None,
-        "next_after_id": cursor if sort == "oldest" else None,
+        # 下一頁的游標。order=asc 時呼叫端要拿它當 after_id。
+        "next_before_id": last_id if keyset_ok and direction == "desc" else None,
+        "next_after_id": last_id if keyset_ok and direction == "asc" else None,
+        "next_cursor": (str(last_id) if keyset_ok and has_more else None),
+    }
+
+
+def _int_cursor(raw: str) -> int:
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise HTTPException(422, f"看不懂的游標：{raw!r}") from exc
+
+
+def _parse_posted_cursor(raw: str) -> tuple[str, datetime | None, int]:
+    """`p:<iso>|<id>` 或 `n:<id>` → (段, 時間, id)。
+
+    **不認得就 422，不默默從頭開始** —— 從頭開始的症狀是「翻到第 30 頁
+    突然跳回第 1 頁」，使用者只會覺得分頁壞了，不會回報成游標格式錯誤。
+    """
+    stage, _, rest = raw.partition(":")
+    if stage == "n":
+        return "n", None, _int_cursor(rest)
+    if stage == "p":
+        iso, sep, mid = rest.rpartition("|")
+        if not sep:
+            raise HTTPException(422, f"看不懂的游標：{raw!r}（p 段要 `p:<iso>|<id>`）")
+        try:
+            return "p", datetime.fromisoformat(iso), _int_cursor(mid)
+        except ValueError as exc:
+            raise HTTPException(422, f"游標裡的時間看不懂：{iso!r}") from exc
+    raise HTTPException(422, f"看不懂的游標：{raw!r}（要 `p:…` 或 `n:…`）")
+
+
+def _posted_page(session: Session, base, direction: str,
+                 cursor: str | None, limit: int) -> dict:
+    """依推文時間分頁。**分兩段翻，游標自己記在哪一段。**
+
+    ### 為什麼不能只寫一個 ORDER BY
+
+    正式庫有 56,631 筆 `posted_at` 是 NULL。`ORDER BY posted_at DESC NULLS LAST`
+    在單頁沒問題，但 **keyset 分頁會斷**：NULL 進不了
+    `(posted_at, id) < (?, ?)` 這種比較 —— 任何含 NULL 的比較結果都是 NULL，
+    也就是「不成立」，於是翻到 NULL 那一段就永遠回空頁。
+
+    ### 兩段
+
+    1. `p` 段：`posted_at IS NOT NULL`，鍵是 `(posted_at, id)`
+    2. `n` 段：`posted_at IS NULL`，鍵只有 `id`
+
+    p 段翻完了才進 n 段。**升冪降冪都一樣，NULL 恆在最後** ——
+    「時間未知」不是「很早」也不是「很晚」，把它排進時間軸上任何一個位置
+    都是在編造資訊。
+    """
+    stage = "p"
+    at: datetime | None = None
+    mid = 0
+    if cursor:
+        stage, at, mid = _parse_posted_cursor(cursor)
+
+    rows: list[Media] = []
+    if stage == "p":
+        stmt = base.where(Media.posted_at.is_not(None))
+        if cursor:
+            # 複合鍵比較：時間相同時用 id 決勝（同一秒發的兩張圖不能互相跳過）
+            stmt = stmt.where(
+                tuple_(Media.posted_at, Media.id) < (at, mid) if direction == "desc"
+                else tuple_(Media.posted_at, Media.id) > (at, mid)
+            )
+        stmt = (stmt.order_by(Media.posted_at.desc(), Media.id.desc())
+                if direction == "desc"
+                else stmt.order_by(Media.posted_at.asc(), Media.id.asc()))
+        rows = list(session.scalars(stmt.limit(limit + 1)))
+
+        if len(rows) > limit:
+            rows = rows[:limit]
+            last = rows[-1]
+            return _posted_result(rows, True,
+                                  f"p:{last.posted_at.isoformat()}|{last.id}")
+        # p 段翻完了 —— 用剩下的名額直接接上 n 段的開頭，
+        # 不要回一個半空的頁再讓前端多發一次請求。
+        need = limit - len(rows)
+        tail = list(session.scalars(
+            base.where(Media.posted_at.is_(None))
+            .order_by(Media.id.desc() if direction == "desc" else Media.id.asc())
+            .limit(need + 1)
+        ))
+        has_more = len(tail) > need
+        tail = tail[:need]
+        rows = rows + tail
+        next_cursor = f"n:{tail[-1].id}" if tail and has_more else None
+        return _posted_result(rows, has_more, next_cursor)
+
+    # n 段（NULL 那一段），鍵只有 id
+    stmt = base.where(Media.posted_at.is_(None))
+    stmt = stmt.where(Media.id < mid if direction == "desc" else Media.id > mid)
+    stmt = stmt.order_by(Media.id.desc() if direction == "desc" else Media.id.asc())
+    rows = list(session.scalars(stmt.limit(limit + 1)))
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return _posted_result(rows, has_more,
+                          f"n:{rows[-1].id}" if rows and has_more else None)
+
+
+def _posted_result(rows: list[Media], has_more: bool, next_cursor: str | None) -> dict:
+    return {
+        "items": [_media_dict(m) for m in rows],
+        "limit": len(rows),
+        "offset": 0,
+        "has_more": has_more,
+        "next_before_id": None,
+        "next_after_id": None,
+        "next_cursor": next_cursor,
     }
 
 
@@ -590,13 +824,13 @@ def list_media(
 # 不是 int 而回 422 —— 不會 fallthrough 到這一支。
 @router.get("/media/count")
 def count_media(
-    status: str | None = None,
-    kind: str | None = None,
-    rating: str | None = None,
+    status: list[str] | None = Query(default=None),
+    kind: list[str] | None = Query(default=None),
+    rating: list[str] | None = Query(default=None),
     exclude_rating: str | None = None,
-    content_type: str | None = None,
+    content_type: list[str] | None = Query(default=None),
     account_id: int | None = None,
-    creator_id: int | None = None,
+    creator_id: list[str] | None = Query(default=None),
     platform: str | None = None,
     min_stars: int | None = Query(default=None, ge=1, le=5),
     session: Session = Depends(get_session),
@@ -611,11 +845,20 @@ def count_media(
             select(func.count()).select_from(stmt.order_by(None).subquery())
         ) or 0
 
-    total = count(_media_stmt(
-        status=status, kind=kind, rating=rating, exclude_rating=exclude_rating,
-        content_type=content_type, account_id=account_id, creator_id=creator_id,
+    # 多值的正規化與 `/api/media` 走同一組函式 —— 兩邊各解析一次的話，
+    # 「總數與看到的筆數對不上」會再發生一次，而那看起來像分頁壞了。
+    filters = dict(
+        status=_multi(status, "status", allowed=_ENUM_VALUES["status"]),
+        kind=_multi(kind, "kind", allowed={k.value for k in MediaKind}),
+        rating=_multi(rating, "rating", allowed=_ENUM_VALUES["rating"]),
+        content_type=_multi(content_type, "content_type",
+                            allowed=_ENUM_VALUES["content_type"]),
+        account_id=account_id,
+        creator_id=_multi(creator_id, "creator_id"),
         platform=platform, min_stars=min_stars,
-    ))
+    )
+
+    total = count(_media_stmt(exclude_rating=exclude_rating, **filters))
 
     # ── 被安全模式擋掉幾筆 ──
     #
@@ -627,11 +870,7 @@ def count_media(
     # 那是另一件事。呼叫端要能分辨「沒被擋」與「沒去算」。
     hidden: int | None = None
     if exclude_rating and total == 0:
-        hidden = count(_media_stmt(
-            status=status, kind=kind, rating=rating, exclude_rating=None,
-            content_type=content_type, account_id=account_id, creator_id=creator_id,
-            platform=platform, min_stars=min_stars,
-        ))
+        hidden = count(_media_stmt(exclude_rating=None, **filters))
 
     return {"total": total, "hidden_by_safe_mode": hidden}
 
@@ -771,9 +1010,19 @@ def get_media_detail(
         .where(Media.post_id == p.id)
         .order_by(Media.ordinal, Media.id)
     ).all()
+    # 貼文網址要 screen_name，而 screen_name 在 accounts 上 —— 用已經 join
+    # 出來的那一列，不為了這件事多打一次 DB。
+    post = _post_dict(p)
+    post_link, post_problem = links.post_url(
+        p.platform, a.instance_host, p.platform_post_id, a.screen_name
+    )
+    post["post_url"] = post_link
+    post["link_problem"] = post_problem
+    post["platform_label"] = links.display_name(p.platform, a.instance_host)
+
     return {
         "media": _media_dict(m),
-        "post": _post_dict(p),
+        "post": post,
         "account": _account_dict(a),
         "siblings": [
             {"id": sid, "ordinal": ordinal, "kind": kind}
@@ -854,6 +1103,10 @@ def retry_all_failed(session: Session = Depends(get_session)) -> dict:
 
 @router.get("/settings")
 def get_settings(cfg: Config = Depends(get_config)) -> dict:
+    # 每次都重新偵測（find_ffmpeg 內部有快取，只有路徑換了才真的掃 PATH）——
+    # 設定頁正是使用者「剛裝好 ffmpeg 想確認」的地方。
+    refresh_ffmpeg()
+    _ffmpeg, _ffmpeg_source = ffmpeg_info(cfg)
     return {
         "auto_download": cfg.auto_download,
         "concurrency": cfg.concurrency,
@@ -867,6 +1120,23 @@ def get_settings(cfg: Config = Depends(get_config)) -> dict:
         # 看得見的約束才不會被誤當成壞掉的控制項。
         "thumb_root": str(cfg.thumb_dir),
         "fetch_max_pages": cfg.fetch_max_pages,
+        # ⚠️ **只回布林，永遠不回值的任何片段。** 介面上要講的是
+        # 「有沒有設」—— 那正是使用者在動手之前需要知道的唯一一件事，
+        # 而 PHPSESSID 一旦回到前端就會出現在瀏覽器記憶體與截圖裡。
+        "credentials": {
+            "pixiv": bool((cfg.platform_credentials or {}).get("pixiv")),
+        },
+        # 影片縮圖的外部依賴。**誠實回報偵測結果** —— 沒裝的時候畫面上
+        # 是一格 503，使用者需要有個地方查得到「為什麼」。
+        #
+        # `source` 是三層偵測中命中的那一層（config / path / bundled）。
+        # 少了它，使用者分不出自己用的是系統那支還是 pip 帶的那支 ——
+        # 而「為什麼這個檔抽不出影格」的第一個要問的就是這件事。
+        "ffmpeg": {
+            "available": _ffmpeg is not None,
+            "path": _ffmpeg,
+            "source": _ffmpeg_source,
+        },
     }
 
 

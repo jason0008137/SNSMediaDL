@@ -1,6 +1,12 @@
 // 媒體瀏覽：篩選、格線、分頁、詳情面板、選取與批次。
 
-import { $, esc, fmtBytes, starsHtml, wireStars } from '../dom.js';
+// ⚠️ `fileErrorText` 一度漏在這份 import 之外 —— 格線與詳情面板的
+// 「為什麼讀不到」因此每次都丟 ReferenceError，畫面永遠停在「縮圖失敗」
+// 四個字。之所以沒被發現，是因為當時影片走佔位 div 不走 <img>，
+// onerror 幾乎不會觸發。
+import {
+  $, esc, fileErrorText, fmtBytes, starsHtml, wireStars,
+} from '../dom.js';
 import { api } from '../api.js';
 import { PAGE, state, safeMode, onSafeModeChange } from '../state.js';
 import { showView, invalidateView } from '../nav.js';
@@ -186,7 +192,8 @@ async function fetchLibTotal() {
   } catch { /* 比較用的數字，算不出來就不顯示百分比，不必報錯 */ }
 }
 
-/** 影片與 ugoira 沒有縮圖（那要 ffmpeg）。格線顯示佔位，點開才載入播放器。 */
+/** 會動的東西。**現在有縮圖了**（影片走 ffmpeg 抽格、ugoira 取 zip 第一張），
+ *  但仍然不掛 `<video>` —— 縮圖是一張 320px WebP，播放器是跨碟開檔。 */
 const PLAYABLE = new Set(['video', 'animated_gif', 'ugoira']);
 
 function cellHtml(m) {
@@ -195,11 +202,13 @@ function cellHtml(m) {
   if (missing) {
     body = `<div class="missing">${m.status === 'failed' ? '下載失敗' : '尚未下載'}</div>`;
   } else if (PLAYABLE.has(m.kind)) {
-    // ⚠️ **刻意不建立 `<video>` 元素。**
+    // ⚠️ **仍然刻意不建立 `<video>` 元素。**
     // 舊版每格掛一個 `preload="metadata"`，一頁 60 格 = 60 次跨磁碟開檔讀
-    // moov box，而檔案散在三顆碟上。佔位只花一個 div。
-    body = `<div class="placeholder"><span class="play">▶</span>
-            <span class="sz">${fmtBytes(m.bytes)}</span></div>`;
+    // moov box，而檔案散在三顆碟上。縮圖走的是同一支 /thumb（320px WebP）。
+    // ▶ 角標留著：那是「這一格會動」的唯一指意。
+    body = `<img class="thumb" alt="" data-id="${m.id}" data-src="/api/media/${m.id}/thumb">
+            <span class="play-badge">▶</span>
+            <span class="sz">${fmtBytes(m.bytes)}</span>`;
   } else {
     // src 留空，由 IntersectionObserver 在捲進視窗時才填（見 wireGridImages）。
     // 縮圖是 320px WebP，不是原檔 —— 正式庫單檔最大 446 MB。
@@ -245,6 +254,10 @@ function wireGridImages() {
         const box = Object.assign(document.createElement('div'), {
           className: 'missing', textContent: '縮圖失敗',
         });
+        // 影片格的 ▶ 角標是絕對定位在正中央的 —— 留著會蓋住錯誤說明，
+        // 而錯誤說明才是這一格現在唯一要傳達的事。
+        const cell = img.closest('.cell');
+        cell?.querySelector('.play-badge')?.remove();
         img.replaceWith(box);
         const why = await fileErrorText(Number(img.dataset.id), { thumb: true });
         if (why) box.textContent = why;
@@ -713,9 +726,13 @@ export async function showDetail(mediaId) {
         : videoHtml(m))
     : `<p class="muted">狀態：${esc(m.status)}${m.error ? `　${esc(m.error)}` : ''}</p>`;
 
-  const link = acct?.screen_name
-    ? `<a href="https://x.com/${esc(acct.screen_name)}/status/${esc(p.platform_post_id)}" target="_blank" rel="noreferrer">在 x.com 開啟</a>`
-    : '—';
+  // 網址由後端的 links.py 產生。**前端不拼平台網址** —— 這裡原本寫死
+  // `https://x.com/...`，於是 misskey / pixiv 的貼文會連到 x.com 上不存在的
+  // 位址：不是報錯，是連到錯的地方，比 404 更難發現。
+  const link = p.post_url
+    ? `<a href="${esc(p.post_url)}" target="_blank" rel="noreferrer">在 ${
+        esc(p.platform_label || p.platform)} 開啟</a>`
+    : `<span class="muted">${esc(p.link_problem || '無法連結')}</span>`;
 
   $('detailBody').innerHTML = `
     ${preview}
