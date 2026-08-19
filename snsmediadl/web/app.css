@@ -1,31 +1,269 @@
+/* ══════════════════════════════════════════════════════════════
+   Material Design 3 · dark scheme
+   seed #006874（teal-cyan）
+
+   色值由 @material/material-color-utilities 的 SchemeTonalSpot 實際
+   產生，**不是手推的近似值**。要改 seed 就整組重算，不要手調單一色。
+
+   ⚠ 這份色票有一個結構性風險：M3 的同一個 tone 就是同一個 L*，所以
+   dark scheme 的所有 T80 角色（primary / error / star / fav / ok /
+   warn / onSurfaceVariant）在**灰階下完全同階**（相對亮度差 0.5%，
+   255 階裡差 1 階）。本專案「顏色不得是唯一狀態載體」的規則因此
+   不能再靠色票自己滿足 —— 每個語意區分都要另外掛一個非顏色通道
+   （符號／形狀／文字／填底的有無／亮度差）。全檔標了 ⚑ 的地方就是。
+   ══════════════════════════════════════════════════════════════ */
+/* ⚑ **只有 dark scheme，這是決定不是漏做。**
+   M3 的配色 token 通常成對出現（light / dark），這裡刻意只做一套：
+   這個工具的內容是縮圖牆，亮色底會跟使用者的圖片搶注意力，而且它是
+   長時間盯著看的批次整理介面。沒有 `prefers-color-scheme: light` 的
+   對應區塊、也沒有 `.light` class —— **不要當成缺口補上去**。
+
+   真要加的話成本不是「再寫一份顏色」：`scripts/contrast-pairs.txt` 的
+   36 個配對要整份再驗一次，而縮圖上那幾個寫死 `rgba(0,0,0,…)` 的角標
+   （見下方 `.cell .tag` 的說明）在亮色底下的推理會整個不同。
+
+   ⚑ 間距一律是 4 的倍數（M3 的 8dp 系統）。**例外只有 1px 與 2px**：
+   那些不是間距節奏，是角標的緊實內距與邊框補償，收成 4px 會讓角標胖一圈。
+   ⚑ 圖示尺寸收斂在 18 / 20 / 24 / 40 / 48 —— 加新圖示請從這幾個裡挑。 */
 :root {
-  --bg: #0e1621;
-  --panel: #15202b;
-  --panel-2: #1c2b38;      /* 群組底板（共域）用 */
-  --line: #2f3b47;
-  --text: #e7e9ea;
-  --muted: #8b98a5;
-  --accent: #1d9bf0;
-  --ok: #00ba7c;
-  --warn: #ff7a00;
-  --err: #f4212e;
-  /* 深底上的**錯誤文字**要用亮一階的紅。--err 是給底色與邊框用的：
-     它直接當文字色時，灰階化之後比旁邊的 --muted 還暗 —— 也就是
-     「有問題」那一行反而比正常那一行更看不見。實測（T18 灰階驗收）抓到的。 */
-  --err-text: #ff8f95;
-  --star: #f7b500;        /* 已評分 */
-  --star-off: #6b7783;    /* 未評分。要看得見 —— 它是按鈕，不是裝飾 */
-  --star-dim: #b8891a;    /* hover 預覽 */
-  --fav: #f91880;
+  /* ── 色彩角色 ── */
+  --md-sys-color-primary: #82d3e1;
+  --md-sys-color-on-primary: #00363d;
+  --md-sys-color-primary-container: #004f58;
+  --md-sys-color-on-primary-container: #9eeffe;
+  --md-sys-color-secondary: #b1cbd0;
+  --md-sys-color-on-secondary: #1c3438;
+  --md-sys-color-secondary-container: #334b4f;
+  --md-sys-color-on-secondary-container: #cde7ec;
+  --md-sys-color-tertiary: #bbc6ea;
+  --md-sys-color-on-tertiary: #24304d;
+  --md-sys-color-tertiary-container: #3b4665;
+  --md-sys-color-on-tertiary-container: #dae2ff;
+  --md-sys-color-error: #ffb4ab;
+  --md-sys-color-on-error: #690005;
+  --md-sys-color-error-container: #93000a;
+  --md-sys-color-on-error-container: #ffdad6;
+  --md-sys-color-surface: #0e1415;
+  --md-sys-color-on-surface: #dee3e5;
+  --md-sys-color-on-surface-variant: #bfc8ca;
+  --md-sys-color-surface-container-lowest: #090f10;
+  --md-sys-color-surface-container-low: #171d1e;
+  --md-sys-color-surface-container: #1b2122;
+  --md-sys-color-surface-container-high: #252b2c;
+  --md-sys-color-surface-container-highest: #303637;
+  --md-sys-color-surface-dim: #0e1415;
+  --md-sys-color-surface-bright: #343a3b;
+  --md-sys-color-outline: #899294;
+  --md-sys-color-outline-variant: #3f484a;
+  --md-sys-color-inverse-surface: #dee3e5;
+  --md-sys-color-inverse-on-surface: #2b3133;
+  --md-sys-color-inverse-primary: #006874;
+  --md-sys-color-scrim: #000000;
+
+  /* ── 自訂語意色 ──
+     ★金、♥粉、ok綠、warn橘 是既有的固定語意，不從 seed 推導。
+     以 Blend.harmonize 併入 teal 系後取 T80 / T20 / T30 / T90，
+     這樣它們與 M3 角色放在一起不會顯得是外來的。 */
+  --app-star: #e5c518;              /* 原 #f7b500 */
+  --app-on-star: #3a3000;
+  --app-star-container: #534600;
+  --app-on-star-container: #ffe260;
+  --app-fav: #ffaeda;               /* 原 #f91880 */
+  --app-on-fav: #610047;
+  --app-fav-container: #890066;
+  --app-on-fav-container: #ffd8ea;
+  --app-ok: #4bddbd;                /* 原 #00ba7c */
+  --app-on-ok: #00382d;
+  --app-ok-container: #005142;
+  --app-on-ok-container: #6dfad8;
+  --app-warn: #ffb86f;              /* 原 #ff7a00 */
+  --app-on-warn: #4a2800;
+  --app-warn-container: #693c00;
+  --app-on-warn-container: #ffdcbd;
+
+  /* 未評分的星星。⚑ 與 --app-star 的差別必須撐得住灰階：
+     outline 的相對亮度 0.28，--app-star 是 0.57 —— 兩倍差，
+     灰階下仍分得出哪幾顆亮著。（★ 是同一個字符，沒有形狀通道，
+     所以這裡的亮度差就是唯一的載體，不能再壓縮。） */
+  --app-star-off: var(--md-sys-color-outline);
+  --app-star-dim: color-mix(in srgb, var(--app-star) 55%, var(--md-sys-color-outline));
+
+  /* ── 形狀 ── */
+  --md-sys-shape-corner-none: 0;
+  --md-sys-shape-corner-extra-small: 4px;
+  --md-sys-shape-corner-small: 8px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-large: 16px;
+  --md-sys-shape-corner-extra-large: 28px;
+  --md-sys-shape-corner-full: 9999px;
+
+  /* ── 字級 ──
+     ⚠ 字型家族**刻意不換 Roboto**。這是正體中文介面，換 Roboto 之後
+     中文會掉回系統 fallback，等於把中文的排版交給運氣。使用者
+     2026-08-19 已裁示維持 system-ui + Noto Sans TC，也不引外部字型
+     （會破壞「本機單機、零外部相依」）。
+
+     Label 與 Title 的字重是 500、Body 是 400，字距（tracking）各不相同 ——
+     這兩組不是裝飾，少了它們 token 只做了一半，元件仍得各自寫死字重。 */
+  --md-sys-typescale-label-small-size: 11px;
+  --md-sys-typescale-label-small-line-height: 16px;
+  --md-sys-typescale-label-small-weight: 500;
+  --md-sys-typescale-label-small-tracking: 0.5px;
+  --md-sys-typescale-label-medium-size: 12px;
+  --md-sys-typescale-label-medium-line-height: 16px;
+  --md-sys-typescale-label-medium-weight: 500;
+  --md-sys-typescale-label-medium-tracking: 0.5px;
+  --md-sys-typescale-label-large-size: 14px;
+  --md-sys-typescale-label-large-line-height: 20px;
+  --md-sys-typescale-label-large-weight: 500;
+  --md-sys-typescale-label-large-tracking: 0.1px;
+  --md-sys-typescale-body-small-size: 12px;
+  --md-sys-typescale-body-small-line-height: 16px;
+  --md-sys-typescale-body-small-weight: 400;
+  --md-sys-typescale-body-small-tracking: 0.4px;
+  --md-sys-typescale-body-medium-size: 14px;
+  --md-sys-typescale-body-medium-line-height: 20px;
+  --md-sys-typescale-body-medium-weight: 400;
+  --md-sys-typescale-body-medium-tracking: 0.25px;
+  --md-sys-typescale-body-large-size: 16px;
+  --md-sys-typescale-body-large-line-height: 24px;
+  --md-sys-typescale-body-large-weight: 400;
+  --md-sys-typescale-body-large-tracking: 0.5px;
+  --md-sys-typescale-title-small-size: 14px;
+  --md-sys-typescale-title-small-line-height: 20px;
+  --md-sys-typescale-title-small-weight: 500;
+  --md-sys-typescale-title-small-tracking: 0.1px;
+  --md-sys-typescale-title-medium-size: 16px;
+  --md-sys-typescale-title-medium-line-height: 24px;
+  --md-sys-typescale-title-medium-weight: 500;
+  --md-sys-typescale-title-medium-tracking: 0.15px;
+  --md-sys-typescale-title-large-size: 22px;
+  --md-sys-typescale-title-large-line-height: 28px;
+  --md-sys-typescale-title-large-weight: 400;
+  --md-sys-typescale-title-large-tracking: 0;
+
+  /* ── 複合 token：一個排版角色 = 一次套齊 ──
+     M3 的一個排版角色是 size + line-height + weight + tracking 四件一組。
+     只寫 font-size 等於做了四分之一 —— 字重與行高會掉回瀏覽器預設
+     （400 / normal），整個介面因此少一層層級感（M3 的 Label/Title 是 500）。
+
+     這些複合值**不另寫一份數值**，全部由上面的單項 token 組成，
+     所以改一個地方兩邊同時生效，不會有兩份會走鐘的真相。
+
+     ⚠ `font` 簡寫**不含** letter-spacing，tracking 仍然要分開寫 ——
+     這正好符合「tracking 不套中文段落」的既有決定（見下方註解）。
+     ⚠ `font` 簡寫會**重設** font-family / font-style / font-variant，
+     所以任何刻意的 font-weight、或 ui-monospace 家族，都必須寫在
+     `font:` **之後**才不會被吃掉。 */
+  --md-sys-typescale-font-family: system-ui, "Noto Sans TC", sans-serif;
+  --md-sys-typescale-label-small: var(--md-sys-typescale-label-small-weight) var(--md-sys-typescale-label-small-size)/var(--md-sys-typescale-label-small-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-label-medium: var(--md-sys-typescale-label-medium-weight) var(--md-sys-typescale-label-medium-size)/var(--md-sys-typescale-label-medium-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-label-large: var(--md-sys-typescale-label-large-weight) var(--md-sys-typescale-label-large-size)/var(--md-sys-typescale-label-large-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-body-small: var(--md-sys-typescale-body-small-weight) var(--md-sys-typescale-body-small-size)/var(--md-sys-typescale-body-small-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-body-medium: var(--md-sys-typescale-body-medium-weight) var(--md-sys-typescale-body-medium-size)/var(--md-sys-typescale-body-medium-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-body-large: var(--md-sys-typescale-body-large-weight) var(--md-sys-typescale-body-large-size)/var(--md-sys-typescale-body-large-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-title-small: var(--md-sys-typescale-title-small-weight) var(--md-sys-typescale-title-small-size)/var(--md-sys-typescale-title-small-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-title-medium: var(--md-sys-typescale-title-medium-weight) var(--md-sys-typescale-title-medium-size)/var(--md-sys-typescale-title-medium-line-height) var(--md-sys-typescale-font-family);
+  --md-sys-typescale-title-large: var(--md-sys-typescale-title-large-weight) var(--md-sys-typescale-title-large-size)/var(--md-sys-typescale-title-large-line-height) var(--md-sys-typescale-font-family);
+
+  /* ⚠ 字距（tracking）在正體中文介面上**刻意不套用到中文段落**。
+     M3 的 tracking 值是為拉丁字母的視覺節奏調的；套到全形中文上會讓
+     字間變得鬆散不均（中文本來就是等寬方塊，不需要 letter-spacing 補償）。
+     目前只用在純數字／純英文的地方，見下方 .num 與 label 類。
+
+     ⚠⚑ 全檔有若干處寫 `font-weight: 700`，**那些是刻意偏離 type scale 的**。
+     M3 的 Label/Title 是 500，但這幾處的粗體是「灰階第二通道」：
+     .tab.active（目前分頁）、.card-verdict.bad（自動退訂）、.cell .tag.r18、
+     .siblings button.cur（目前這張）、.pill.failed、.fetch-badge.bad、
+     .safe-toggle[aria-pressed="false"]（安全模式關閉）。
+     M3 的 T80 角色在灰階下同階，這些地方的顏色會消失，字重不會。
+     **降回 500 會讓它們在灰階下無法辨識** —— 稽核時不要把這幾處當成違規改掉。 */
+
+  /* ── state layer ──
+     M3 的 hover / focus / pressed 是**疊一層半透明的 on-色**，
+     不是換底色，也不是 filter: brightness()（那會把飽和度一起拉走，
+     而且在深色底上幾乎看不出來）。 */
+  --md-sys-state-hover-opacity: 8%;
+  --md-sys-state-focus-opacity: 10%;
+  --md-sys-state-pressed-opacity: 10%;
+  --md-sys-state-dragged-opacity: 16%;
+
+  /* ── 動態 ──
+     M3 的動效有方向性：**進場用 decelerate**（快速出現、緩緩定位），
+     離場才用 accelerate。這裡只有進場（面板是 <details>，收起是瞬間的
+     display 切換，純 CSS 攔不到），所以只需要 standard 與 decelerate 兩條。 */
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1);
+  --md-sys-motion-duration-short: 200ms;
+  --md-sys-motion-duration-medium: 300ms;
+}
+
+/* ── state layer 的轉場 ────────────────────────────────
+   全檔的 hover / active 狀態都是同一種寫法：把 on-色以 8% / 10% 疊到
+   底色上（`color-mix`）。差別只在疊在哪個 surface 上，**變的一律是
+   background-color / color / border-color 這三個屬性**，所以一條規則
+   就能涵蓋，不必在二十幾條 :hover 裡各寫一次 transition。
+
+   用 `:where()` 讓整條的優先權是 0 —— 它只補「怎麼變」，
+   絕不會跟任何一條「變成什麼」的規則搶。
+
+   ⚠ 只列**互動元件**。不要圖方便寫成 `*`：那會讓每一次重繪都掛上轉場，
+   格線捲動時整片縮圖都在補間，而且看起來像畫面在拖。 */
+:where(
+  button, summary, .tab, .activity, .icon-btn, .safe-toggle, .linkish,
+  .hintbtn, .chip button, .ms-row, .cell, .card, .stars .star, .fav,
+  .viewer-close, .viewer-nav, select, input, textarea
+) {
+  transition:
+    background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+    color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+    border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+
+/* ── 面板展開 ──
+   `<details>` 一打開就是 display 從 none 變成有值，沒有中間狀態可以補間 ——
+   所以用 animation（進場動畫）而不是 transition。收起沒有動畫是 `<details>`
+   的先天限制，不是漏做：要補得靠 JS 延後 `open = false`，那個代價換來的
+   只有收起時的 300ms，不划算。
+
+   位移只有 4px：面板是「從觸發它的那顆 chip 底下長出來」，不是從遠處飛進來。 */
+@keyframes drop-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+.msdrop[open] > .ms-panel,
+.fmore[open] > .fmore-body {
+  animation: drop-in var(--md-sys-motion-duration-medium)
+             var(--md-sys-motion-easing-standard-decelerate);
+}
+
+/* 照全檔既有的模式：每組動效自己帶一個 reduce 區塊。
+   ⚠ 這裡**兩者都要關**。只關 animation 會留下 state layer 的 200ms 補間，
+   對前庭敏感的使用者來說滑過整排按鈕仍然是一片在動的東西。 */
+@media (prefers-reduced-motion: reduce) {
+  :where(
+    button, summary, .tab, .activity, .icon-btn, .safe-toggle, .linkish,
+    .hintbtn, .chip button, .ms-row, .cell, .card, .stars .star, .fav,
+    .viewer-close, .viewer-nav, select, input, textarea
+  ) {
+    transition: none;
+  }
+  .msdrop[open] > .ms-panel,
+  .fmore[open] > .fmore-body { animation: none; }
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.5 system-ui, "Noto Sans TC", sans-serif;
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  /* 根層就是 body-medium 這個角色，不再寫死一份 14px/1.5。
+     ⚠ 行高因此從 unitless 1.5 變成絕對值 20px：unitless 是「繼承比例、
+     各自乘自己的字級」，絕對值是「繼承那個數字」。沒有自己宣告字級的
+     子元素會拿到 20px 而不是自己字級的 1.5 倍 —— 這是 M3 的作法
+     （每個角色的 line-height 本來就是絕對值），但改動不是無害的，
+     所以寫在這裡。 */
+  font: var(--md-sys-typescale-body-medium);
 }
 
 /* 只給螢幕閱讀器。圖示按鈕（⚙）不能只有一個字符當名字。 */
@@ -34,14 +272,23 @@ body {
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
+/* ── 全域 focus ring ──
+   state layer **不能取代** focus ring：8% 的疊層在鍵盤操作時根本
+   看不出焦點在哪。兩個都要。 */
+:where(button, select, input, textarea, summary, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
 /* ── header ────────────────────────────────────────────── */
 header {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 8px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  background: var(--md-sys-color-surface-container);
+  /* 裝飾性分隔 → outline-variant */
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -49,227 +296,409 @@ header {
 }
 
 /* 識別是正當的，但不得佔決策層級 —— 縮小、不加色。 */
-.brand { font-weight: 600; font-size: 13px; color: var(--muted); letter-spacing: .02em; }
+.brand {
+  /* ⚑ 600 是刻意的：識別要看得出來但不佔決策層級。寫在 font: 之後，
+     否則 font 簡寫會把它重設回 label 的 500。 */
+  font: var(--md-sys-typescale-label-medium); font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+  letter-spacing: var(--md-sys-typescale-label-medium-tracking);
+}
 
-/* tab 群組共用一個底板（共域）—— 三個 tab 是一組選擇，不是三顆散落的按鈕 */
-.tabs {
-  display: flex; gap: 2px;
-  background: var(--bg); border: 1px solid var(--line);
-  border-radius: 10px; padding: 3px;
-}
+/* tab 群組 —— M3 primary tab。三個 tab 是一組選擇，不是三顆散落的按鈕；
+   共域由「共用一條基線」表達，不再靠外框把它們圈起來。 */
+.tabs { display: flex; gap: 4px; }
 .tab {
-  background: none; border: 0; color: var(--muted);
-  padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  position: relative;
+  background: none; border: 0; color: var(--md-sys-color-on-surface-variant);
+  padding: 8px 16px 8px;
+  border-radius: var(--md-sys-shape-corner-small) var(--md-sys-shape-corner-small) 0 0;
+  cursor: pointer;
+  font: var(--md-sys-typescale-title-small);
 }
-.tab:hover { background: var(--panel-2); color: var(--text); }
-/* ⚠️ 目前頁**不只靠顏色**：底線 + 粗體 + 底板，灰階列印仍分得出來。 */
-.tab.active {
-  background: var(--panel-2); color: var(--text);
-  font-weight: 700; box-shadow: inset 0 -2px 0 var(--accent);
+.tab:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity), transparent);
+  color: var(--md-sys-color-on-surface);
+}
+/* ⚑ 目前頁**不只靠顏色**：3px 指示條（形狀）+ 粗體，灰階列印仍分得出來。
+   指示條用 ::after 而不是 border-bottom —— border 會參與 flex 的尺寸計算，
+   切換分頁時整條 tab bar 會抖一下。 */
+.tab.active { color: var(--md-sys-color-on-surface); font-weight: 700; }
+.tab.active::after {
+  content: ""; position: absolute; left: 8px; right: 8px; bottom: 0; height: 3px;
+  background: var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-full) var(--md-sys-shape-corner-full) 0 0;
 }
 
 .header-right { display: flex; align-items: center; gap: 8px; margin-left: auto; position: relative; }
 
+/* M3 badge：error 底、on-error 字、full 圓角、最小 16px。
+   ⚑ 字重 700 是刻意偏離 label-small 的 500 —— badge 很小，灰階下
+   要靠字重撐住可讀性。 */
 .badge {
-  display: inline-block; min-width: 18px; padding: 0 5px;
-  border-radius: 9px; background: var(--err); color: #fff;
-  font-size: 11px; font-weight: 700; text-align: center;
+  display: inline-block; min-width: 16px; padding: 0 4px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-error); color: var(--md-sys-color-on-error);
+  font: var(--md-sys-typescale-label-small); font-weight: 700; text-align: center;
 }
 .hidden { display: none !important; }
 
 /* 背景活動區。三條流程各自獨立，這裡只給一句摘要，點開才分列。 */
 .activity {
-  display: flex; align-items: center; gap: 7px;
-  background: var(--bg); border: 1px solid var(--line); color: var(--muted);
-  border-radius: 8px; padding: 5px 12px; font-size: 12px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline);
+  color: var(--md-sys-color-on-surface-variant);
+  border-radius: var(--md-sys-shape-corner-full); padding: 4px 16px;
+  font: var(--md-sys-typescale-label-medium);
 }
-.activity:hover { color: var(--text); filter: none; }
+.activity:hover {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-surface-container-lowest));
+}
 .activity .dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--muted); flex: none;
+  width: 8px; height: 8px; border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-on-surface-variant); flex: none;
 }
-.activity.busy { color: var(--text); border-color: var(--accent); }
-.activity.busy .dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
-.activity.bad { color: var(--err); border-color: var(--err); }
-.activity.bad .dot { background: var(--err); }
+.activity.busy { color: var(--md-sys-color-on-surface); border-color: var(--md-sys-color-primary); }
+.activity.busy .dot { background: var(--md-sys-color-primary); animation: pulse 1.2s ease-in-out infinite; }
+.activity.bad { color: var(--md-sys-color-error); border-color: var(--md-sys-color-error); }
+/* ⚑ busy 與 bad 原本只差顏色，而 primary 與 error 在灰階下同階
+   （亮度 0.5677 vs 0.5684）。busy 有 pulse 動畫、bad 沒有，但動畫
+   不是可靠的載體（prefers-reduced-motion 會關掉它）。所以把 bad 的
+   點改成**菱形**：形狀通道，灰階與靜止時都成立。 */
+.activity.bad .dot {
+  background: var(--md-sys-color-error);
+  border-radius: var(--md-sys-shape-corner-none);
+  transform: rotate(45deg);
+}
 @keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) {
+  .activity.busy .dot { animation: none; }
+}
 
 .activity-pop {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
-  width: 320px; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px 12px; font-size: 12px;
-  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  width: 320px; background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 8px 12px;
+  font: var(--md-sys-typescale-body-small);
 }
 .activity-pop .flow {
   display: flex; gap: 8px; align-items: baseline;
-  padding: 5px 0; border-bottom: 1px solid var(--line);
+  padding: 4px 0; border-bottom: 1px solid var(--md-sys-color-outline-variant);
 }
-.activity-pop .flow b { color: var(--muted); font-weight: 400; min-width: 84px; flex: none; }
+.activity-pop .flow b { color: var(--md-sys-color-on-surface-variant); font-weight: 400; min-width: 84px; flex: none; }
 .activity-pop .flow-foot { display: flex; align-items: center; gap: 8px; padding-top: 8px; }
-button.small { padding: 3px 8px; font-size: 11px; }
+button.small { padding: 4px 8px; font: var(--md-sys-typescale-label-small); }
 
+/* M3 standard icon button：無邊框、full 圓角、靠 state layer 表達互動。
+   40×40 是 M3 的觸控目標下限，圖示本身仍是 20px 級。 */
 .icon-btn {
-  background: var(--bg); border: 1px solid var(--line); color: var(--muted);
-  border-radius: 8px; padding: 4px 9px; font-size: 14px; line-height: 1.4;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; padding: 0;
+  background: none; border: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  font: var(--md-sys-typescale-label-large); line-height: 1;
 }
-.icon-btn:hover { color: var(--text); filter: none; }
+.icon-btn:hover {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity), transparent);
+}
+.icon-btn:active {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-pressed-opacity), transparent);
+}
 
 /* ── 安全模式：訊號方向要對準例外 ──
    開著（預設、受保護）= 安靜。關著 = 畫面上會出現 r18 = 才需要喊。
-   關閉時用「圖示 + 文字 + 邊框」三重載體，不只靠顏色。 */
+   ⚑ 關閉時用「圖示 + 文字 + 加粗邊框」三重載體，不只靠顏色。 */
 .safe-toggle {
-  display: flex; align-items: center; gap: 6px;
-  background: var(--bg); border: 1px solid var(--line); color: var(--muted);
-  border-radius: 8px; padding: 5px 12px; font-size: 12px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline);
+  color: var(--md-sys-color-on-surface-variant);
+  border-radius: var(--md-sys-shape-corner-full); padding: 4px 16px;
+  font: var(--md-sys-typescale-label-medium);
 }
-.safe-toggle:hover { filter: none; color: var(--text); }
+.safe-toggle:hover {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-surface-container-lowest));
+}
+/* ⚑ 關閉 = 畫面上會出現 r18，這是**例外狀態**，要喊得比 warn 更明確：
+   改用 error-container 配對（填底）。載體有四個 —— 圖示、文字、2px
+   加粗邊框、以及填底的有無。填底是其中最耐灰階的一個（error-container
+   的相對亮度 0.062，對 surfaceContainerLowest 的 0.0044 差了 14 倍）。
+   ⚠ 字重 700 與 2px 邊框是既有的產品層摩擦，不得減弱。 */
 .safe-toggle[aria-pressed="false"] {
-  border-color: var(--warn); color: var(--warn); font-weight: 700;
-  border-width: 2px; padding: 4px 11px;
+  background: var(--md-sys-color-error-container);
+  border-color: var(--md-sys-color-error);
+  color: var(--md-sys-color-on-error-container);
+  font-weight: 700; border-width: 2px; padding: 4px 12px;
+}
+.safe-toggle[aria-pressed="false"]:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-error-container)
+              var(--md-sys-state-hover-opacity), var(--md-sys-color-error-container));
+  color: var(--md-sys-color-on-error-container);
 }
 
 /* ── view ──────────────────────────────────────────────── */
-.view { padding: 14px 16px 40px; }
+.view { padding: 16px 16px 40px; }
 
 .filters, .fetch-actions, .queue-summary {
   display: flex; gap: 8px; align-items: center;
-  flex-wrap: wrap; margin-bottom: 14px;
+  flex-wrap: wrap; margin-bottom: 16px;
 }
 .spacer { flex: 1; }
 
 /* 篩選列分三群，每群一個共域底板 —— 靠間距分組在滿載（帳號名 40 半形寬）
    時會被擠散，而那正是分組必須成立的時候。 */
 .filter-bar {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px;
 }
 .fgroup {
-  display: flex; gap: 6px; align-items: center;
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; padding: 5px 8px;
+  display: flex; gap: 8px; align-items: center;
+  background: var(--md-sys-color-surface-container);
+  /* 群組底板是裝飾性的容器邊界，裡面的控制項各自有 outline */
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 4px 8px;
 }
 .fgroup-who { flex: 1 1 320px; min-width: 260px; }
 .fgroup-who input[type=search] { flex: 1; min-width: 0; }
 
 .fmore { position: relative; }
+/* M3 assist chip：8px 圓角、outline 邊框、無填底。 */
 .fmore > summary {
   list-style: none; cursor: pointer; user-select: none;
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--muted);
+  background: none;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-small); padding: 8px 16px;
+  font: var(--md-sys-typescale-label-large);
+  color: var(--md-sys-color-on-surface-variant);
 }
 .fmore > summary::-webkit-details-marker { display: none; }
 .fmore > summary::after { content: " ▾"; }
-.fmore[open] > summary { color: var(--text); border-color: var(--accent); }
+.fmore > summary:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-surface-container));
+}
+.fmore[open] > summary { color: var(--md-sys-color-on-surface); border-color: var(--md-sys-color-primary); }
 .fmore[open] > summary::after { content: " ▴"; }
 .fmore-body {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 15;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  padding: 10px 12px; min-width: 340px;
-  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-medium);
+  padding: 8px 12px; min-width: 340px;
 }
 .fmore-row {
   display: flex; align-items: center; gap: 8px; padding: 4px 0;
-  font-size: 12px; color: var(--muted);
+  font: var(--md-sys-typescale-body-small); color: var(--md-sys-color-on-surface-variant);
 }
 .fmore-row > span:first-child { min-width: 66px; }
 .fmore-row em { font-style: normal; }
 
 /* 生效條件標籤列。長度與數量都隨內容變動 —— 一律給共域。 */
 .chip-bar {
-  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; padding: 7px 10px; margin-bottom: 10px;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 8px 8px; margin-bottom: 8px;
 }
-.chip-bar > .lead { font-size: 12px; color: var(--muted); }
+.chip-bar > .lead { font: var(--md-sys-typescale-body-small); color: var(--md-sys-color-on-surface-variant); }
 .chip {
-  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
-  padding: 3px 6px 3px 10px; border-radius: 999px;
-  background: var(--panel-2); border: 1px solid var(--accent);
-  font-size: 12px; color: var(--muted);
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%;
+  padding: 4px 8px 4px 8px; border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-secondary-container);
+  border: 1px solid var(--md-sys-color-outline);
+  font: var(--md-sys-typescale-body-small); color: var(--md-sys-color-on-secondary-container);
 }
-.chip b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.chip b { color: var(--md-sys-color-on-secondary-container); font-weight: 600; overflow-wrap: anywhere; }
 .chip button {
-  background: none; border: 0; color: var(--muted); cursor: pointer;
-  font-size: 15px; line-height: 1; padding: 0 4px;
+  background: none; border: 0; color: var(--md-sys-color-on-secondary-container); cursor: pointer;
+  font-size: 18px; line-height: 1; padding: 0 4px;
 }
-.chip button:hover { color: var(--err); filter: none; }
+.chip button:hover { color: var(--md-sys-color-error); }
 
-.count-line { margin: 0 0 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
-.count-line .hidden-note { color: var(--warn); }
-.count-line .todo { color: var(--text); }
+.count-line { margin: 0 0 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.count-line .hidden-note { color: var(--app-warn); }
+.count-line .todo { color: var(--md-sys-color-on-surface); }
 
 /* ── 選取模式 ── */
 .sel-bar {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-  background: var(--panel-2); border: 1px solid var(--accent);
-  border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;
+  background: var(--md-sys-color-surface-container-high);
+  /* 選取模式是「作用中」狀態 → primary 邊框（不是 outline） */
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-small); padding: 8px 12px; margin-bottom: 12px;
 }
 .cell .pick {
   position: absolute; top: 6px; right: 6px; width: 20px; height: 20px;
-  border-radius: 4px; border: 2px solid #fff; background: rgba(0,0,0,.5);
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  border: 2px solid #fff; background: rgba(0,0,0,.5);
   display: none; align-items: center; justify-content: center;
-  font-size: 13px; color: #fff; font-weight: 700;
+  font: var(--md-sys-typescale-label-medium); color: #fff; font-weight: 700;
 }
 body.selecting .cell .pick { display: flex; }
 body.selecting .cell { cursor: copy; }
-.cell.picked { outline: 3px solid var(--accent); outline-offset: -3px; }
-.cell.picked .pick { background: var(--accent); border-color: var(--accent); }
+/* ⚑ 已選 = primary 外框 **+ 打勾的核取記號**（.pick 會填色打勾）。
+   外框在灰階下與 hover 的 outline 分不出來，核取記號才是可靠的載體。 */
+.cell.picked { outline: 3px solid var(--md-sys-color-primary); outline-offset: -3px; }
+.cell.picked .pick {
+  background: var(--md-sys-color-primary); border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
 
 /* 「N 個媒體」是入口不是標籤 —— 要看得出可以點（指意）。
    disabled 時不只是變灰，還要說得出為什麼（data-tip 寫著原因）。*/
+/* M3 text button。
+   ⚑ 底線**不照 M3 拿掉**：text button 在 M3 裡靠 primary 色與內文區分，
+   而本專案的 primary 在灰階下與 on-surface 幾乎同階（0.568 vs 0.761 是
+   有差，但與 on-surface-variant 的 0.567 完全同階）。底線是形狀通道。 */
 .linkish {
-  background: none; border: 0; padding: 0; font: inherit;
-  color: var(--accent); cursor: pointer; text-decoration: underline dotted;
+  background: none; border: 0; padding: 0 4px; font: inherit;
+  border-radius: var(--md-sys-shape-corner-full);
+  color: var(--md-sys-color-primary); cursor: pointer; text-decoration: underline dotted;
 }
-.linkish:hover:not(:disabled) { text-decoration: underline solid; filter: none; }
+.linkish:hover:not(:disabled) {
+  text-decoration: underline solid;
+  background: color-mix(in srgb, var(--md-sys-color-primary) var(--md-sys-state-hover-opacity), transparent);
+}
 .linkish:disabled {
-  color: var(--muted); cursor: not-allowed; text-decoration: none;
+  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+  cursor: not-allowed; text-decoration: none;
 }
 
 /* 行內確認。不用 confirm() —— 那會擋住整個分頁，而且長得很醜 */
-.confirm { display: flex; gap: 6px; align-items: center; font-size: 12px; }
-.confirm b { color: var(--warn); }
-#bulkMsg.ok { color: var(--ok); }
-#bulkMsg.err { color: var(--err-text); }
-.card-msg { font-size: 11px; margin-left: 4px; }
-.card-msg.ok { color: var(--ok); }
-.card-msg.err { color: var(--err-text); }
+.confirm { display: flex; gap: 8px; align-items: center; font: var(--md-sys-typescale-body-small); }
+.confirm b { color: var(--app-warn); }
+/* ⚑ ok 與 err 在 M3 下灰階同階（0.5688 vs 0.5684）—— 補符號前綴，
+   符號才是灰階下唯一分得出來的東西。 */
+#bulkMsg.ok::before, .card-msg.ok::before, .saved.ok::before,
+.note.good::before, .good::before, .bulk-box .ok-line::before { content: "✓ "; }
+#bulkMsg.err::before, .card-msg.err::before, .saved.err::before,
+.note.bad::before, .bad::before, .bulk-box .err::before { content: "⚠ "; }
+#bulkMsg.ok { color: var(--app-ok); }
+#bulkMsg.err { color: var(--md-sys-color-error); }
+.card-msg { font: var(--md-sys-typescale-label-small); margin-left: 4px; }
+.card-msg.ok { color: var(--app-ok); }
+.card-msg.err { color: var(--md-sys-color-error); }
 
 select, input, button, textarea {
-  background: var(--panel); color: var(--text);
-  border: 1px solid var(--line); border-radius: 8px;
-  padding: 6px 10px; font-size: 13px; font-family: inherit;
+  background: var(--md-sys-color-surface-container); color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 8px 8px; font: var(--md-sys-typescale-label-medium);
 }
-.fgroup select, .fgroup input { background: var(--bg); }
-button { cursor: pointer; background: var(--accent); border-color: var(--accent); color: #fff; }
-button:hover { filter: brightness(1.1); }
-button:disabled { opacity: .45; cursor: not-allowed; filter: none; }
-button.ghost { background: none; color: var(--muted); border-color: var(--line); }
-button.ghost:hover { color: var(--text); }
+.fgroup select, .fgroup input { background: var(--md-sys-color-surface-container-lowest); }
+/* 輸入類元件 focus 時邊框轉 primary 並加粗 —— M3 outlined text field 的作法 */
+select:focus-visible, input:focus-visible, textarea:focus-visible {
+  border-color: var(--md-sys-color-primary); border-width: 2px; padding: 4px 8px;
+}
+/* M3 的按鈕分層：**預設是 filled tonal**（secondary-container），
+   `.primary` 才是 filled（primary）。一頁上主要動作只有一兩個 ——
+   全部都填 primary 等於都不突出。目前掛 `.primary` 的是「送出」與
+   「開始更新」，其餘一律降一級。 */
+button {
+  cursor: pointer;
+  background: var(--md-sys-color-secondary-container);
+  border-color: transparent;
+  color: var(--md-sys-color-on-secondary-container);
+  border-radius: var(--md-sys-shape-corner-full);
+  padding: 8px 16px;
+}
+/* state layer：疊 on-色，不是 filter: brightness() */
+button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-on-secondary-container)
+                        var(--md-sys-state-hover-opacity), var(--md-sys-color-secondary-container));
+}
+button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-on-secondary-container)
+                        var(--md-sys-state-pressed-opacity), var(--md-sys-color-secondary-container));
+}
+button.primary {
+  background: var(--md-sys-color-primary);
+  border-color: transparent;
+  color: var(--md-sys-color-on-primary);
+}
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-on-primary) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-primary));
+}
+button.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-on-primary) var(--md-sys-state-pressed-opacity),
+                        var(--md-sys-color-primary));
+}
+/* M3 的 disabled：底 12%、字 38%，不是整塊 opacity。
+   整塊 opacity 會把邊框、圖示、文字一起壓掉，結果是「看不出這是什麼」，
+   而不是「看得出這個現在不能用」。 */
+button:disabled {
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+  border-color: transparent;
+  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+}
+/* M3 outlined button */
+button.ghost {
+  background: none; color: var(--md-sys-color-on-surface-variant);
+  border-color: var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+}
+button.ghost:hover:not(:disabled) {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-primary) var(--md-sys-state-hover-opacity), transparent);
+}
+button.ghost:active:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-primary) var(--md-sys-state-pressed-opacity), transparent);
+}
 /* 破壞性操作要看起來就不一樣，不要跟「重標既有」長得一模一樣。
-   ⚠️ 灰階下紅底與藍底幾乎同一階 —— 所以除了顏色再加一個**形狀載體**。 */
-button.danger { background: var(--err); border-color: var(--err); color: #fff; }
+   ⚑ 灰階下 error 底與 primary 底幾乎同一階 —— 所以除了顏色再加一個
+   **形狀載體**（⚠ 前綴）。這個前綴不准為了版面精簡拿掉。 */
+button.danger {
+  background: var(--md-sys-color-error);
+  border-color: transparent;
+  color: var(--md-sys-color-on-error);
+}
 button.danger::before { content: "⚠ "; }
+button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-on-error) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-error));
+}
+button.danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-on-error) var(--md-sys-state-pressed-opacity),
+                        var(--md-sys-color-error));
+}
 
 /* (?) 說明鈕。低頻的格式規則進氣泡；**約束不進氣泡**（見 index.html 的註解）。 */
 .hintbtn {
-  background: none; border: 1px solid var(--line); color: var(--muted);
-  width: 18px; height: 18px; border-radius: 50%; padding: 0;
-  font-size: 11px; line-height: 1; vertical-align: middle;
+  background: none; border: 1px solid var(--md-sys-color-outline);
+  color: var(--md-sys-color-on-surface-variant);
+  width: 18px; height: 18px; border-radius: var(--md-sys-shape-corner-full); padding: 0;
+  font: var(--md-sys-typescale-label-small); line-height: 1; vertical-align: middle;
 }
-.hintbtn:hover { color: var(--text); filter: none; }
+.hintbtn:hover {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-primary) var(--md-sys-state-hover-opacity), transparent);
+}
 
-.muted { color: var(--muted); font-size: 12px; }
-.muted.err, .err { color: var(--err-text); }
-.small { font-size: 11px; }
+.muted { color: var(--md-sys-color-on-surface-variant); font: var(--md-sys-typescale-body-small); }
+.muted.err, .err { color: var(--md-sys-color-error); }
+.small { font: var(--md-sys-typescale-label-small); }
 
 /* ── 自製 tooltip（取代原生 title）──
    原生 title：hover 約一秒才出現、不能換行、鍵盤拿不到、觸控看不到。
    而這個專案曾經把整個系統模型塞在一個 title 裡。 */
+/* M3 plain tooltip：inverse 配對、extra-small 圓角、**無邊框**
+   （inverse-surface 對任何 surface 都是高對比，邊框只會多一條雜訊）。
+   ⚠ box-shadow 保留：tooltip 會蓋在任意內容上（包含使用者的縮圖），
+   tonal surface 在那裡不成立 —— 這是 viewer 之外唯一的例外。 */
 .tip {
   position: fixed; z-index: 100; max-width: 320px;
-  background: #08101a; color: var(--text);
-  border: 1px solid var(--line); border-radius: 8px;
-  padding: 7px 10px; font-size: 12px; line-height: 1.5;
+  background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface);
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  padding: 8px 8px; font: var(--md-sys-typescale-body-small); line-height: 1.5;
   white-space: pre-line; pointer-events: none;
   box-shadow: 0 8px 24px rgba(0,0,0,.6);
 }
@@ -278,50 +707,74 @@ button.danger::before { content: "⚠ "; }
 body.overlay-open { overflow: hidden; }
 .ovl-backdrop {
   position: fixed; inset: 0; z-index: 50;
-  background: rgba(0,0,0,.55);
+  /* M3 scrim：32%。原本的 55% 是把背景壓黑，M3 的作法是讓底下的內容
+     仍然看得見（使用者要知道自己沒有離開原本的畫面），焦點靠 panel
+     自己的 tonal surface 拉出來。 */
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 32%, transparent);
   display: flex; align-items: flex-start; justify-content: center;
 }
 .ovl-backdrop.drawer { justify-content: flex-end; align-items: stretch; }
+/* M3 的 elevation 用 **tonal surface** 表達，不疊 box-shadow：
+   浮起來的東西底色更亮（surfaceContainerHigh），邊界用 outline
+   （outline-variant 對這個底只有 1.x:1，會是一條看不見的邊界）。 */
 .ovl-panel {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-extra-large);
   width: min(620px, 94vw); max-height: 86vh; margin-top: 6vh;
   display: flex; flex-direction: column;
-  box-shadow: 0 24px 64px rgba(0,0,0,.6);
 }
 .ovl-backdrop.drawer .ovl-panel {
   width: min(460px, 96vw); max-height: none; height: 100%;
-  margin: 0; border-radius: 0; border-right: 0;
+  margin: 0; border-radius: var(--md-sys-shape-corner-none); border-right: 0;
 }
 .ovl-backdrop.small .ovl-panel { width: min(460px, 94vw); }
 .ovl-head {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 12px 14px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 12px 16px; border-bottom: 1px solid var(--md-sys-color-outline-variant);
 }
-.ovl-head h2 { margin: 0; font-size: 15px; color: var(--text); overflow-wrap: anywhere; }
-.ovl-head .sub { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.ovl-head h2 {
+  /* ⚑ 600 是決定不是預設：這幾個標題與周圍內文同尺寸，只靠角色的
+     500 分不出主從。與 h2 的既有作法一致。font 簡寫會重設字重，
+     所以必須寫在它之後。 */
+  margin: 0; font: var(--md-sys-typescale-title-small); font-weight: 600;
+  color: var(--md-sys-color-on-surface); overflow-wrap: anywhere;
+}
+.ovl-head .sub {
+  font: var(--md-sys-typescale-label-small);
+  color: var(--md-sys-color-on-surface-variant); overflow-wrap: anywhere;
+}
 .ovl-head .close {
-  margin-left: auto; background: none; border: 0; color: var(--muted);
-  font-size: 20px; padding: 0 6px; line-height: 1;
+  margin-left: auto; background: none; border: 0; color: var(--md-sys-color-on-surface-variant);
+  font-size: 20px; padding: 0 8px; line-height: 1;
 }
-.ovl-body { padding: 14px; overflow-y: auto; }
+.ovl-body { padding: 16px; overflow-y: auto; }
 .ovl-foot {
   display: flex; gap: 8px; justify-content: flex-end;
-  padding: 12px 14px; border-top: 1px solid var(--line);
+  padding: 12px 16px; border-top: 1px solid var(--md-sys-color-outline-variant);
 }
 /* 每個區塊一個共域 —— 抽屜裡的四塊**作用範圍各不相同**
    （只影響新貼文 / 會改上千則 / 歸屬 / 不可復原），靠間距分不開。 */
 .ovl-section {
-  background: var(--bg); border: 1px solid var(--line);
-  border-radius: 10px; padding: 12px; margin-bottom: 12px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 12px; margin-bottom: 12px;
 }
-.ovl-section h3 { margin: 0 0 8px; font-size: 13px; }
-.ovl-section .note { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
+.ovl-section h3 { margin: 0 0 8px; font: var(--md-sys-typescale-label-medium); font-weight: 600; }
+.ovl-section .note {
+  font: var(--md-sys-typescale-label-small);
+  color: var(--md-sys-color-on-surface-variant); margin: 8px 0 0;
+}
 .ovl-section .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-/* 危險區：不可復原的動作要與其他動作用容器隔開，且擺在最底。 */
-.ovl-section.danger-zone { border-color: var(--err); margin-top: 22px; }
-.ovl-section.danger-zone h3 { color: var(--err); }
+/* 危險區：不可復原的動作要與其他動作用容器隔開，且擺在最底。
+   ⚑ 邊框加粗到 2px —— 顏色在灰階下會與一般區塊同階，粗細不會。 */
+.ovl-section.danger-zone {
+  border-color: var(--md-sys-color-error); border-width: 2px; padding: 12px; margin-top: 24px;
+}
+.ovl-section.danger-zone h3 { color: var(--md-sys-color-error); }
+.ovl-section.danger-zone h3::before { content: "⚠ "; }
 .confirm-lines {
-  margin: 0; font-size: 13px; line-height: 1.7; white-space: pre-wrap;
+  margin: 0; font: var(--md-sys-typescale-label-large); line-height: 1.7; white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -333,69 +786,111 @@ body.overlay-open { overflow: hidden; }
 }
 .cell {
   position: relative; aspect-ratio: 1;
-  background: var(--panel); border-radius: 8px; overflow: hidden;
-  cursor: pointer; border: 1px solid var(--line);
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: var(--md-sys-shape-corner-medium); overflow: hidden;
+  cursor: pointer; border: 1px solid var(--md-sys-color-outline-variant);
 }
-.cell:hover { border-color: var(--accent); }
+/* hover 用 state layer + outline，不是「邊框變 accent」。
+   ⚠ 疊層走 ::before 而不是 ::after —— ::after 已經被 st-pending /
+   st-failed 的文字角標佔用了。 */
+.cell:hover { border-color: var(--md-sys-color-outline); }
+.cell:hover::before {
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: color-mix(in srgb, var(--md-sys-color-on-surface)
+              var(--md-sys-state-hover-opacity), transparent);
+}
 .cell img, .cell video { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* ⚠ 底下這幾個疊在縮圖上的角標**刻意用寫死的 rgba(0,0,0,…) + #fff**，
+   不走 M3 token。理由：它們蓋在使用者的任意圖片上，而不是蓋在某個
+   surface 上 —— 主題色在這裡不成立，任何隨主題變動的底色都可能剛好
+   撞上圖片的顏色而讀不出來。固定黑底 + 白字是唯一能保證對比的作法。
+   這不是漏改，不要「順手統一」掉。 */
 .cell .tag {
-  position: absolute; top: 4px; left: 4px;
-  font-size: 10px; padding: 1px 6px; border-radius: 6px;
+  position: absolute; top: 4px; left: 4px; z-index: 2;
+  font: var(--md-sys-typescale-label-small); padding: 1px 8px;
+  border-radius: var(--md-sys-shape-corner-full);
   background: rgba(0,0,0,.72); color: #fff;
 }
-/* ⚠️ r18 不可以只靠紅底 —— 灰階列印下紅底與黑底幾乎一樣。
-   文字 + 驚嘆圖示 + 實線外框，三重載體。 */
-.cell .tag.r18 { background: var(--err); border: 1px solid #fff; font-weight: 700; }
+/* ⚑ r18 不可以只靠紅底 —— 灰階列印下紅底與黑底幾乎一樣。
+   文字 + 實線白框 + 粗體，三重載體。 */
+.cell .tag.r18 {
+  background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);
+  border: 1px solid #fff; font-weight: 700;
+}
 .cell .kind {
-  position: absolute; bottom: 4px; right: 4px;
-  font-size: 10px; padding: 1px 6px; border-radius: 6px;
+  position: absolute; bottom: 4px; right: 4px; z-index: 2;
+  font: var(--md-sys-typescale-label-small); padding: 1px 8px;
+  border-radius: var(--md-sys-shape-corner-full);
   background: rgba(0,0,0,.72); color: #fff;
 }
 .cell .missing {
   display: flex; align-items: center; justify-content: center;
-  width: 100%; height: 100%; color: var(--err-text); font-size: 12px; text-align: center;
-  padding: 6px; white-space: pre-line; line-height: 1.5;
+  width: 100%; height: 100%; color: var(--md-sys-color-error);
+  font: var(--md-sys-typescale-body-small); text-align: center;
+  padding: 8px; white-space: pre-line; line-height: 1.5;
 }
 
 /* 影片／動圖的佔位。**刻意不掛 <video>** —— 一頁 60 格就是 60 次跨磁碟
    開檔讀 moov box，而檔案散在三顆碟上。點開詳情才載入真的播放器。
 
-   不用顏色當唯一載體：▶ 是形狀，灰階列印仍看得出這是可播放的東西。 */
+   ⚑ 不用顏色當唯一載體：▶ 是形狀，灰階列印仍看得出這是可播放的東西。 */
 .cell .placeholder {
   display: flex; flex-direction: column; gap: 4px;
   align-items: center; justify-content: center;
   width: 100%; height: 100%;
   background: repeating-linear-gradient(
-    45deg, var(--panel), var(--panel) 8px, var(--bg) 8px, var(--bg) 16px);
+    45deg,
+    var(--md-sys-color-surface-container) 0,
+    var(--md-sys-color-surface-container) 8px,
+    var(--md-sys-color-surface-container-lowest) 8px,
+    var(--md-sys-color-surface-container-lowest) 16px);
 }
-.cell .placeholder .play { font-size: 26px; color: var(--text); line-height: 1; }
-.cell .placeholder .sz { font-size: 10px; color: var(--muted); }
+.cell .placeholder .play { font-size: 24px; color: var(--md-sys-color-on-surface); line-height: 1; }
+.cell .placeholder .sz { font: var(--md-sys-typescale-label-small); color: var(--md-sys-color-on-surface-variant); }
 
 /* 影片／動圖的縮圖上疊 ▶ 角標與檔案大小。
    ▶ 是**形狀**載體：一張抽出來的靜止影格與一張照片長得一模一樣，
    沒有這個角標就分不出哪一格點下去會動。
    底下墊一層半透明黑：白色影格上的白色 ▶ 會看不見。 */
 .cell .play-badge, .cell .sz {
-  position: absolute; pointer-events: none;
-  background: rgba(0, 0, 0, .55); color: #fff; border-radius: 4px;
+  position: absolute; pointer-events: none; z-index: 2;
+  background: rgba(0, 0, 0, .55); color: #fff;
+  border-radius: var(--md-sys-shape-corner-full);
 }
 .cell .play-badge {
   left: 50%; top: 50%; transform: translate(-50%, -50%);
-  font-size: 22px; line-height: 1; padding: 6px 10px;
+  font-size: 24px; line-height: 1; padding: 8px 8px;
 }
-.cell .sz { left: 4px; bottom: 4px; font-size: 10px; padding: 1px 4px; }
+.cell .sz { left: 4px; bottom: 4px; font: var(--md-sys-typescale-label-small); padding: 1px 8px; }
 
 /* 縮圖還沒載入時（src 未填）不要顯示破圖圖示 */
 .cell img.thumb:not([src]) { visibility: hidden; }
+/* ⚑ pending 與 failed 原本一個靠 opacity、一個靠紅框，而紅框在灰階下
+   與 hover 的 outline 分不出來。兩者都補一個**文字角標**。 */
 .cell.st-pending { opacity: .55; }
-.cell.st-failed { border-color: var(--err); }
+.cell.st-pending::after,
+.cell.st-failed::after {
+  position: absolute; left: 4px; top: 4px; z-index: 3;
+  font: var(--md-sys-typescale-label-small); font-weight: 700;
+  padding: 1px 8px; border-radius: var(--md-sys-shape-corner-extra-small);
+}
+.cell.st-pending::after {
+  content: "待下載";
+  background: rgba(0,0,0,.72); color: #fff;
+}
+.cell.st-failed { border-color: var(--md-sys-color-error); }
+.cell.st-failed::after {
+  content: "⚠ 失敗";
+  background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);
+}
 
 /* 只在有評分時才會出現在 DOM 裡。放右上角，避開左上的分級 tag
    與右下的 kind 標籤。 */
 .cell .star-badge {
   position: absolute; top: 4px; right: 4px;
-  font-size: 10px; padding: 1px 5px; border-radius: 6px;
-  background: rgba(0,0,0,.72); color: var(--star);
+  font: var(--md-sys-typescale-label-small); padding: 1px 4px;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  background: rgba(0,0,0,.72); color: var(--app-star);
   letter-spacing: -1px;
 }
 
@@ -404,165 +899,236 @@ body.overlay-open { overflow: hidden; }
 .grid.loading { position: relative; opacity: .55; }
 .grid.loading::before {
   content: ""; position: absolute; left: 0; right: 0; top: -6px; height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background: linear-gradient(90deg, transparent, var(--md-sys-color-primary), transparent);
   animation: sweep 1.1s linear infinite;
 }
 @keyframes sweep { 0% { transform: translateX(-30%); } 100% { transform: translateX(30%); } }
+@media (prefers-reduced-motion: reduce) {
+  .grid.loading::before { animation: none; }
+}
 
 .empty {
-  padding: 26px 16px; text-align: center; color: var(--muted); font-size: 13px;
-  background: var(--panel); border: 1px dashed var(--line); border-radius: 10px;
+  padding: 24px 16px; text-align: center; color: var(--md-sys-color-on-surface-variant);
+  font: var(--md-sys-typescale-label-large);
+  background: var(--md-sys-color-surface-container);
+  border: 1px dashed var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-medium);
   line-height: 1.8;
 }
-.empty b { color: var(--text); }
+.empty b { color: var(--md-sys-color-on-surface); }
 
-.pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 18px; }
+.pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 16px; }
+/* 翻頁是次要導覽 —— outlined，不跟頁面上的動作按鈕搶。 */
+.pager button {
+  background: none; color: var(--md-sys-color-on-surface-variant);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+}
+.pager button:hover:not(:disabled) {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-primary) var(--md-sys-state-hover-opacity), transparent);
+}
 
 /* ── 五星評分與我的最愛 ──
-   ⚠️ 這是「評分」（stars），與 sfw/r18 分級（rating）是兩件事。 */
+   ⚠ 這是「評分」（stars），與 sfw/r18 分級（rating）是兩件事。 */
 .stars { display: inline-flex; gap: 1px; white-space: nowrap; }
 .stars .star {
   background: none; border: 0; padding: 0 1px; margin: 0;
   font-size: 18px; line-height: 1;
   /* ⚠️ 未點亮**不能**設成接近背景色。第一版用了 --line（#2f3b47）對上
      卡片的 #15202b，結果是：新資料庫裡每個帳號都未評分 = 整排星星隱形,
-     使用者根本找不到可以評分的地方。看不見的控制項等於不存在。 */
-  color: var(--star-off);
+     使用者根本找不到可以評分的地方。看不見的控制項等於不存在。
+     ⚑ M3 下改用 outline（相對亮度 0.28）對 --app-star（0.57）——
+     ★ 是同一個字符、沒有形狀通道，這個兩倍亮度差就是唯一的載體。 */
+  color: var(--app-star-off);
   cursor: pointer;
 }
-.stars .star:hover { color: var(--star-dim); }
-.stars .star.on { color: var(--star); }
+.stars .star:hover { color: var(--app-star-dim); }
+.stars .star.on { color: var(--app-star); }
 /* 滑過時預覽「點下去會變幾星」：先讓整排變暗金色，再把游標右邊的
    後續兄弟節點壓回去 —— 剩下亮著的就是游標那顆與它左邊的。純 CSS，
    不必為了 hover 效果寫 JS。 */
-.stars:hover .star { color: var(--star-dim); }
-.stars .star:hover ~ .star { color: var(--star-off); }
+.stars:hover .star { color: var(--app-star-dim); }
+.stars .star:hover ~ .star { color: var(--app-star-off); }
 
+/* ⚑ ♥ / ♡ 是兩個不同字符 —— 形狀通道本來就有，顏色只是加強。 */
 .fav {
   background: none; border: 0; padding: 0 2px; margin: 0;
-  font-size: 19px; line-height: 1; color: var(--muted); cursor: pointer;
+  font-size: 20px; line-height: 1; color: var(--md-sys-color-on-surface-variant); cursor: pointer;
 }
-.fav:hover { color: var(--fav); filter: none; }
-.fav.on { color: var(--fav); }
+.fav:hover { color: var(--app-fav); }
+.fav.on { color: var(--app-fav); }
 
 /* ── 帳號卡 ──
    380px × 4 欄：最長的帳號名 `はやにぇR_39182623_エジプト娘` 是 20 字元
    全形 ≈ 40 半形寬，卡片標題列必須為它設計。 */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 10px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 8px; }
 .card {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; padding: 12px;
+  background: var(--md-sys-color-surface-container-low);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 12px;
 }
-.card:hover { border-color: var(--accent); }
-.card h3 { margin: 0; font-size: 14px; }
-.card .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.card select, .card input { padding: 4px 8px; font-size: 12px; }
-.card button { padding: 4px 10px; font-size: 12px; }
+.card:hover {
+  border-color: var(--md-sys-color-outline);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface)
+              var(--md-sys-state-hover-opacity), var(--md-sys-color-surface-container-low));
+}
+.card h3 { margin: 0; font: var(--md-sys-typescale-label-large); font-weight: 600; }
+.card .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.card select, .card input { padding: 4px 8px; font: var(--md-sys-typescale-body-small); }
+.card button { padding: 4px 8px; font: var(--md-sys-typescale-body-small); }
 
-.card-head { display: flex; align-items: flex-start; gap: 6px; }
+.card-head { display: flex; align-items: flex-start; gap: 8px; }
 /* 名稱換行至兩行，**不截斷** —— 截斷會讓兩個小帳看起來是同一個。 */
 .card-head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 .card-head .stars { flex: none; }
-.card-id { font-size: 11px; color: var(--muted); margin: 4px 0 8px; overflow-wrap: anywhere; }
 /* id 那一行左邊是身分、右邊是「連回平台」。gap 讓長 id 換行時不會黏在一起。 */
-.card-id { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.card-id {
+  font: var(--md-sys-typescale-label-small); color: var(--md-sys-color-on-surface-variant);
+  margin: 4px 0 8px; overflow-wrap: anywhere;
+  display: flex; gap: 8px; align-items: baseline; justify-content: space-between;
+}
 .ext-link { flex: none; white-space: nowrap; }
 /* 連不出來時是**說明**不是連結：拿掉底線與手指游標，不讓人以為點得動。
-   ⚠ 字符讓它在只有灰階的螢幕上仍然與可點的連結不同。 */
-.ext-link.off { color: var(--muted); opacity: .75; cursor: help; text-decoration: none; }
+   ⚑ 字符讓它在只有灰階的螢幕上仍然與可點的連結不同。 */
+.ext-link.off {
+  color: var(--md-sys-color-on-surface-variant); opacity: .75;
+  cursor: help; text-decoration: none;
+}
 
 /* 內層共域：統計 + 結論。它們回答的是同一個問題（這個帳號的狀況如何）。 */
 .card-stats {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-  padding: 8px 10px; font-size: 12px; color: var(--muted); line-height: 1.7;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 8px 8px; font: var(--md-sys-typescale-body-small);
+  color: var(--md-sys-color-on-surface-variant); line-height: 1.7;
 }
-.card-stats .num { color: var(--text); font-variant-numeric: tabular-nums; }
+.card-stats .num { color: var(--md-sys-color-on-surface); font-variant-numeric: tabular-nums; }
 /* 一行結論而不是三個原始日期：其中兩個在正式庫的鑑別力是零
    （4,648/4,653 同一天、last_fetched_at 全空）。 */
 .card-verdict { display: block; }
 .card-verdict.bad {
-  /* 白字填底，與旁邊的正常結論行拉開一階 —— 只靠紅字的話，灰階下
-     「有問題」的那一行反而比正常那一行暗。 */
-  display: inline-block; margin-top: 2px; padding: 1px 6px; border-radius: 6px;
-  background: var(--err); color: #fff; font-weight: 700;
+  /* ⚑ 填底 + 粗體，與旁邊的正常結論行拉開一階 —— 只靠紅字的話，
+     灰階下「有問題」的那一行反而比正常那一行暗。
+     「有沒有填底」本身就是灰階下的載體。 */
+  display: inline-block; margin-top: 2px; padding: 1px 8px;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);
+  font-weight: 700;
 }
 .card-foot {
   display: flex; align-items: center; gap: 8px; margin-top: 8px;
-  font-size: 11px; color: var(--muted);
+  font: var(--md-sys-typescale-label-small); color: var(--md-sys-color-on-surface-variant);
 }
 
 .fetch-badge {
-  display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 6px;
-  background: var(--panel-2); color: var(--muted); vertical-align: middle;
+  display: inline-block; font: var(--md-sys-typescale-label-small); padding: 1px 8px;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant); vertical-align: middle;
 }
 /* 需要注意的狀態要看得出來 —— 一個一直抓失敗的帳號，不該跟
-   「查過但沒新東西」的帳號長得一模一樣。⚠ 是形狀載體。 */
-.fetch-badge.bad { background: var(--err); color: #fff; font-weight: 700; }
+   「查過但沒新東西」的帳號長得一模一樣。⚑ ⚠ 是形狀載體（由 JS 加）。 */
+.fetch-badge.bad {
+  background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);
+  font-weight: 700;
+}
 
-.viewmode { display: flex; align-items: center; gap: 10px; }
+.viewmode { display: flex; align-items: center; gap: 8px; }
 
 /* ── 詳情面板 ── */
 .detail {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 94vw);
-  background: var(--panel); border-left: 1px solid var(--line);
+  background: var(--md-sys-color-surface-container-low);
+  border-left: 1px solid var(--md-sys-color-outline-variant);
   padding: 44px 16px 20px; overflow-y: auto; z-index: 30;
-  box-shadow: -8px 0 24px rgba(0,0,0,.4);
 }
 .detail .close {
   position: absolute; top: 8px; right: 10px;
-  background: none; border: 0; color: var(--muted); font-size: 22px; padding: 4px 10px;
+  background: none; border: 0; color: var(--md-sys-color-on-surface-variant);
+  font-size: 24px; padding: 4px 8px;
 }
-.detail img, .detail video { width: 100%; border-radius: 8px; background: #000; }
-.detail dl { display: grid; grid-template-columns: 78px 1fr; gap: 4px 10px; margin: 14px 0; font-size: 12px; }
-.detail dt { color: var(--muted); }
+.detail img, .detail video {
+  width: 100%; border-radius: var(--md-sys-shape-corner-small); background: #000;
+}
+.detail dl {
+  display: grid; grid-template-columns: 78px 1fr; gap: 4px 8px; margin: 16px 0;
+  font: var(--md-sys-typescale-body-small);
+}
+.detail dt { color: var(--md-sys-color-on-surface-variant); }
 .detail dd { margin: 0; overflow-wrap: anywhere; }
-.detail a { color: var(--accent); }
+.detail a { color: var(--md-sys-color-primary); }
 .detail .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 /* 分級（掛貼文）與評分（掛媒體）**作用範圍不同**，必須各自給容器。
    空間上相鄰但決策上必須分開 —— 靠間距分不開。 */
 .scope-card {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
-  padding: 10px; margin-top: 12px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium);
+  padding: 8px; margin-top: 12px;
 }
-.scope-card h4 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
-.src-note { font-size: 11px; color: var(--muted); margin-top: 6px; }
-.saved { font-size: 11px; color: var(--muted); min-width: 66px; }
-.saved.ok { color: var(--ok); }
-.saved.err { color: var(--err-text); }
+.scope-card h4 {
+  margin: 0 0 8px; font: var(--md-sys-typescale-body-small);
+  color: var(--md-sys-color-on-surface-variant); font-weight: 600;
+}
+.src-note {
+  font: var(--md-sys-typescale-label-small);
+  color: var(--md-sys-color-on-surface-variant); margin-top: 8px;
+}
+.saved {
+  font: var(--md-sys-typescale-label-small);
+  color: var(--md-sys-color-on-surface-variant); min-width: 66px;
+}
+.saved.ok { color: var(--app-ok); }
+.saved.err { color: var(--md-sys-color-error); }
 /* 同貼文其他張：正式庫單則貼文最多 194 個媒體 —— 橫向捲動，不換行堆高。 */
-.siblings { display: flex; gap: 4px; overflow-x: auto; padding: 6px 0; }
+.siblings { display: flex; gap: 4px; overflow-x: auto; padding: 8px 0; }
 .siblings button {
-  flex: none; width: 34px; height: 34px; padding: 0; font-size: 11px;
-  background: var(--panel); border-color: var(--line); color: var(--muted);
+  flex: none; width: 34px; height: 34px; padding: 0;
+  font: var(--md-sys-typescale-label-small);
+  background: var(--md-sys-color-surface-container);
+  border-color: var(--md-sys-color-outline); color: var(--md-sys-color-on-surface-variant);
 }
-.siblings button.cur { border-color: var(--accent); color: var(--text); }
+/* ⚑ 目前這一張：primary 邊框 **+ 粗體**。灰階下靠字重分辨。 */
+.siblings button.cur {
+  border-color: var(--md-sys-color-primary); color: var(--md-sys-color-on-surface); font-weight: 700;
+}
 /* 正式庫最長路徑 282 字元 —— 預設截成一行，可展開。 */
-.path-line { display: flex; gap: 6px; align-items: flex-start; }
+.path-line { display: flex; gap: 8px; align-items: flex-start; }
 .path-line .val { flex: 1; min-width: 0; }
 .path-line .val:not(.open) {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .path-line .val.open { overflow-wrap: anywhere; }
-.path-line button { flex: none; padding: 0 6px; font-size: 11px; }
+.path-line button { flex: none; padding: 0 8px; font: var(--md-sys-typescale-label-small); }
 
 /* ── 抓取 ── */
-h2 { font-size: 14px; margin: 22px 0 10px; color: var(--muted); font-weight: 600; }
+h2 {
+  font: var(--md-sys-typescale-label-large); margin: 24px 0 8px;
+  color: var(--md-sys-color-on-surface-variant); font-weight: 600;
+}
 .fetch-grid {
   display: grid; grid-template-columns: 3fr 2fr; gap: 16px; margin-bottom: 20px;
 }
 @media (max-width: 900px) { .fetch-grid { grid-template-columns: 1fr; } }
 
 .fetch-box {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; padding: 14px;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 16px;
 }
-.fetch-box h2 { margin: 0 0 8px; font-size: 15px; color: var(--text); }
+.fetch-box h2 {
+  margin: 0 0 8px; font: var(--md-sys-typescale-title-medium); font-weight: 600;
+  color: var(--md-sys-color-on-surface);
+}
 .fetch-box textarea {
-  width: 100%; background: var(--bg);
+  width: 100%; background: var(--md-sys-color-surface-container-lowest);
   font: 13px/1.6 ui-monospace, "Cascadia Code", monospace; resize: vertical;
 }
 .fetch-box code {
-  background: var(--bg); padding: 1px 4px; border-radius: 4px;
+  background: var(--md-sys-color-surface-container-lowest); padding: 1px 4px;
+  border-radius: var(--md-sys-shape-corner-extra-small);
   font-family: ui-monospace, monospace;
 }
 .fetch-actions { margin: 8px 0 0; }
@@ -570,150 +1136,217 @@ h2 { font-size: 14px; margin: 22px 0 10px; color: var(--muted); font-weight: 600
 /* 「可抓 N / 不可抓 M」—— 90.5% 的帳號 backend 抓不動，那是多數情況，
    必須在按下去之前就看得見。 */
 .scope-box {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-  padding: 8px 10px; font-size: 12px; color: var(--muted); line-height: 1.8;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 8px 8px; font: var(--md-sys-typescale-body-small);
+  color: var(--md-sys-color-on-surface-variant); line-height: 1.8;
   margin-top: 8px;
 }
-.scope-box .num { color: var(--text); font-variant-numeric: tabular-nums; }
-.scope-box .cant { color: var(--warn); }
+.scope-box .num { color: var(--md-sys-color-on-surface); font-variant-numeric: tabular-nums; }
+/* ⚑ 「不可抓」的載體是文字本身（句子裡寫著不可抓），顏色只是加強。 */
+.scope-box .cant { color: var(--app-warn); }
 
 label.chk {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12px; color: var(--muted); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  font: var(--md-sys-typescale-body-small);
+  color: var(--md-sys-color-on-surface-variant); cursor: pointer;
 }
-label.chk input { width: auto; }
+label.chk input { width: auto; accent-color: var(--md-sys-color-primary); }
 
-.parse-result { margin-top: 10px; }
-.good { color: var(--ok); font-size: 12px; }
-.bad { color: var(--err-text); font-size: 12px; }
+.parse-result { margin-top: 8px; }
+.good { color: var(--app-ok); font: var(--md-sys-typescale-body-small); }
+.bad { color: var(--md-sys-color-error); font: var(--md-sys-typescale-body-small); }
 
-.parse-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
-.parse-table td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+.parse-table {
+  width: 100%; border-collapse: collapse; margin-top: 8px;
+  font: var(--md-sys-typescale-body-small);
+}
+.parse-table td {
+  padding: 4px 8px; border-top: 1px solid var(--md-sys-color-outline-variant); vertical-align: top;
+}
 .parse-table td:first-child {
-  font-family: ui-monospace, monospace; color: var(--muted);
+  font-family: ui-monospace, monospace; color: var(--md-sys-color-on-surface-variant);
   max-width: 320px; overflow-wrap: anywhere;
 }
-.parse-table tr.bad td { color: var(--err-text); }
-.parse-table tr.wrongtool td { color: var(--warn); }
-.parse-table tr.muted td { color: var(--muted); }
+/* ⚑ bad 與 wrongtool 原本只差色相（error vs warn），灰階下同階。
+   各給一個符號打頭 —— 這兩種要分得出來，處置方式完全不同。
 
-.queue-summary { margin-bottom: 6px; }
+   ⚠ 符號一定要掛在 `td:first-child` 上，**不可以讓它落在 `tr`**：上面那條
+   通用的 `.bad::before` 會命中 `<tr class="bad">`，而 table 佈局裡的
+   `tr::before` 會生成一個匿名儲存格，把整列往右推一欄（實測列首從 31px
+   位移到 150px，整張表看起來像欄位錯開）。下面這條把列層級的關掉。 */
+.parse-table tr::before { content: none; }
+.parse-table tr.bad td { color: var(--md-sys-color-error); }
+.parse-table tr.bad td:first-child::before { content: "⚠ "; }
+.parse-table tr.wrongtool td { color: var(--app-warn); }
+.parse-table tr.wrongtool td:first-child::before { content: "↪ "; }
+.parse-table tr.muted td { color: var(--md-sys-color-on-surface-variant); }
+
+.queue-summary { margin-bottom: 8px; }
 .progress {
-  height: 4px; background: var(--panel); border-radius: 2px;
-  overflow: hidden; margin-bottom: 10px;
+  height: 4px; background: var(--md-sys-color-surface-container-highest);
+  border-radius: var(--md-sys-shape-corner-full);
+  overflow: hidden; margin-bottom: 8px;
 }
-.progress > span { display: block; height: 100%; background: var(--accent); }
+.progress > span { display: block; height: 100%; background: var(--md-sys-color-primary); }
 
 /* 整批評價區：第 6 題（這樣算不算順利、要不要再做什麼）的答案。
    獨立共域，擺在佇列列表最上方。 */
 .verdict {
-  background: var(--panel); border: 1px solid var(--accent);
-  border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
-  font-size: 13px; line-height: 1.8;
+  background: var(--md-sys-color-surface-container-low);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 12px 16px; margin-bottom: 12px;
+  font: var(--md-sys-typescale-label-large); line-height: 1.8;
 }
-.verdict h3 { margin: 0 0 6px; font-size: 14px; }
-.verdict .warn { color: var(--warn); }
+.verdict h3 { margin: 0 0 8px; font: var(--md-sys-typescale-label-large); font-weight: 600; }
+.verdict .warn { color: var(--app-warn); }
+.verdict .warn::before { content: "⚠ "; }
 .verdict .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 
 .fetch-jobs { display: flex; flex-direction: column; gap: 4px; }
 /* 每一列一個容器 —— 12 個 job × 3 欄位，靠間距會在滿載時串行。 */
 .job {
-  display: flex; gap: 10px; align-items: baseline;
-  padding: 6px 10px; border-radius: 8px; background: var(--panel);
-  border-left: 3px solid var(--line); font-size: 13px;
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 8px 8px; border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-low);
+  border-left: 3px solid var(--md-sys-color-outline-variant);
+  font: var(--md-sys-typescale-label-large);
 }
-/* ⚠️ 狀態用符號打頭（✓ ⟳ ⚠ ✗ ⊘），不只靠左邊那條顏色 —— 灰階仍可辨識。 */
+/* ⚑ 狀態用符號打頭（✓ ⟳ ⚠ ✗ ⊘），不只靠左邊那條顏色 —— 灰階仍可辨識。 */
 .job .sym { flex: none; width: 16px; text-align: center; }
 .job b { min-width: 210px; overflow-wrap: anywhere; }
-.job span { font-size: 12px; color: var(--muted); }
-.job.done { border-left-color: var(--ok); }
-.job.failed { border-left-color: var(--err); }
-.job.skipped { border-left-color: var(--warn); }
+.job span { font: var(--md-sys-typescale-body-small); color: var(--md-sys-color-on-surface-variant); }
+.job.done { border-left-color: var(--app-ok); }
+.job.failed { border-left-color: var(--md-sys-color-error); }
+.job.skipped { border-left-color: var(--app-warn); }
 /* 正在跑的那一筆要一眼看得出來 —— 序列佇列一次只會有一筆 */
-.job.running { border-left-color: var(--accent); background: var(--panel-2); }
-.job .capped { color: var(--warn); font-weight: 600; }
+.job.running {
+  border-left-color: var(--md-sys-color-primary);
+  background: var(--md-sys-color-surface-container-high);
+}
+.job .capped { color: var(--app-warn); font-weight: 600; }
 
 /* ── 問題與日誌（modal 內）── */
 .errors { display: flex; flex-direction: column; gap: 8px; }
 .err-row {
-  background: var(--bg); border: 1px solid var(--err);
-  border-radius: 8px; padding: 10px 12px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-error);
+  border-radius: var(--md-sys-shape-corner-small); padding: 8px 12px;
   display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
 }
-.err-row .msg { color: var(--err-text); font-family: ui-monospace, monospace; font-size: 12px; }
+.err-row .msg {
+  color: var(--md-sys-color-error);
+  /* 等寬家族要寫在 font: 之後 —— 簡寫會重設 font-family。 */
+  font: var(--md-sys-typescale-body-small); font-family: ui-monospace, monospace;
+}
 .logs {
-  background: #08101a; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
   padding: 12px; max-height: 300px; overflow: auto;
-  font: 11px/1.6 ui-monospace, monospace; color: var(--muted);
+  font: 11px/1.6 ui-monospace, monospace; color: var(--md-sys-color-on-surface-variant);
   white-space: pre-wrap; word-break: break-all; margin: 0;
 }
-.logs .ERROR { color: var(--err-text); }
-.logs .WARNING { color: var(--warn); }
+/* ⚑ 這兩個的載體是 log 行裡的 "ERROR" / "WARNING" 字樣本身，顏色只是加強。 */
+.logs .ERROR { color: var(--md-sys-color-error); font-weight: 700; }
+.logs .WARNING { color: var(--app-warn); }
 
 .pill {
-  font-size: 11px; padding: 2px 8px; border-radius: 10px;
-  background: var(--panel-2); color: var(--muted); font-variant-numeric: tabular-nums;
+  font: var(--md-sys-typescale-label-small); padding: 2px 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant); font-variant-numeric: tabular-nums;
 }
-.pill.done { color: var(--ok); }
-.pill.pending { color: var(--accent); }
-.pill.failed { background: var(--err); color: #fff; font-weight: 700; }
+/* ⚑ done / pending / failed 原本只差顏色，而 ok 與 primary 在灰階下同階。
+   各給一個符號 —— 這三個是佇列的核心狀態，分不出來等於這個 pill 沒用。 */
+.pill.done { color: var(--app-ok); }
+.pill.done::before { content: "✓ "; }
+.pill.pending { color: var(--md-sys-color-primary); }
+.pill.pending::before { content: "⟳ "; }
+.pill.failed {
+  background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);
+  font-weight: 700;
+}
+.pill.failed::before { content: "✗ "; }
 
 /* 骨架卡：載入中保留版面高度。空白會讓版面塌陷再彈回。 */
 .skeleton {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 10px; height: 132px; opacity: .5;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium); height: 132px; opacity: .5;
   animation: breathe 1.4s ease-in-out infinite;
 }
 @keyframes breathe { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
 
 /* 啟動失敗。空白畫面與「資料庫是空的」長得一樣，必須講出來。 */
 .boot-error {
-  padding: 12px 16px; background: var(--err); color: #fff;
-  font-size: 13px; line-height: 1.5;
+  padding: 12px 16px;
+  background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container);
+  font: var(--md-sys-typescale-label-large); line-height: 1.5;
 }
 
 /* 鍵值表：詳情面板與設定面板共用。標籤欄固定寬，值欄可換行 ——
    正式庫最長路徑 282 字元，不換行會把面板撐爆。 */
-.kv { display: grid; grid-template-columns: 78px 1fr; gap: 4px 10px; margin: 14px 0; font-size: 12px; }
-.kv dt { color: var(--muted); }
+.kv {
+  display: grid; grid-template-columns: 78px 1fr; gap: 4px 8px; margin: 16px 0;
+  font: var(--md-sys-typescale-body-small);
+}
+.kv dt { color: var(--md-sys-color-on-surface-variant); }
 .kv dd { margin: 0; overflow-wrap: anywhere; }
 
 /* 說明句。**只放低頻補充** —— 約束與作用範圍留在畫面上，不進氣泡。 */
-.note { font-size: 11px; color: var(--muted); margin: 6px 0 0; line-height: 1.7; }
-.note.good { color: var(--ok); }
-.note.bad { color: var(--err-text); }
-.note b { color: var(--text); }
+.note {
+  font: var(--md-sys-typescale-label-small);
+  color: var(--md-sys-color-on-surface-variant); margin: 8px 0 0; line-height: 1.7;
+}
+.note.good { color: var(--app-ok); }
+.note.bad { color: var(--md-sys-color-error); }
+.note b { color: var(--md-sys-color-on-surface); }
 
 /* 預覽讀不到原檔。空白框與「載入中」長得一樣 —— 要講出讀不到，
    而且要分得出「被刪了」與「碟沒插」（目前只能分到 404 這一層）。 */
 .missing-preview {
-  background: var(--bg); border: 1px dashed var(--err); border-radius: 8px;
-  padding: 16px; color: var(--err-text); font-size: 12px; line-height: 1.7;
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px dashed var(--md-sys-color-error);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 16px; color: var(--md-sys-color-error);
+  font: var(--md-sys-typescale-body-small); line-height: 1.7;
   white-space: pre-line; margin: 0;
 }
 
 /* ── 帳號卡的預覽縮圖 ──
    「一覽無遺」是這件事的目的，所以**不濾分級**（使用者拍板）——
    濾掉會讓某些卡片出現缺口，而有缺口的縮圖列比沒有更難認人。 */
-.prev { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-top: 8px; }
+.prev { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 8px; }
 .prev-cell {
   position: relative; aspect-ratio: 1; overflow: hidden;
-  background: var(--bg); border-radius: 6px; display: block;
+  background: var(--md-sys-color-surface-container-lowest);
+  border-radius: var(--md-sys-shape-corner-extra-small); display: block;
 }
 .prev img { width: 100%; height: 100%; object-fit: cover; display: block; }
 /* 還沒填 src 時不要顯示破圖圖示 */
 .prev img:not([src]) { visibility: hidden; }
-/* 影片沒有縮圖（/thumb 對非圖片回 415）。▶ 是形狀載體，灰階仍可辨識。 */
+/* 影片沒有縮圖（/thumb 對非圖片回 415）。⚑ ▶ 是形狀載體，灰階仍可辨識。 */
 .prev-alt {
   display: flex; align-items: center; justify-content: center;
-  width: 100%; height: 100%; font-size: 18px; color: var(--muted);
+  width: 100%; height: 100%; font-size: 18px; color: var(--md-sys-color-on-surface-variant);
   background: repeating-linear-gradient(
-    45deg, var(--panel), var(--panel) 6px, var(--bg) 6px, var(--bg) 12px);
+    45deg,
+    var(--md-sys-color-surface-container) 0,
+    var(--md-sys-color-surface-container) 6px,
+    var(--md-sys-color-surface-container-lowest) 6px,
+    var(--md-sys-color-surface-container-lowest) 12px);
 }
 .prev-empty {
-  margin-top: 8px; padding: 10px; text-align: center;
-  font-size: 11px; color: var(--muted);
-  background: var(--bg); border: 1px dashed var(--line); border-radius: 6px;
+  margin-top: 8px; padding: 8px; text-align: center;
+  font: var(--md-sys-typescale-label-small); color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px dashed var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-extra-small);
 }
 
 /* ── 放大檢視器 ────────────────────────────────────────────────
@@ -721,7 +1354,7 @@ label.chk input { width: auto; }
    詳情面板點開檢視器時它必須蓋住面板，但提示氣泡仍要看得見。 */
 .viewer {
   position: fixed; inset: 0; z-index: 60;
-  background: rgba(0,0,0,.88);
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 88%, transparent);
   display: grid; grid-template-rows: 1fr auto auto;
   outline: none;
 }
@@ -739,39 +1372,267 @@ label.chk input { width: auto; }
 /* 影片不縮放（會跟原生控制列打架），單純放到最大 */
 .viewer-stage video { max-width: 96vw; max-height: 100%; background: #000; }
 .viewer-missing {
-  color: var(--err-text); text-align: center; font-size: 13px; line-height: 1.7;
+  color: var(--md-sys-color-error); text-align: center;
+  font: var(--md-sys-typescale-label-large); line-height: 1.7;
 }
 .viewer-close {
   position: absolute; top: 12px; right: 16px; z-index: 2;
-  width: 38px; height: 38px; border-radius: 50%;
-  background: rgba(0,0,0,.5); border: 1px solid var(--line);
-  color: var(--text); font-size: 20px; line-height: 1; cursor: pointer;
+  width: 38px; height: 38px; border-radius: var(--md-sys-shape-corner-full);
+  background: rgba(0,0,0,.5); border: 1px solid var(--md-sys-color-outline);
+  color: var(--md-sys-color-on-surface); font-size: 20px; line-height: 1; cursor: pointer;
 }
-.viewer-close:hover { background: var(--panel-2); }
+.viewer-close:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        rgba(0,0,0,.5));
+}
+/* M3 icon button（full 圓角）。⚠ 底色刻意留寫死的 rgba(0,0,0,.45)：
+   它蓋在使用者的圖片上，不是蓋在 surface 上。 */
 .viewer-nav {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
-  width: 44px; height: 64px; border-radius: 8px;
-  background: rgba(0,0,0,.45); border: 1px solid var(--line);
-  color: var(--text); font-size: 18px; cursor: pointer;
+  width: 48px; height: 48px; border-radius: var(--md-sys-shape-corner-full);
+  background: rgba(0,0,0,.45); border: 1px solid var(--md-sys-color-outline);
+  color: var(--md-sys-color-on-surface); font-size: 18px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
 }
-.viewer-nav:hover { background: var(--panel-2); }
+.viewer-nav:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        rgba(0,0,0,.45));
+}
 .viewer-nav.prev { left: 12px; }
 .viewer-nav.next { right: 12px; }
 /* 只有一張時**不出現**（不是 disable）—— 沒有「等一下就能用」的可能 */
 .viewer.single .viewer-nav { display: none; }
 .viewer-bar {
   display: flex; align-items: center; gap: 12px;
-  padding: 8px 16px; font-size: 12px; color: var(--muted);
-  background: var(--panel); border-top: 1px solid var(--line);
+  padding: 8px 16px; font: var(--md-sys-typescale-body-small);
+  color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-high);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
 }
 /* 倍率是數字，等寬才不會每次縮放都讓後面的按鈕跳動 */
-.viewer-bar .zoom { font-variant-numeric: tabular-nums; color: var(--text); }
+.viewer-bar .zoom { font-variant-numeric: tabular-nums; color: var(--md-sys-color-on-surface); }
 .viewer-hint {
-  margin: 0; padding: 6px 16px 10px; text-align: center;
-  font-size: 11px; color: var(--muted); background: var(--panel);
+  margin: 0; padding: 8px 16px 8px; text-align: center;
+  font: var(--md-sys-typescale-label-small); color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-high);
 }
 .viewer-hint.hidden { display: none; }
 /* 檢視器開著時背景不捲動 */
 body.viewer-open { overflow: hidden; }
 /* 詳情面板裡可放大的圖要看得出來可以點 */
 .detail img.zoomable { cursor: zoom-in; }
+
+/* ── 多選下拉（篩選）── */
+/* 值域是 2 / 4 / 7 個，收起來時看不見選了哪些 —— 這是下拉的固有限制。
+   補償在條件標籤列（chip-bar），它把每個值逐一列出來。 */
+.ms-label {
+  font: var(--md-sys-typescale-body-small);
+  color: var(--md-sys-color-on-surface-variant); margin-right: 2px;
+}
+.ms-host { display: inline-block; }
+.msdrop { position: relative; display: inline-block; }
+/* M3 filter chip：未選取時無填底、只有 outline；選取時走
+   secondary-container 配對（見下方 .ms-on）。 */
+.msdrop > summary {
+  list-style: none; cursor: pointer;
+  background: none; color: var(--md-sys-color-on-surface-variant);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 8px 12px;
+  font: var(--md-sys-typescale-label-large);
+  min-width: 132px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.msdrop > summary::-webkit-details-marker { display: none; }
+.msdrop > summary::marker { content: ""; }
+.msdrop > summary:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-surface-container-lowest));
+}
+.msdrop[open] > summary { border-color: var(--md-sys-color-primary); }
+/* ⚑ 有選東西時，收起來也要看得出來 —— 不能只靠摘要文字（那在灰階下與
+   「全部型別」這種預設字長得一樣）。填底 + 左邊那條 3px 是兩個非顏色通道。 */
+.msdrop.ms-on > summary {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  border-color: transparent;
+  border-left: 3px solid var(--md-sys-color-primary); padding-left: 8px;
+}
+.msdrop.ms-on > summary:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-secondary-container)
+                        var(--md-sys-state-hover-opacity), var(--md-sys-color-secondary-container));
+}
+.ms-caret { color: var(--md-sys-color-on-surface-variant); font: var(--md-sys-typescale-label-small); }
+.ms-panel {
+  position: absolute; z-index: 30; top: calc(100% + 4px); left: 0;
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-small); padding: 8px; min-width: 100%;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ms-row {
+  display: flex; align-items: center; gap: 8px;
+  font: var(--md-sys-typescale-label-medium); padding: 4px 8px;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  cursor: pointer; white-space: nowrap;
+}
+.ms-row input { accent-color: var(--md-sys-color-primary); }
+.ms-row:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity), transparent);
+}
+/* disabled 一定要看得出來**而且說得出原因**（.ms-why 就在下面同一個面板裡）。
+   用 M3 的 38% 前景色而不是整塊 opacity —— 整塊壓掉會連核取方塊都看不見。 */
+.ms-row.off {
+  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+  cursor: not-allowed;
+}
+.ms-row.off:hover { background: none; }
+.ms-why {
+  font: var(--md-sys-typescale-label-small); color: var(--app-warn);
+  padding: 2px 8px 8px; max-width: 220px;
+}
+
+/* ── 排序方向鈕 ── */
+/* 箭頭而非文字是使用者裁示（文字太長，佔掉篩選列的空間）。
+   `↓` 本身語意兩可，所以完整語意寫在 data-tip 與 aria-label 上。 */
+.dirbtn {
+  background: var(--md-sys-color-surface-container); color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 8px 12px; font-size: 18px; line-height: 1; cursor: pointer;
+}
+.dirbtn:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-surface-container));
+}
+
+/* 排序註記列：永遠佔位，避免切換排序時版面上下跳動 */
+.sort-note {
+  min-height: 18px; font: var(--md-sys-typescale-body-small);
+  color: var(--md-sys-color-on-surface-variant);
+  text-align: right; margin: -6px 0 8px;
+}
+
+/* ── 抓取佇列的重試 ── */
+/* 失敗類別標籤。⚑ **不只靠顏色** —— 灰階下要靠文字分得出 429 與 404。 */
+.job .jobcat {
+  flex: none; font: var(--md-sys-typescale-label-small); padding: 1px 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+  border: 1px solid var(--md-sys-color-outline); color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-lowest);
+}
+/* 嘗試次數徽章。第 1 次不顯示（沒有資訊量），第 2 次起才出現。 */
+.job .attempt {
+  flex: none; font: var(--md-sys-typescale-label-small); padding: 1px 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high); color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline);
+  cursor: pointer;
+}
+.job .attempt:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-surface-container-high));
+}
+/* 列上的動作鈕**常駐**，不做「hover 才出現」—— 滿載 200 列時找不到。 */
+.job .rowbtn {
+  flex: none; font: var(--md-sys-typescale-body-small); padding: 4px 12px;
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-high); color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline);
+}
+.job .rowbtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-surface-container-high));
+}
+/* ⚑ 不可重試的類別給虛線框 + 不同文案（「仍要重試」），**不是 disabled** ——
+   使用者剛修好原因時他知道的比系統多，disabled 會擋掉唯一合理的情境。
+   虛線 vs 實線是形狀通道，灰階下成立。 */
+.job .rowbtn.override { border-style: dashed; color: var(--md-sys-color-on-surface-variant); }
+.job-history {
+  flex-basis: 100%; margin: 8px 0 0 24px; padding-left: 8px;
+  border-left: 2px solid var(--md-sys-color-outline-variant);
+  font: var(--md-sys-typescale-body-small); color: var(--md-sys-color-on-surface-variant);
+}
+.job-history div { padding: 1px 0; }
+
+/* 失敗分類明細：筆數 + 類別 + 處置。三欄對齊才掃得快。 */
+.verdict .breakdown {
+  margin: 8px 0 8px; padding-left: 12px;
+  border-left: 2px solid var(--md-sys-color-outline-variant);
+}
+.verdict .bdrow {
+  display: flex; gap: 8px; align-items: baseline; padding: 2px 0;
+  font: var(--md-sys-typescale-label-large);
+}
+.verdict .bdrow .bdn { min-width: 56px; text-align: right; font-weight: 600; }
+.verdict .bdrow .bdcat { min-width: 96px; color: var(--md-sys-color-on-surface); }
+.verdict .retry-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+/* ── 帳號：忽略標記 ── */
+/* ⚑ 與 .card-verdict.bad（自動退訂）**視覺與語氣都不同**：
+   那個是系統做的（⚠ + 填底），這個是使用者按的（⊘ + 中性、無填底）。
+   兩者都靠**符號 + 有沒有填底**分辨，灰階下顏色會消失。 */
+.card-ignored {
+  display: block; margin-top: 4px;
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-extra-small); padding: 4px 8px;
+  font: var(--md-sys-typescale-label-small);
+  color: var(--md-sys-color-on-surface-variant); line-height: 1.5;
+}
+
+/* ── 帳號：選取與批次 ── */
+.card .acct-pick {
+  width: 15px; height: 15px; accent-color: var(--md-sys-color-primary);
+  cursor: pointer; flex: none; margin-right: 2px;
+}
+/* ⚑ 已選 = **整張卡加框**（外框 + 內陰影兩層）。一頁 100 張時，只靠角落
+   一個小方塊掃不出選了哪些 —— 而滿載正是分組必須成立的時候。
+   核取方塊本身（.acct-pick 打勾）是灰階下的載體。
+   ⚠ 這裡的 box-shadow 是 **inset**，用途是把外框加粗到 2px 而不動
+   border-width（動了會讓卡片尺寸跳一格）—— 它不是 elevation，
+   不在 T10「elevation 不用 box-shadow」的規範範圍內。 */
+.card.picked {
+  border-color: var(--md-sys-color-primary);
+  box-shadow: inset 0 0 0 1px var(--md-sys-color-primary);
+}
+
+/* 帳號頁的選取列：整組控制項一塊共域，會整塊出現／消失。
+   ⚠ class 名**不可以**叫 `.sel-bar` —— 媒體頁的 `#selBar` 已經用了那個名字，
+   而那邊是**單列橫排**（`flex-wrap: wrap`）。兩份規則疊在一起時，後定義的
+   `flex-direction: column` 會把媒體頁的選取列拉成一整條垂直堆疊，
+   而前面那條的 `align-items: center` 還留著 —— 於是每個控制項各佔一行、
+   全部置中。這個回歸出現過一次，名字分開就不會再有。 */
+.acct-sel-bar {
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 8px 12px; margin-bottom: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.sel-row {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  font: var(--md-sys-typescale-label-large);
+}
+.sel-row .chk { gap: 4px; }
+/* <b> 是語意粗體，不是排版角色：「已選 N 項」的 N 要跳出來。
+   font 簡寫會把 UA 的 bold 重設掉，所以這裡自己寫回去。 */
+.sel-count b { font: var(--md-sys-typescale-label-large); font-weight: 700; }
+/* 跨頁選取的警語與「先選要改什麼」共用這一條 —— 兩者都是
+   「你以為的和實際的不一樣」，該用同一個視覺重量。 */
+.sel-warn { font: var(--md-sys-typescale-body-small); color: var(--app-warn); }
+.sel-warn::before { content: "⚠ "; }
+
+/* 套用前的預演：獨立底板，因為它承載一個不可逆動作的後果 */
+.bulk-box {
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--app-warn);
+  border-radius: var(--md-sys-shape-corner-medium); padding: 12px 16px; margin-bottom: 12px;
+  font: var(--md-sys-typescale-label-large);
+}
+.bulk-box h4 { margin: 0 0 8px; font: var(--md-sys-typescale-label-large); font-weight: 600; }
+.bulk-box ul { margin: 8px 0 8px; padding-left: 20px; }
+.bulk-box li { padding: 2px 0; }
+.bulk-box .ok-line { color: var(--app-ok); }
+.bulk-box .err { color: var(--md-sys-color-error); }
+.bulk-box .row { display: flex; gap: 8px; align-items: center; }
+#aBulkProgress { margin-top: 8px; font: var(--md-sys-typescale-body-small); }

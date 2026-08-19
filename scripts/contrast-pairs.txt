@@ -1,0 +1,70 @@
+# WCAG 驗收用色對 —— snsmediadl/web/app.css 的 M3 dark scheme（seed #006874）
+# 用法： awk -f scripts/contrast.awk scripts/contrast-pairs.txt
+# 格式： <前景hex> <背景hex> <標籤>
+#
+# 判讀：
+#   文字用途要 >= 4.5:1（AA-text）
+#   UI 元件邊界／圖形要 >= 3:1（AA-large/UI）
+#   輸出的 L(fg)/L(bg) 是相對亮度 —— 兩個語意色的 L 若相差 < 5%，
+#   代表它們在灰階下同階，必須另外有非顏色通道（app.css 標 ⚑ 的地方）
+
+# ── 文字 on 各層 surface ──
+#dee3e5 #0e1415 onSurface/surface
+#bfc8ca #0e1415 onSurfaceVariant/surface
+#dee3e5 #1b2122 onSurface/surfaceContainer
+#bfc8ca #1b2122 onSurfaceVariant/surfaceContainer
+#bfc8ca #171d1e onSurfaceVariant/surfaceContainerLow
+#dee3e5 #252b2c onSurface/surfaceContainerHigh
+#bfc8ca #252b2c onSurfaceVariant/surfaceContainerHigh
+#bfc8ca #090f10 onSurfaceVariant/surfaceContainerLowest
+
+# ── 邊界：互動元件走 outline，裝飾分隔走 outlineVariant ──
+#899294 #0e1415 ui: outline/surface(互動邊界)
+#899294 #1b2122 ui: outline/surfaceContainer(互動邊界)
+#899294 #090f10 ui: outline/surfaceContainerLowest(輸入框邊界)
+#899294 #252b2c ui: outline/surfaceContainerHigh(互動邊界)
+#3f484a #1b2122 deco: outlineVariant/surfaceContainer 純裝飾分隔
+
+# ── primary ──
+#82d3e1 #0e1415 primary/surface
+#82d3e1 #1b2122 ui: primary/surfaceContainer(focus邊框)
+#00363d #82d3e1 onPrimary/primary(填色按鈕)
+#9eeffe #004f58 onPrimaryContainer/primaryContainer
+
+# ── secondary container（chip）──
+#cde7ec #334b4f onSecondaryContainer/secondaryContainer
+
+# ── error ──
+#ffb4ab #0e1415 error/surface
+#ffb4ab #1b2122 error/surfaceContainer
+#ffb4ab #090f10 error/surfaceContainerLowest
+#ffdad6 #93000a onErrorContainer/errorContainer(R18標籤,badge)
+
+# ── 自訂語意色 on 實際底色 ──
+#4bddbd #1b2122 ok/surfaceContainer
+#ffb86f #1b2122 warn/surfaceContainer
+#ffb86f #0e1415 warn/surface
+#e5c518 #171d1e star/surfaceContainerLow
+#ffaeda #171d1e fav/surfaceContainerLow
+#899294 #171d1e starOff/surfaceContainerLow
+
+# ── ★ 的亮／暗對比 ──
+# ★ 是同一個字符、沒有形狀通道，on 與 off 的區分**只能靠亮度**。
+# 下面兩筆的 L 要拉開（實測 0.567 vs 0.280，約兩倍）才成立。
+#e5c518 #899294 grey: star 對 starOff —— ★ 同字符無形狀通道,亮度差是唯一載體
+
+# ── tooltip（inverse）──
+#2b3133 #dee3e5 inverseOnSurface/inverseSurface
+
+# ── 縮圖上的角標：固定黑底白字，與主題無關 ──
+#ffffff #000000 白字/縮圖遮罩(rgba(0,0,0,.72)近似)
+#e5c518 #000000 starBadge/縮圖遮罩
+
+# ── T6：header 的 M3 元件 ──
+# badge 走 M3 規範的 error/on-error（原本是 error-container 配對）。
+#690005 #ffb4ab badge 數字 onError/error
+# 安全模式關閉時的填底與邊框。邊框對內部填底要 >= 3:1 才看得見輪廓。
+#ffdad6 #93000a 安全模式關閉的文字 onErrorContainer/errorContainer
+#ffb4ab #93000a ui:安全模式關閉的邊框 error/errorContainer
+# 作用中分頁的 3px 指示條，襯在 header 的 surfaceContainer 上。
+#82d3e1 #1b2122 ui:分頁指示條 primary/surfaceContainer

@@ -104,6 +104,26 @@ class Account(Base):
     platform_user_id: Mapped[str] = mapped_column(String(64))
     screen_name: Mapped[str | None] = mapped_column(String(200), default=None)
     is_tracked: Mapped[bool] = mapped_column(default=True)
+
+    # 使用者說「一鍵更新不要算這個帳號」。
+    #
+    # ⚠️ **與 `is_tracked` 是兩件事，不要合併。** 效果相似（都會被
+    # `plan_refresh()` 跳過），但**來源不同**：
+    #   · `is_ignored`        —— 只有使用者會寫
+    #   · `is_tracked=False`  —— **也可能是系統寫的**（連續 2 次找不到就
+    #                            自動退訂，見 fetch_queue._apply_not_found_streak）
+    # 混用之後帳號頁講不出「這是你標的」還是「系統放棄的」，而那兩者的
+    # 下一步不一樣：後者該去查是不是改名了，前者不用管。
+    # 而且「恢復追蹤」會順手把 not_found_streak 歸零 —— 對使用者手動忽略的
+    # 帳號做那件事沒有意義，只會把退訂計數的語意弄髒。
+    #
+    # 語意邊界（**只有這一條**）：影響 `plan_refresh()`，也就是一鍵更新的
+    # 目標清單。**不影響**貼網址批次抓、單一 `POST /api/fetch`、下載佇列、
+    # extension 推上來的採集 —— 那些都是使用者明確指名了那個帳號，是覆寫。
+    # 而且它**不動任何資料**：一則貼文、一個媒體都不會被刪或改。
+    is_ignored: Mapped[bool] = mapped_column(
+        default=False, server_default="0", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     creator_id: Mapped[int | None] = mapped_column(
@@ -154,6 +174,22 @@ class Account(Base):
     not_found_streak: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+
+    # 續抓點：撞到 `fetch_max_pages` 時，**下一頁**的游標。
+    #
+    # ⚠️ 沒有這個欄位的話，「撞上限之後再跑一次」是**無效**的：增量的停止
+    # 條件是「這一頁出現了已知的貼文」，而第 1 頁全是剛抓進來的 ——
+    # 於是立刻停，永遠到不了第 21 頁。改跑 full 也沒用（迴圈一樣只跑
+    # max_pages 頁，重掃的是同樣那 20 頁）。
+    #
+    # ⚠️ **唯一寫入點是 `services/fetch.py` 的游標迴圈結束時**：
+    # 撞上限就存，碰到已知或沒有下一頁就**清成 NULL**。不清的話，
+    # 下次續抓會從一個早就不對的位置開始 —— 而那看起來像資料亂掉。
+    #
+    # id 清單式平台（pixiv）沒有頁數上限的概念，這兩欄永遠是 NULL。
+    resume_cursor: Mapped[str | None] = mapped_column(Text, default=None)
+    # 存的時間。游標會過期，要看得出來它多舊。
+    resume_cursor_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
     # ── 聚合欄（去正規化的快取值）──
     #

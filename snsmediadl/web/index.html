@@ -7,10 +7,16 @@
 
        darkreader-lock 是 Dark Reader 擴充功能的正式退出宣告。沒有它的話，
        Dark Reader 會在已經是深色的頁面上再跑一輪反轉，實測結果是整份色票
-       被壓成兩色：--accent (#1d9bf0)、body 背景 (#0e1621)、卡片背景
-       (#15202b) 全部變成同一個 rgb(35,35,34)，金色星星、粉紅愛心、藍色
-       強調則全部變成同一種白灰 —— 也就是說任何「用顏色區分狀態」的設計
-       都會失效。
+       被壓成兩色：強調色、body 背景、卡片背景全部變成同一個
+       rgb(35,35,34)，金色星星、粉紅愛心、藍色強調則全部變成同一種白灰
+       —— 也就是說任何「用顏色區分狀態」的設計都會失效。
+       （實測是在 M3 之前的舊色票上做的，但結論與色票無關：Dark Reader
+       對已經是深色的頁面做二次反轉，本來就會把色相全部壓平。）
+
+       ⚠ M3 之後這件事更嚴重：M3 的同一個 tone 就是同一個 L*，dark scheme
+       的 primary / error / star / fav / ok / warn 在灰階下本來就同階，
+       再被 Dark Reader 壓一次就完全沒救。所以畫面上每個語意區分都另外
+       掛了非顏色通道（符號／形狀／填底的有無），見 app.css 標 ⚑ 的地方。
 
        color-scheme 則是給瀏覽器本身看的，讓捲軸與原生表單控制項跟著深色。 -->
   <meta name="darkreader-lock">
@@ -35,7 +41,7 @@
        前者進帳號頁的檢視切換與編輯抽屜，後者進 header 狀態區的 modal。
        兩者都仍在 3 步內到得了（可達性驗算見 UI_導覽結構 第三節）。 -->
   <nav class="tabs" aria-label="主要導覽">
-    <button class="tab active" data-view="media">媒體</button>
+    <button class="tab active" data-view="media" aria-current="page">媒體</button>
     <button class="tab" data-view="accounts">帳號</button>
     <button class="tab" data-view="fetch">抓取 <span id="fetchBadge" class="badge hidden">0</span></button>
   </nav>
@@ -78,29 +84,14 @@
       <span id="fAccountHint" class="muted err"></span>
     </div>
 
-    <!-- 群 B「找什麼」。這三個在真實資料上**有**鑑別力。 -->
+    <!-- 群 B「找什麼」。這三個在真實資料上**有**鑑別力，且都是**多選**：
+         同一組內是 OR，不同組之間是 AND。
+         內容由 js/views/media.js 用 dom.js 的 multiDrop() 建 —— 值域集中在
+         enums.js，寫死在 HTML 裡的話加一個 enum 值要改兩處。 -->
     <div class="fgroup">
-      <select id="fRating" aria-label="分級">
-        <option value="">全部分級</option>
-        <option value="sfw">sfw</option>
-        <option value="r18">r18</option>
-      </select>
-      <select id="fContent" aria-label="類型">
-        <option value="">全部類型</option>
-        <option value="illust">illust</option>
-        <option value="irl">irl</option>
-        <option value="mod">mod</option>
-        <option value="ai">ai</option>
-        <option value="3d">3d</option>
-        <option value="photograph">photograph</option>
-        <option value="other">other</option>
-      </select>
-      <select id="fKind" aria-label="型別">
-        <option value="">全部型別</option>
-        <option value="photo">photo</option>
-        <option value="video">video</option>
-        <option value="animated_gif">animated_gif</option>
-      </select>
+      <span class="ms-label">分級</span><span id="fRating" class="ms-host"></span>
+      <span class="ms-label">類型</span><span id="fContent" class="ms-host"></span>
+      <span class="ms-label">型別</span><span id="fKind" class="ms-host"></span>
     </div>
 
     <!-- 群 C：在真實資料上鑑別力為零的三個（creator 0 位、狀態全 done、
@@ -109,45 +100,32 @@
     <details class="fmore" id="fMore">
       <summary>更多篩選</summary>
       <div class="fmore-body">
-        <label class="fmore-row">
-          <span>creator</span>
-          <select id="fCreator"><option value="">全部 creator</option></select>
-          <em id="fCreatorNote" class="muted"></em>
-        </label>
-        <label class="fmore-row">
+        <div class="fmore-row">
           <span>下載狀態</span>
-          <select id="fStatus">
-            <option value="">全部狀態</option>
-            <option value="done">done</option>
-            <option value="pending">pending</option>
-            <option value="failed">failed</option>
-          </select>
+          <div id="fStatus"></div>
           <em id="fStatusNote" class="muted"></em>
-        </label>
-        <label class="fmore-row">
+        </div>
+        <div class="fmore-row">
           <span>評分</span>
-          <select id="fMinStars">
-            <option value="">全部評分</option>
-            <option value="5">★★★★★</option>
-            <option value="4">★★★★ 以上</option>
-            <option value="3">★★★ 以上</option>
-            <option value="2">★★ 以上</option>
-            <option value="1">★ 以上（= 已評分）</option>
-          </select>
+          <div id="fStars"></div>
           <em id="fStarsNote" class="muted"></em>
-        </label>
+        </div>
       </div>
     </details>
 
     <span class="spacer"></span>
-    <select id="fSort" data-tip="排序">
-      <option value="newest">最新加入</option>
-      <option value="oldest">最早加入</option>
-      <option value="stars">評分高到低</option>
-    </select>
+    <!-- 排序 = 鍵 + 方向兩個控制項。方向是**獨立、看得見**的按鈕，
+         不是「在鍵上再按一次」那種隱藏互動。 -->
+    <span class="ms-label">排序</span>
+    <span id="fSortKey" class="ms-host" data-tip="依什麼排序"></span>
+    <button id="fSortDir" class="dirbtn" aria-live="polite">↓</button>
     <button id="refresh" class="ghost" data-tip="重新載入目前檢視&#10;（保留篩選與頁碼）">⟳</button>
     <button id="selectMode" class="ghost">選取模式</button>
   </div>
+
+  <!-- 排序註記。**永遠佔位**，否則切換排序時整個版面會上下跳。
+       內容依鍵而定：推文時間要講 NULL 沉底，評分要講全庫還沒評分。 -->
+  <div id="sortNote" class="sort-note"></div>
 
   <!-- 生效中的條件用**可移除標籤**呈現。現況要判斷「我在看哪一批」，得逐一
        讀完 8 個下拉的當前值，而其中 3 個在真實資料上永遠是預設值。
@@ -162,32 +140,10 @@
     <button id="selAll" class="ghost">全選本頁</button>
     <button id="selNone" class="ghost">清除選取</button>
     <span class="spacer"></span>
-    <select id="bulkRating" aria-label="批次分級">
-      <option value="">分級…</option>
-      <option value="sfw">sfw</option>
-      <option value="r18">r18</option>
-      <option value="__clear__">（清除）</option>
-    </select>
-    <select id="bulkContent" aria-label="批次類型">
-      <option value="">類型…</option>
-      <option value="illust">illust</option>
-      <option value="irl">irl</option>
-      <option value="mod">mod</option>
-      <option value="ai">ai</option>
-      <option value="3d">3d</option>
-      <option value="photograph">photograph</option>
-      <option value="other">other</option>
-    </select>
-    <select id="bulkStars" aria-label="批次評分"
-            data-tip="五星評分掛在媒體上，選幾個就改幾個&#10;（不像分級會影響整則貼文）">
-      <option value="">評分…</option>
-      <option value="5">★★★★★</option>
-      <option value="4">★★★★</option>
-      <option value="3">★★★</option>
-      <option value="2">★★</option>
-      <option value="1">★</option>
-      <option value="__clear__">（清除評分）</option>
-    </select>
+    <span id="bulkRating" class="ms-host"></span>
+    <span id="bulkContent" class="ms-host"></span>
+    <span id="bulkStars" class="ms-host"
+          data-tip="五星評分掛在媒體上，選幾個就改幾個&#10;（不像分級會影響整則貼文）"></span>
     <button id="bulkApply">套用</button>
     <span id="bulkConfirm" class="confirm hidden">
       <b id="bulkConfirmText"></b>
@@ -217,74 +173,39 @@
     <div class="fgroup">
       <!-- 選項帶筆數：選到一個 0 筆的平台會看到空清單，而空清單與「篩選壞了」
            長得一樣。筆數由 /api/accounts/platforms 填。 -->
-      <select id="aPlatform" data-tip="只看某個平台的帳號">
-        <option value="">全部平台</option>
-      </select>
-      <select id="aSort" data-tip="排序方式">
-        <option value="favorite">我的最愛 → 評分</option>
-        <option value="stars">評分高到低</option>
-        <option value="name">名稱</option>
-        <option value="last_post">最後發文</option>
-        <option value="last_ingest">最後採集</option>
-        <option value="last_fetch">最久沒檢查</option>
-        <option value="media">媒體數</option>
-        <option value="posts">貼文數</option>
-        <option value="created">建檔時間</option>
-        <option value="id">加入順序</option>
-      </select>
-      <!-- 「（未設定）」放在值清單的最前面：「哪些我還沒標」才是主要用例。 -->
-      <select id="aDefaultRating" data-tip="帳號預設分級。會繼承給之後 ingest 的新貼文">
-        <option value="">預設分級：全部</option>
-        <option value="__unset__">（未設定）</option>
-        <option value="sfw">sfw</option>
-        <option value="r18">r18</option>
-      </select>
-      <select id="aDefaultContent" data-tip="帳號預設類型。會繼承給之後 ingest 的新貼文">
-        <option value="">預設類型：全部</option>
-        <option value="__unset__">（未設定）</option>
-        <option value="illust">illust</option>
-        <option value="irl">irl</option>
-        <option value="mod">mod</option>
-        <option value="ai">ai</option>
-        <option value="3d">3d</option>
-        <option value="photograph">photograph</option>
-        <option value="other">other</option>
-      </select>
+      <span id="aPlatform" class="ms-host" data-tip="只看某個平台的帳號"></span>
+      <span id="aSort" class="ms-host" data-tip="排序方式"></span>
+      <!-- 「（未設定）」放在值清單的最前面：「哪些我還沒標」才是主要用例。
+           選項在 js/views/accounts.js 的 wireAccountFilters()。 -->
+      <span id="aDefaultRating" class="ms-host"
+            data-tip="帳號預設分級。會繼承給之後 ingest 的新貼文"></span>
+      <span id="aDefaultContent" class="ms-host"
+            data-tip="帳號預設類型。會繼承給之後 ingest 的新貼文"></span>
     </div>
 
     <details class="fmore" id="aMore">
       <summary>更多篩選</summary>
       <div class="fmore-body">
-        <label class="fmore-row">
+        <div class="fmore-row">
           <span>我的最愛</span>
           <label class="chk"><input type="checkbox" id="aFavOnly"> 只看 ♥</label>
-        </label>
-        <label class="fmore-row">
+        </div>
+        <div class="fmore-row">
           <span>評分</span>
-          <select id="aMinStars">
-            <option value="">全部評分</option>
-            <option value="5">★★★★★</option>
-            <option value="4">★★★★ 以上</option>
-            <option value="3">★★★ 以上</option>
-            <option value="2">★★ 以上</option>
-            <option value="1">★ 以上（= 已評分）</option>
-          </select>
-        </label>
-        <label class="fmore-row">
+          <div id="aStars"></div>
+        </div>
+        <!-- 「只看被忽略的」。放在收納區而不是主篩選列：常態是 0 筆
+             （這是新旗標），主列上多一個永遠篩不到東西的下拉是雜訊。 -->
+        <div class="fmore-row">
+          <span>忽略</span>
+          <div id="aIgnored" data-tip="被忽略的帳號不列入一鍵更新"></div>
+          <em id="aIgnoredNote" class="muted"></em>
+        </div>
+        <div class="fmore-row">
           <span>擷取結果</span>
-          <select id="aFetchStatus">
-            <option value="">全部擷取狀態</option>
-            <option value="__bad__">只看抓取有問題的</option>
-            <option value="ok">ok（有新的）</option>
-            <option value="no_new">no_new（沒有新的）</option>
-            <option value="not_found">not_found（可能改名）</option>
-            <option value="rate_limited">rate_limited（被限速）</option>
-            <option value="auth_required">auth_required（憑證）</option>
-            <option value="failed">failed</option>
-            <option value="skipped">skipped</option>
-          </select>
+          <div id="aFetchStatus"></div>
           <em id="aFetchNote" class="muted"></em>
-        </label>
+        </div>
       </div>
     </details>
 
@@ -305,7 +226,17 @@
     <!-- 同一個畫面上混用兩種儲存模型（♥★ 立即生效 vs 抽屜裡按儲存）
          一定要宣告，否則使用者會不知道自己剛才那一下有沒有存進去。 -->
     <span>♥ 與 ★ 點了<b>立即生效</b>；其餘設定在 [編輯] 裡按儲存</span>
+    <button id="aSelectMode" class="ghost">選取</button>
   </div>
+
+  <!-- 選取與批次。整塊共域 —— 它是一組相關的控制項，而且會整塊出現／消失。
+       ⚠️ 「全選」是**兩顆按鈕**：本頁 N 與 全部符合篩選的 M，數字都寫在
+       按鈕上。合成一顆是批次功能最經典的災難（使用者以為選的是本頁 100，
+       實際套用到 4,653），而批次不可逆。 -->
+  <div id="aSelBar" class="acct-sel-bar hidden"></div>
+
+  <!-- 套用前的預演。獨立底板，因為它承載一個不可逆動作的後果。 -->
+  <div id="aBulkBox"></div>
 
   <div id="accountPane">
     <div id="accountList" class="cards"></div>
@@ -370,6 +301,11 @@
   <!-- ③ 結果 + 評價。「跑完了算好還是壞」是這一頁最重要的一題，
        只說「已排入 N 個」回答的是第 5 題，不是第 6 題。 -->
   <div id="batchVerdict" class="verdict hidden"></div>
+
+  <!-- ① 送出當下的回應。**與 ③「修好了 N 個」不共用區塊** ——
+       而且這裡還多一層：「已排入」不等於「它真的跑了」（站台旗標還掛著時
+       會直接被跳過），所以這一格要帶得下 will_be_skipped 那句話。 -->
+  <div id="retryResult" class="parse-result hidden"></div>
 
   <div class="queue-summary">
     <span id="fetchQueueSummary" class="muted">—</span>

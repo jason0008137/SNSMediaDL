@@ -89,16 +89,16 @@ def test_bulk_stars_validates_before_writing(client, loaded):
     assert all(m["stars"] is None for m in client.get("/api/media").json()["items"])
 
 
-def test_media_min_stars_filter(client, loaded):
+def test_media_stars_filter(client, loaded):
     ids = media_ids(client)
     client.patch(f"/api/media/{ids[0]}/stars", json={"stars": 5})
     client.patch(f"/api/media/{ids[1]}/stars", json={"stars": 2})
 
-    assert [m["id"] for m in client.get("/api/media?min_stars=5").json()["items"]] == [ids[0]]
-    got = {m["id"] for m in client.get("/api/media?min_stars=2").json()["items"]}
+    assert [m["id"] for m in client.get("/api/media?stars=5").json()["items"]] == [ids[0]]
+    got = {m["id"] for m in client.get("/api/media?stars=5,2").json()["items"]}
     assert got == {ids[0], ids[1]}
     # 未評分（NULL）不是 0 分，一律被濾掉
-    assert client.get("/api/media/count?min_stars=1").json()["total"] == 2
+    assert client.get("/api/media/count?stars=5,2").json()["total"] == 2
 
 
 def test_media_sort_by_stars_puts_unrated_last(client, loaded):
@@ -122,10 +122,11 @@ def test_account_prefs_roundtrip(client, loaded):
     aid = client.get("/api/accounts").json()[0]["id"]
 
     r = client.patch(f"/api/accounts/{aid}/prefs", json={"stars": 5, "is_favorite": True})
-    # is_tracked / not_found_streak 也在回應裡（自動退訂的「恢復追蹤」走的是
+    # is_tracked / not_found_streak / is_ignored 也在回應裡（自動退訂的反悔路走同一個端點，
     # 同一個端點）—— 沒改到它們，但呼叫端要看得到現值。
     assert r.json() == {"id": aid, "stars": 5, "is_favorite": True,
-                        "is_tracked": True, "not_found_streak": 0}
+                        "is_tracked": True, "not_found_streak": 0,
+                        "is_ignored": False}
 
     a = client.get("/api/accounts").json()[0]
     assert a["stars"] == 5 and a["is_favorite"] is True
@@ -244,10 +245,10 @@ def test_favorite_filter(client, many):
     assert set(names(client, "?favorite=true")) == {"alpha", "Gamma"}
 
 
-def test_min_stars_filter_excludes_unrated(client, many):
-    assert names(client, "?min_stars=3") == ["alpha", "beta_art"]
-    # Gamma 是未評分，不是 0 分 —— 不該出現在任何 min_stars 結果裡
-    assert "Gamma" not in names(client, "?min_stars=1")
+def test_stars_filter_excludes_unrated(client, many):
+    assert names(client, "?stars=3,5") == ["alpha", "beta_art"]
+    # Gamma 是未評分，不是 0 分 —— IN (…) 本來就排除 NULL，這條守住它
+    assert "Gamma" not in names(client, "?stars=1,2,3,4,5")
 
 
 def test_sort_favorite_then_stars(client, many):
@@ -304,7 +305,7 @@ def test_bad_sort_and_order_are_422(client, many):
 
 def test_filters_combine(client, many):
     assert names(client, "?favorite=true&sort=stars") == ["alpha", "Gamma"]
-    assert names(client, "?q=a&min_stars=5") == ["beta_art"]
+    assert names(client, "?q=a&stars=5") == ["beta_art"]
 
 
 # ------------------------------------------------------------- 前後端契約
@@ -314,11 +315,11 @@ def test_filters_combine(client, many):
     "/api/accounts?sort=name",
     # web/app.js::accountQuery 的各種組合
     "/api/accounts?sort=favorite",
-    "/api/accounts?sort=last_ingest&q=art&favorite=true&min_stars=3",
-    "/api/accounts?sort=media&q=&min_stars=1",
+    "/api/accounts?sort=last_ingest&q=art&favorite=true&stars=3",
+    "/api/accounts?sort=media&q=&stars=1",
     # web/app.js::mediaQuery
     "/api/media?limit=60&offset=0&exclude_rating=r18&sort=newest",
-    "/api/media?limit=60&offset=0&sort=stars&min_stars=4&kind=photo",
+    "/api/media?limit=60&offset=0&sort=stars&stars=4&kind=photo",
 ])
 def test_gui_query_strings_are_accepted(client, many, url):
     """GUI 實際組出來的 URL 必須是 200。

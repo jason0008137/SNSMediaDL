@@ -64,6 +64,10 @@ def _account_dict(a: Account) -> dict:
         "platform_user_id": a.platform_user_id,
         "screen_name": a.screen_name,
         "is_tracked": a.is_tracked,
+        # ⚠️ 與 `is_tracked` 是**兩件事**，前端要分開顯示：
+        # 這一個只有使用者會寫（「我不要抓它」），`is_tracked=False` 則可能是
+        # 系統自動退訂的（連續找不到）。兩者的下一步不一樣。
+        "is_ignored": a.is_ignored,
         "not_found_streak": a.not_found_streak,
         # 「這是自動退訂的」由**資料**判定，不靠比對 note 的文字 ——
         # 文案改一次，前端的判斷就會靜默失效（`UnsupportedTarget` 的同一個教訓）。
@@ -169,6 +173,112 @@ def _filter_unset_or_value(stmt, column, value: str | None,
     return stmt.where(column == value)
 
 
+def _accounts_where(
+    stmt,
+    *,
+    platform: str | None,
+    creator_id: int | None,
+    q: str | None,
+    favorite: bool | None,
+    stars: list[str],
+    fetch_status: str | None,
+    default_rating: str | None,
+    default_content_type: str | None,
+    ignored: bool | None,
+):
+    """帳號清單的 WHERE 條件。**`/accounts` 與 `/accounts/ids` 共用這一支。**
+
+    ⚠️ 兩邊各寫一份的話會漂移，而症狀特別惡劣：「選取全部符合篩選的 4,653 個」
+    拿到的 id 與畫面上看到的那批不一樣 —— 然後批次改到一堆使用者沒看到的帳號，
+    而那個動作不可逆。
+    """
+    if platform:
+        stmt = stmt.where(Account.platform == platform)
+    if creator_id is not None:
+        stmt = stmt.where(Account.creator_id == creator_id)
+    if q:
+        pattern = _like_pattern(q)
+        stmt = stmt.where(
+            func.lower(func.coalesce(Account.screen_name, "")).like(pattern, escape="\\")
+            | func.lower(Account.platform_user_id).like(pattern, escape="\\")
+        )
+    if favorite:
+        stmt = stmt.where(Account.is_favorite.is_(True))
+    if stars:
+        # NULL（未評分）不算 0 分，要被濾掉 —— `IN (…)` 本來就會排除 NULL，
+        # 這裡只是講明白這是刻意的。想篩「沒評分的」要另開參數。
+        stmt = stmt.where(Account.stars.in_([int(v) for v in stars]))
+    if ignored is not None:
+        # ⚠️ 用 `is not None` 而不是 `if ignored` —— `ignored=False`
+        # 的意思是「只看**沒有**被忽略的」，那是一個真的條件，不是不篩選。
+        stmt = stmt.where(Account.is_ignored.is_(bool(ignored)))
+    if fetch_status:
+        # 支援逗號分隔的多值。「只看抓取有問題的」是把四種失敗狀態放在一起 ——
+        # 那必須在**後端**篩，前端只濾當頁的話，使用者會在一頁全是「從沒檢查過」
+        # 的清單上看到 0 筆，然後以為沒有問題。實際上有。
+        wanted = [s.strip() for s in fetch_status.split(",") if s.strip()]
+        bad = [s for s in wanted if s not in FetchStatus.values()]
+        if bad:
+            raise HTTPException(
+                422, f"fetch_status 含未知的值 {bad}；可用：{FetchStatus.values()}")
+        stmt = stmt.where(Account.last_fetch_status.in_(wanted))
+
+    # 帳號預設值篩選。
+    #
+    # ⚠️ **NULL 用 `__unset__` 這個哨符，不用空字串。** 空字串與「不篩選」
+    # 在 query string 裡長得一模一樣（`?default_rating=` 就是空字串），
+    # 分不出來的話「找出還沒設過的帳號」這個功能根本表達不出來。
+    #
+    # 而那正是主要用例：正式庫 4,653 個帳號**全部**沒設過預設值，使用者要的
+    # 就是「哪些我還沒標」。
+    stmt = _filter_unset_or_value(
+        stmt, Account.default_rating, default_rating, Rating.values(), "default_rating")
+    stmt = _filter_unset_or_value(
+        stmt, Account.default_content_type, default_content_type,
+        ContentType.values(), "default_content_type")
+    return stmt
+
+
+# 一次 `IN (...)` 能塞幾個 id。**SQLite 的硬上限是 999 個繫結變數**，
+# 留 99 個餘裕給其他參數。超過不是慢，是直接 OperationalError。
+BULK_ID_LIMIT = 900
+
+
+@router.get("/accounts/ids")
+def list_account_ids(
+    platform: str | None = None,
+    creator_id: int | None = None,
+    q: str | None = None,
+    favorite: bool | None = None,
+    stars: list[str] | None = Query(default=None),
+    fetch_status: str | None = None,
+    default_rating: str | None = None,
+    default_content_type: str | None = None,
+    ignored: bool | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """符合篩選的**帳號 id 全部**，不含卡片資料。
+
+    給「選取全部符合篩選的 N 個」用。走 `/accounts` 會拉回 4,653 張卡的
+    完整 payload（含預覽縮圖 id 陣列），為了一組 id 付那個成本不划算。
+
+    ⚠️ **這支刻意回 dict 而不是 list**，與 `/accounts` 相反 ——
+    那支必須維持 list（`extension/bar.js` 直接把回應當陣列跑 `.map`）。
+    這裡沒有那個包袱，而呼叫端需要 total 來顯示「已選 N 個」。
+
+    ⚠️ 篩選條件與 `/accounts` 走**同一支** `_accounts_where()`。
+    """
+    stmt = _accounts_where(
+        select(Account.id),
+        platform=platform, creator_id=creator_id, q=q, favorite=favorite,
+        stars=_multi(stars, "stars", allowed=STAR_VALUES), fetch_status=fetch_status,
+        default_rating=default_rating, default_content_type=default_content_type,
+        ignored=ignored,
+    )
+    ids = list(session.scalars(stmt.order_by(Account.id.asc())))
+    return {"ids": ids, "total": len(ids), "bulk_id_limit": BULK_ID_LIMIT}
+
+
 @router.get("/accounts")
 def list_accounts(
     platform: str | None = None,
@@ -177,7 +287,7 @@ def list_accounts(
         default=None, description="子字串搜尋，比對 screen_name 與 platform_user_id，不分大小寫"
     ),
     favorite: bool | None = Query(default=None, description="true 時只回我的最愛"),
-    min_stars: int | None = Query(default=None, ge=1, le=5),
+    stars: list[str] | None = Query(default=None),
     fetch_status: str | None = Query(
         default=None,
         description="只回最後一次擷取是這些結果的帳號，逗號分隔可給多個。"
@@ -191,6 +301,11 @@ def list_accounts(
     default_content_type: str | None = Query(
         default=None,
         description="依帳號預設類型篩選。`__unset__` = 還沒設過的",
+    ),
+    ignored: bool | None = Query(
+        default=None,
+        description="true = 只看被標記忽略的（一鍵更新會跳過那些）；"
+                    "false = 只看沒被忽略的；不給 = 兩者都回",
     ),
     sort: str = Query(
         default="id",
@@ -262,48 +377,15 @@ def list_accounts(
     #
     # 排序鍵用到聚合欄時一律當成要 stats，否則排出來的順序與顯示的數字對不上。
     needs_stats = with_stats or sort in ("last_post", "last_ingest", "media", "posts")
-    stmt = select(Account)
-
-    if platform:
-        stmt = stmt.where(Account.platform == platform)
-    if creator_id is not None:
-        stmt = stmt.where(Account.creator_id == creator_id)
-    if q:
-        pattern = _like_pattern(q)
-        stmt = stmt.where(
-            func.lower(func.coalesce(Account.screen_name, "")).like(pattern, escape="\\")
-            | func.lower(Account.platform_user_id).like(pattern, escape="\\")
-        )
-    if favorite:
-        stmt = stmt.where(Account.is_favorite.is_(True))
-    if min_stars is not None:
-        # NULL（未評分）不算 0 分，要被濾掉 —— SQL 的 `stars >= 1` 本來就會
-        # 排除 NULL，這裡只是講明白這是刻意的。
-        stmt = stmt.where(Account.stars >= min_stars)
-    if fetch_status:
-        # 支援逗號分隔的多值。「只看抓取有問題的」是把四種失敗狀態放在一起 ——
-        # 那必須在**後端**篩，前端只濾當頁的話，使用者會在一頁全是「從沒檢查過」
-        # 的清單上看到 0 筆，然後以為沒有問題。實際上有。
-        wanted = [s.strip() for s in fetch_status.split(",") if s.strip()]
-        bad = [s for s in wanted if s not in FetchStatus.values()]
-        if bad:
-            raise HTTPException(
-                422, f"fetch_status 含未知的值 {bad}；可用：{FetchStatus.values()}")
-        stmt = stmt.where(Account.last_fetch_status.in_(wanted))
-
-    # 帳號預設值篩選。
-    #
-    # ⚠️ **NULL 用 `__unset__` 這個哨符，不用空字串。** 空字串與「不篩選」
-    # 在 query string 裡長得一模一樣（`?default_rating=` 就是空字串），
-    # 分不出來的話「找出還沒設過的帳號」這個功能根本表達不出來。
-    #
-    # 而那正是主要用例：正式庫 4,653 個帳號**全部**沒設過預設值，使用者要的
-    # 就是「哪些我還沒標」。
-    stmt = _filter_unset_or_value(
-        stmt, Account.default_rating, default_rating, Rating.values(), "default_rating")
-    stmt = _filter_unset_or_value(
-        stmt, Account.default_content_type, default_content_type,
-        ContentType.values(), "default_content_type")
+    # 條件與 `/accounts/ids` 共用。兩邊各寫一份會漂移，而症狀是
+    # 「選取全部符合篩選的 N 個」拿到的 id 與畫面上那批不一樣。
+    stmt = _accounts_where(
+        select(Account),
+        platform=platform, creator_id=creator_id, q=q, favorite=favorite,
+        stars=_multi(stars, "stars", allowed=STAR_VALUES), fetch_status=fetch_status,
+        default_rating=default_rating, default_content_type=default_content_type,
+        ignored=ignored,
+    )
 
     key, default_desc = sorts[sort]
     desc = default_desc if order is None else order == "desc"
@@ -516,6 +598,14 @@ def _multi(
     return out
 
 
+# 五星評分的值域。⚠️ 這是「評分」（stars），與 sfw/r18 分級（rating）
+# 是兩件事 —— 不要因為都叫「級」就混用。
+#
+# 未評分（NULL）**不在這個值域裡**：它不是 0 分，是「還沒評」。
+# 想篩「沒評分的」要另開參數，不要在這裡塞一個魔術值 0。
+STAR_VALUES = {"1", "2", "3", "4", "5"}
+
+
 def _in_or_eq(column, values: list[str]):
     """一律 `.in_()`。單值時 planner 對 IN 單元素的處理與 `=` 相同，
     但寫法一致比省那一點好 —— 兩種寫法並存時，加條件的人會挑錯邊。"""
@@ -532,7 +622,7 @@ def _media_stmt(
     account_id: int | None,
     creator_id: list[str] | list[int],
     platform: str | None,
-    min_stars: int | None,
+    stars: list[str],
 ):
     """媒體篩選條件。**清單與總數共用同一份**。
 
@@ -574,8 +664,8 @@ def _media_stmt(
         stmt = stmt.where((Post.rating.is_(None)) | (Post.rating != exclude_rating))
     if content_type:
         stmt = stmt.where(_in_or_eq(Post.content_type, content_type))
-    if min_stars is not None:
-        stmt = stmt.where(Media.stars >= min_stars)
+    if stars:
+        stmt = stmt.where(Media.stars.in_([int(v) for v in stars]))
     return stmt
 
 
@@ -589,9 +679,10 @@ def list_media(
     account_id: int | None = None,
     creator_id: list[str] | None = Query(default=None),
     platform: str | None = None,
-    min_stars: int | None = Query(
-        default=None, ge=1, le=5,
-        description="只回 ≥ N 星。⚠️ 這是五星評分，與 rating（sfw/r18 分級）無關",
+    stars: list[str] | None = Query(
+        default=None,
+        description="只回這幾個星數（可多值，例如 stars=3,5）。"
+                    "⚠️ 這是五星評分，與 rating（sfw/r18 分級）無關",
     ),
     sort: str = Query(default="added",
                       description="added / posted / stars（舊值 newest / oldest 仍可用）"),
@@ -663,7 +754,7 @@ def list_media(
                             allowed=_ENUM_VALUES["content_type"]),
         account_id=account_id,
         creator_id=_multi(creator_id, "creator_id"),
-        platform=platform, min_stars=min_stars,
+        platform=platform, stars=_multi(stars, "stars", allowed=STAR_VALUES),
     )
 
     if key == "posted":
@@ -832,7 +923,7 @@ def count_media(
     account_id: int | None = None,
     creator_id: list[str] | None = Query(default=None),
     platform: str | None = None,
-    min_stars: int | None = Query(default=None, ge=1, le=5),
+    stars: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
 ) -> dict:
     """符合條件的媒體總數。參數與 `GET /api/media` 的篩選參數完全相同。
@@ -855,7 +946,7 @@ def count_media(
                             allowed=_ENUM_VALUES["content_type"]),
         account_id=account_id,
         creator_id=_multi(creator_id, "creator_id"),
-        platform=platform, min_stars=min_stars,
+        platform=platform, stars=_multi(stars, "stars", allowed=STAR_VALUES),
     )
 
     total = count(_media_stmt(exclude_rating=exclude_rating, **filters))

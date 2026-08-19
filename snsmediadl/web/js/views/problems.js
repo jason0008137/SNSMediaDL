@@ -7,7 +7,11 @@
 // 而且 0 筆是**預設會看到的狀態**，所以它必須看起來像正常
 // （「目前沒有失敗項目」），而不是像壞掉的空白。
 
-import { esc } from '../dom.js';
+import { esc, mountDrops } from '../dom.js';
+
+/** 日誌等級下拉的握把。⚠ 模組層而不是查 DOM：面板每次開都重畫，
+ *  而 loadLogs() 也可能在面板還沒建好時被呼叫。 */
+let logLevel = null;
 import { api } from '../api.js';
 import { openOverlay } from '../overlay.js';
 import { refreshQueue } from '../queue.js';
@@ -42,7 +46,7 @@ async function loadErrors(body) {
 }
 
 async function loadLogs(body) {
-  const level = body.querySelector('#logLevel').value;
+  const level = logLevel ? logLevel.get() : '';
   const box = body.querySelector('#logs');
   try {
     const data = await api(`/api/logs?limit=200${level ? `&level=${level}` : ''}`);
@@ -72,17 +76,22 @@ export function openProblems() {
       <div class="ovl-section">
         <h3>伺服器日誌</h3>
         <div class="row">
-          <select id="logLevel">
-            <option value="">全部等級</option>
-            <option value="ERROR">ERROR</option>
-            <option value="WARNING">WARNING</option>
-            <option value="INFO">INFO</option>
-          </select>
+          <span id="logLevel" class="ms-host"></span>
           <button id="refreshLogs" class="ghost">重新整理</button>
         </div>
         <pre id="logs" class="logs">載入中…</pre>
       </div>`,
     onMount: (body) => {
+      // 這個面板每次開都重畫 —— 下拉在這裡建。
+      // ⚠️ `logLevel` 是模組層變數而不是查 DOM：`loadLogs()` 在面板關掉之後
+      // 也可能被呼叫到，那時 querySelector 會回 null。
+      ({ logLevel } = mountDrops(body, {
+        logLevel: {
+          label: '全部等級', emptyText: '全部等級', ariaLabel: '只看哪個等級',
+          values: [{ value: 'ERROR' }, { value: 'WARNING' }, { value: 'INFO' }],
+          onChange: () => loadLogs(body),
+        },
+      }));
       loadErrors(body);
       loadLogs(body);
 
@@ -117,7 +126,6 @@ export function openProblems() {
       });
 
       body.querySelector('#refreshLogs').addEventListener('click', () => loadLogs(body));
-      body.querySelector('#logLevel').addEventListener('change', () => loadLogs(body));
     },
   });
 }

@@ -42,6 +42,16 @@ export function showView(name, { load = true, force = false } = {}) {
 
   document.querySelectorAll('.tab').forEach((b) =>
     b.classList.toggle('active', b.dataset.view === name));
+  // ⚠️ 「目前在哪一頁」不能只有視覺載體。`.active` 給的是顏色、粗體與
+  // 指示條，讀屏使用者一個都拿不到 —— 三顆按鈕聽起來完全一樣。
+  //
+  // 用 aria-current 而**不是** role="tab"：後者帶一整套鍵盤契約
+  // （方向鍵在分頁間移動、Home/End、tabpanel 關聯）。只寫 role 不實作契約
+  // 等於承諾了方向鍵可用然後沒反應，比不寫更糟。這裡是「切換檢視的導覽」。
+  for (const b of document.querySelectorAll('.tab')) {
+    if (b.dataset.view === name) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  }
   state.view = name;
   document.querySelectorAll('.view').forEach((v) => v.classList.add('hidden'));
   $(`view-${name}`).classList.remove('hidden');

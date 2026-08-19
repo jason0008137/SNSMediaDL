@@ -304,6 +304,69 @@ def delete_queue() -> dict:
     return {"cleared": get_fetch_queue().clear_pending()}
 
 
+# ── 重試與續抓 ───────────────────────────────────────────
+#
+# ⚠️ 全部寫成 `async def`。`enqueue()` 會碰 `asyncio.Event.set()`，而 FastAPI
+# 會把 **sync def** 的端點丟到 threadpool —— 那裡沒有 running loop，
+# 而 `Event.set()` 也不是 thread-safe（見 `fetch_queue.start()` 的說明）。
+
+
+class RetryAllRequest(BaseModel):
+    # 站台被限速那一輪被跳過的，**根本沒跑過** —— 預設納入，它是重試最主要
+    # 的服務對象。
+    include_skipped: bool = True
+    # 缺憑證 / 找不到。預設**不**納入：原因沒排除，重試必定同樣失敗。
+    # 單筆重試不受這個限制（那是使用者覆寫）。
+    include_unretryable: bool = False
+    # 預設 False。自動解除等於用 fallback 掩蓋「對方在擋我們」，而且解除
+    # 窗口我們不知道，猜錯就是再撞一次 —— Fediverse 的 429 政策是停止不重試。
+    clear_rate_limit: bool = False
+
+
+@router.post("/fetch/queue/retry-failed")
+async def post_retry_failed(body: RetryAllRequest) -> dict:
+    """把歷史裡可重試的全部重排。
+
+    回應的 `will_be_skipped` **一定要用**：站台旗標還掛著時，重排的 job 會在
+    `_process()` 開頭第一行就被標成 skipped。不講的話，使用者會看到
+    「已排入 201 個」然後幾秒內全部變 ⊘，而完全不知道發生了什麼。
+
+    `refused` 同理 —— 該帳號已經在佇列裡時 `enqueue()` 回 None，
+    靜默少排幾個就是這個專案禁止的靜默漏抓。
+    """
+    return get_fetch_queue().retry_failed(
+        include_skipped=body.include_skipped,
+        include_unretryable=body.include_unretryable,
+        clear_rate_limit=body.clear_rate_limit,
+    )
+
+
+@router.post("/fetch/queue/resume-capped")
+async def post_resume_capped() -> dict:
+    """把撞到頁數上限的全部續抓。
+
+    ⚠️ 與重試是**兩個**動作。撞上限不是失敗（job.state 是 done），
+    硬塞進「重試失敗的」會讓失敗分類的明細說謊。
+    """
+    return get_fetch_queue().resume_capped()
+
+
+@router.post("/fetch/queue/{job_id}/retry")
+async def post_retry_one(job_id: int) -> dict:
+    """重試單一筆。**不可重試的類別也允許** —— 這是使用者覆寫。
+
+    使用者剛去設定頁填完 PHPSESSID、剛在帳號頁確認過改名時，他知道的比
+    系統多。做成 disabled 會擋掉唯一真正合理的使用情境。
+    """
+    return get_fetch_queue().retry(job_id)
+
+
+@router.post("/fetch/queue/{job_id}/resume")
+async def post_resume_one(job_id: int) -> dict:
+    """從上次撞上限的游標接下去。**不是**從第 1 頁重來。"""
+    return get_fetch_queue().retry(job_id, resume=True)
+
+
 @router.delete("/fetch/rate-limit")
 def clear_rate_limit() -> dict:
     """手動解除限速標記。

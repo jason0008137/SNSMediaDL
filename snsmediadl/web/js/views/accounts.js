@@ -6,12 +6,14 @@
 //   · 三個日期欄位有**兩個的資訊量是零**（`last_ingest_at` 4,648/4,653 同一天、
 //     `last_fetched_at` 全空），所以卡面改成一行**結論**而不是三行原始資料
 
-import { $, esc, fmtWhen, starsHtml, handleStarClick } from '../dom.js';
+import {
+  $, esc, fmtWhen, mountDrops, multiDrop, singleDrop, starsHtml, handleStarClick,
+} from '../dom.js';
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { openOverlay, confirmDialog } from '../overlay.js';
 import { jumpToMedia, paintMoreNotes } from './media.js';
-import { RATINGS, CONTENTS, opts } from '../enums.js';
+import { RATING_VALUES, CONTENT_VALUES } from '../enums.js';
 
 // 帳號頁一定要分頁。匯入舊資料後這個庫有 4,653 個帳號 ——
 // 一次渲染完整份會把瀏覽器凍住（實測 CDP 直接逾時）。
@@ -30,24 +32,117 @@ const FETCH_LABEL = {
 
 function accountQuery() {
   const p = new URLSearchParams();
-  p.set('sort', $('aSort').value);
+  p.set('sort', aDrops.aSort.get());
   p.set('limit', ACCT_PAGE);
   p.set('offset', state.acctOffset);
   const q = $('aSearch').value.trim();
   if (q) p.set('q', q);
-  if ($('aPlatform').value) p.set('platform', $('aPlatform').value);
+  const platform = aDrops.aPlatform.get();
+  if (platform) p.set('platform', platform);
   if ($('aFavOnly').checked) p.set('favorite', 'true');
-  if ($('aMinStars').value) p.set('min_stars', $('aMinStars').value);
+  for (const v of aDrops.aStars?.get() ?? []) p.append('stars', v);
   // `__unset__` 直接原樣送 —— 空字串在 query string 裡與「不篩選」分不出來
-  if ($('aDefaultRating').value) p.set('default_rating', $('aDefaultRating').value);
-  if ($('aDefaultContent').value) p.set('default_content_type', $('aDefaultContent').value);
-  const fs = $('aFetchStatus').value;
-  // `__bad__` 展開成後端認得的多值。**不可以在前端濾** —— 前端只看得到
-  // 當頁的 100 筆，使用者會在一頁全是「從沒檢查過」的清單上看到 0 筆，
-  // 然後以為沒有任何帳號有問題。實測就是這樣錯的。
-  if (fs === '__bad__') p.set('fetch_status', FETCH_BAD.join(','));
-  else if (fs) p.set('fetch_status', fs);
+  const dr = aDrops.aDefaultRating.get();
+  const dc = aDrops.aDefaultContent.get();
+  if (dr) p.set('default_rating', dr);
+  if (dc) p.set('default_content_type', dc);
+  // 都不勾 = 不篩選（兩者都回）；兩個都勾也是全部，語意等價。
+  // 只勾一個才是真的條件。
+  const ig = aDrops.aIgnored?.get() ?? [];
+  if (ig.length === 1) p.set('ignored', ig[0]);
+  // ⚠️ **不可以在前端濾** —— 前端只看得到當頁的 100 筆，使用者會在一頁
+  // 全是「從沒檢查過」的清單上看到 0 筆，然後以為沒有任何帳號有問題。
+  // 實測就是這樣錯的。所以一律把值送給後端。
+  const fs = aDrops.aFetchStatus?.get() ?? [];
+  if (fs.length) p.set('fetch_status', fs.join(','));
   return p.toString();
+}
+
+/** 帳號頁「更多篩選」的三個多選下拉。`wireAccountFilters()` 之後才有東西。 */
+const aDrops = {};
+
+/** 評分：篩**特定星數**不是「幾星以上」（2026-08-19 使用者裁示）。
+ *  ⚠️ 沒有「未評分」這一項 —— NULL 不是 0 分。 */
+const A_STARS = ['5', '4', '3', '2', '1'];
+
+/** 擷取結果的值域。⚠️ 舊版有一個 `__bad__` 聚合選項（「只看抓取有問題的」）；
+ *  改多選之後它沒有存在的必要 —— 使用者直接把那四個勾起來就是同一件事，
+ *  而聚合選項與具體選項混在同一張清單裡會讓「全選」的語意講不清楚。 */
+const A_FETCH = ['ok', 'no_new', 'not_found', 'rate_limited', 'auth_required', 'failed', 'skipped'];
+
+/** 排序鍵的值域與顯示字。值域**同時是白名單** —— 見 `storedAccountSort()`。 */
+const A_SORT = [
+  { value: 'favorite', text: '我的最愛 → 評分' },
+  { value: 'stars', text: '評分高到低' },
+  { value: 'name', text: '名稱' },
+  { value: 'last_post', text: '最後發文' },
+  { value: 'last_ingest', text: '最後採集' },
+  { value: 'last_fetch', text: '最久沒檢查' },
+  { value: 'media', text: '媒體數' },
+  { value: 'posts', text: '貼文數' },
+  { value: 'created', text: '建檔時間' },
+  { value: 'id', text: '加入順序' },
+];
+
+/** 記住的排序偏好，**經過白名單**。
+ *
+ *  ⚠️ 原生 `<select>` 時代這裡是直接 `.value = localStorage.…`：塞一個不存在的
+ *  值進去，select 會自己變成空字串，錯誤被吞掉。自製下拉沒有那個保護 ——
+ *  認不得的值會原樣送給後端。所以驗證從「順手做」變成「非做不可」。
+ *
+ *  GUI 預設 favorite，而 API 預設是 id（= 舊行為，extension 靠它）。 */
+function storedAccountSort() {
+  const raw = localStorage.getItem('accountSort') || '';
+  return A_SORT.some((o) => o.value === raw) ? raw : 'favorite';
+}
+
+/** 「（未設定）」放在值清單的最前面：「哪些我還沒標」才是主要用例。 */
+const unsetFirst = (values) =>
+  [{ value: '__unset__', text: '（未設定）' }, ...values.map((v) => ({ value: v }))];
+
+export function wireAccountFilters() {
+  // ── 單選的四個 ──
+  // ⚠️ 這幾個的變動**不能**再靠模組底部那串 addEventListener('change')：
+  // 它們現在是 <span>，change 事件永遠不會發生，而且掛得上去、不會報錯。
+  const single = (id, label, values, opt = {}) => {
+    aDrops[id] = singleDrop($(id), {
+      label,
+      values,
+      // 收起時顯示的就是 label，所以「回到不限」那一項用同一句話。
+      emptyText: label,
+      onChange: () => {
+        // 排序不改變「有哪些帳號符合條件」，所以它不必清掉選取。其餘都要。
+        if (id !== 'aSort') clearAcctSelection('換了篩選 —— 選取已清空');
+        else localStorage.setItem('accountSort', aDrops.aSort.get());
+        state.acctOffset = 0;
+        loadAccounts();
+      },
+      ...opt,
+    });
+  };
+  // 平台選項帶筆數，由 `loadPlatforms()` 之後用 setOptions() 補上。
+  single('aPlatform', '全部平台', [], { value: '' });
+  // ⚠️ 排序**不給 emptyText**：它一定有值，「不排序」不是一個選項。
+  // 給了會多出一個選了等於沒選的空項。
+  single('aSort', '排序', A_SORT, { value: storedAccountSort(), emptyText: undefined });
+  single('aDefaultRating', '預設分級：全部', unsetFirst(RATING_VALUES));
+  single('aDefaultContent', '預設類型：全部', unsetFirst(CONTENT_VALUES));
+
+  const mk = (id, label, values, text) => {
+    aDrops[id] = multiDrop($(id), {
+      label,
+      values: values.map((v) => ({ value: v, text: text ? text(v) : undefined })),
+      onChange: () => {
+        clearAcctSelection('換了篩選 —— 選取已清空');
+        state.acctOffset = 0;
+        loadAccounts();
+      },
+    });
+  };
+  mk('aStars', '評分', A_STARS, (v) => '★'.repeat(Number(v)));
+  mk('aIgnored', '忽略', ['true', 'false'],
+     (v) => (v === 'true' ? '已忽略' : '沒被忽略'));
+  mk('aFetchStatus', '擷取結果', A_FETCH);
 }
 
 const acctName = (a) => a.screen_name || a.platform_user_id;
@@ -65,9 +160,10 @@ function verdict(a) {
   const when = fmtWhen(a.last_fetched_at);
   const md = when.length >= 10 ? when.slice(5) : when;
   if (FETCH_BAD.includes(st)) {
-    // ⚠️ 是形狀載體，不可以只靠紅字（灰階列印要仍分得出來）
+    // 形狀載體（⚠ 前綴）由 app.css 的 `.bad::before` 統一加 —— 這裡**不要**
+    // 自己再寫一個，否則畫面上會出現兩個 ⚠。
     const why = a.last_fetch_note || FETCH_LABEL[st] || st;
-    return { text: `⚠ 上次失敗：${why}`, bad: true, full: a.last_fetched_at };
+    return { text: `上次失敗：${why}`, bad: true, full: a.last_fetched_at };
   }
   const days = a.last_fetched_at
     ? Math.floor((Date.now() - Date.parse(a.last_fetched_at)) / 86400000)
@@ -93,9 +189,25 @@ function verdict(a) {
  *  的第一個念頭是「我的東西還在嗎」。 */
 function untrackedHtml(a) {
   if (!a.auto_untracked) return '';
-  return `<span class="card-verdict bad">⚠ 已自動移出追蹤（連續 ${
+  // ⚠ 前綴由 `.bad::before` 加，見 verdict() 的說明。
+  return `<span class="card-verdict bad">已自動移出追蹤（連續 ${
     a.not_found_streak} 次找不到）—— 既有資料一筆都沒動
     <button type="button" class="linkish" data-act="retrack">恢復追蹤</button></span>`;
+}
+
+/** 使用者標記的「忽略」。
+ *
+ *  ⚠️ **與上面那個自動退訂的告示視覺與語氣都要不同。** 兩者的效果相似
+ *  （都會被一鍵更新跳過），但一個是我按的、一個是系統做的 ——
+ *  而下一步不一樣：系統退訂的該去查是不是改名了，我標的不用管。
+ *  所以符號分開（⊘ vs ⚠）、語氣分開（中性陳述 vs 講原因與次數），
+ *  **不只靠顏色**（灰階下顏色會消失）。
+ *
+ *  0 個被忽略是常態（這是新旗標），所以沒有時整塊不佔高度。 */
+function ignoredHtml(a) {
+  if (!a.is_ignored) return '';
+  return `<span class="card-ignored">⊘ 已忽略 —— 一鍵更新會跳過它，資料一筆都沒動
+    <button type="button" class="linkish" data-act="unignore">取消忽略</button></span>`;
 }
 
 /** 「↗ 在 … 開啟」。網址與問題說明都由後端的 links.py 給 ——
@@ -119,8 +231,18 @@ function cardHtml(a) {
   const v = verdict(a);
   const n = (x) => (x || 0).toLocaleString();
   const defaults = [a.default_rating, a.default_content_type].filter(Boolean).join(' · ');
-  return `<div class="card" data-id="${a.id}">
+  // ⚠️ 用 `isPicked()` 不是 `acctPicked.has()` —— 範圍是「全部符合篩選的」時，
+  // 本頁的卡也該顯示成已選，而那些 id 在 acctAllIdSet 裡不在 acctPicked 裡。
+  const picked = isPicked(a.id);
+  // 選取模式時卡片多一個核取方塊，**而且整張卡加框** —— 一頁 100 張時
+  // 只靠角落一個小方塊掃不出選了哪些（滿載才是分組必須成立的時候）。
+  const box = acctSelecting
+    ? `<input type="checkbox" class="acct-pick" data-act="pick"
+        ${picked ? 'checked' : ''} aria-label="選取 ${esc(acctName(a))}">`
+    : '';
+  return `<div class="card${picked ? ' picked' : ''}" data-id="${a.id}">
     <div class="card-head">
+      ${box}
       <button type="button" class="fav${a.is_favorite ? ' on' : ''}"
               data-act="fav" data-tip="我的最愛（點了立即生效）">${a.is_favorite ? '♥' : '♡'}</button>
       <h3>${esc(acctName(a))}</h3>
@@ -141,6 +263,7 @@ function cardHtml(a) {
       <span class="card-verdict${v.bad ? ' bad' : ''}"${
         v.full ? ` data-tip="${esc(v.full)}"` : ''}>${esc(v.text)}</span>
       ${untrackedHtml(a)}
+      ${ignoredHtml(a)}
     </div>
     ${previewHtml(a)}
     <div class="card-foot">
@@ -280,6 +403,8 @@ export async function loadAccounts() {
   mountChunk();
   wireSentinel();
   fetchUnsetCount();
+  // 選取列的「全選本頁 N」要用**這一次**載回來的筆數，不是上一次的
+  renderSelBar();
 }
 
 function emptyAccountsHtml() {
@@ -289,12 +414,14 @@ function emptyAccountsHtml() {
       <button type="button" class="ghost" data-act="clearsearch">清除搜尋</button></p>`;
   }
   const conds = [
-    $('aPlatform').value ? `平台 ${$('aPlatform').value}` : '',
+    aDrops.aPlatform.get() ? `平台 ${aDrops.aPlatform.get()}` : '',
     $('aFavOnly').checked ? '只看 ♥' : '',
-    $('aMinStars').value ? `評分 ${$('aMinStars').value} 星以上` : '',
-    $('aDefaultRating').value ? `預設分級 ${$('aDefaultRating').value}` : '',
-    $('aDefaultContent').value ? `預設類型 ${$('aDefaultContent').value}` : '',
-    $('aFetchStatus').value ? `擷取結果 ${$('aFetchStatus').value}` : '',
+    (aDrops.aStars?.get() ?? []).length
+      ? `評分 ${aDrops.aStars.get().map((v) => '★'.repeat(Number(v))).join('、')}` : '',
+    aDrops.aDefaultRating.get() ? `預設分級 ${aDrops.aDefaultRating.get()}` : '',
+    aDrops.aDefaultContent.get() ? `預設類型 ${aDrops.aDefaultContent.get()}` : '',
+    (aDrops.aFetchStatus?.get() ?? []).length
+      ? `擷取結果 ${aDrops.aFetchStatus.get().join('、')}` : '',
   ].filter(Boolean);
   if (conds.length) {
     return `<p class="empty">沒有帳號符合目前條件。<br>生效中：${esc(conds.join('、'))}</p>`;
@@ -322,7 +449,7 @@ async function fetchUnsetCount() {
   // 使用者只會覺得這個數字是壞的。它回答的是「我眼前這批還剩多少要整理」。
   //
   // 已經在依預設分級篩選時整句不顯示：那時清單本身就是答案。
-  if ($('aDefaultRating').value) { unsetRating = null; paintAccountCount(); return; }
+  if (aDrops.aDefaultRating.get()) { unsetRating = null; paintAccountCount(); return; }
   const p = new URLSearchParams(accountQuery());
   p.set('default_rating', '__unset__');
   p.set('limit', '1');
@@ -378,6 +505,41 @@ $('accountList').addEventListener('click', async (ev) => {
   const btn = ev.target.closest('[data-act]');
   if (!btn) return;
 
+  if (btn.dataset.act === 'pick') {
+    // 從「全部符合篩選的」手動改一張 = 範圍退回本頁。**要講出來** ——
+    // 不講的話使用者以為還選著 4,653 個，實際上只剩這一頁。
+    if (acctPickScope === 'all') {
+      acctPickScope = 'page';
+      acctPicked.clear();
+      for (const x of state.accounts) acctPicked.add(x.id);
+      acctAllIds = [];
+      acctAllIdSet = new Set();
+      $('aSelBar').dataset.note = '手動改了選取 —— 範圍從「全部符合篩選的」退回「本頁」';
+    }
+    if (btn.checked) acctPicked.add(a.id); else acctPicked.delete(a.id);
+    card.classList.toggle('picked', btn.checked);
+    renderSelBar();
+    return;
+  }
+
+  if (btn.dataset.act === 'unignore') {
+    // 立即生效，不必按儲存（與卡上的 ♥ ★ 同一個模型）
+    btn.disabled = true;
+    try {
+      await api(`/api/accounts/${a.id}/prefs`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ is_ignored: false }),
+      });
+      a.is_ignored = false;
+      card.outerHTML = cardHtml(a);
+    } catch (e) {
+      btn.disabled = false;
+      say(card, `取消忽略失敗：${e.message}`, 'err');
+    }
+    return;
+  }
+
   if (btn.dataset.act === 'viewmedia') {
     jumpToMedia({ account: a.id, label: acctName(a) });
   } else if (btn.dataset.act === 'retrack') {
@@ -426,9 +588,9 @@ $('accountList').addEventListener('click', async (ev) => {
 // ── [編輯] 抽屜：低頻 + 破壞性 ────────────────────────
 
 function openAccountDrawer(a, card) {
-  const creatorOpts = ['<option value="">（未歸屬）</option>']
-    .concat(state.creators.map((c) =>
-      `<option value="${c.id}">${esc(c.display_name)}</option>`)).join('');
+  // 「（未歸屬）」那一項不必自己加 —— singleDrop 的 emptyText 會補在最前面。
+  const creatorOpts = state.creators.map((c) =>
+    ({ value: String(c.id), text: c.display_name }));
 
   openOverlay({
     kind: 'drawer',
@@ -438,8 +600,8 @@ function openAccountDrawer(a, card) {
       <div class="ovl-section">
         <h3>新貼文的預設值</h3>
         <div class="row">
-          <select id="dfRating">${opts(RATINGS, a.default_rating)}</select>
-          <select id="dfContent">${opts(CONTENTS, a.default_content_type)}</select>
+          <span id="dfRating" class="ms-host"></span>
+          <span id="dfContent" class="ms-host"></span>
           <span class="spacer"></span>
           <button type="button" id="dfSave">儲存</button>
         </div>
@@ -465,13 +627,8 @@ function openAccountDrawer(a, card) {
         <h3>歸屬到創作者</h3>
         <p class="note">創作者用來把同一位作者的跨平台帳號與小帳串在一起。</p>
         <div class="row">
-          <select id="dfCreator">${creatorOpts}</select>
-          <select id="dfRole">
-            <option value="">（無角色）</option>
-            <option value="main">main</option>
-            <option value="alt">alt</option>
-            <option value="r18_alt">r18_alt</option>
-          </select>
+          <span id="dfCreator" class="ms-host"></span>
+          <span id="dfRole" class="ms-host"></span>
           <button type="button" id="dfLink">套用</button>
         </div>
         <div class="row">
@@ -492,8 +649,29 @@ function openAccountDrawer(a, card) {
         <p class="note" id="dfDelMsg"></p>
       </div>`,
     onMount: (body, handle) => {
-      if (a.creator_id) body.querySelector('#dfCreator').value = String(a.creator_id);
-      if (a.role) body.querySelector('#dfRole').value = a.role;
+      // 抽屜每次打開都是新的一段 HTML —— 下拉要在這裡建，不是開頁時建一次。
+      const d = mountDrops(body, {
+        dfRating: {
+          label: '分級（未標）', emptyText: '（未標）', ariaLabel: '新貼文的預設分級',
+          values: RATING_VALUES.map((v) => ({ value: v })),
+          value: a.default_rating || '', onChange: () => {},
+        },
+        dfContent: {
+          label: '類型（未標）', emptyText: '（未標）', ariaLabel: '新貼文的預設類型',
+          values: CONTENT_VALUES.map((v) => ({ value: v })),
+          value: a.default_content_type || '', onChange: () => {},
+        },
+        dfCreator: {
+          label: '（未歸屬）', emptyText: '（未歸屬）', ariaLabel: '歸屬到哪位創作者',
+          values: creatorOpts,
+          value: a.creator_id ? String(a.creator_id) : '', onChange: () => {},
+        },
+        dfRole: {
+          label: '（無角色）', emptyText: '（無角色）', ariaLabel: '在該創作者底下的角色',
+          values: [{ value: 'main' }, { value: 'alt' }, { value: 'r18_alt' }],
+          value: a.role || '', onChange: () => {},
+        },
+      });
       const note = (id, text, cls = '') => {
         const el = body.querySelector(id);
         el.textContent = text;
@@ -506,12 +684,12 @@ function openAccountDrawer(a, card) {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              default_rating: body.querySelector('#dfRating').value || null,
-              default_content_type: body.querySelector('#dfContent').value || null,
+              default_rating: d.dfRating.get() || null,
+              default_content_type: d.dfContent.get() || null,
             }),
           });
-          a.default_rating = body.querySelector('#dfRating').value || null;
-          a.default_content_type = body.querySelector('#dfContent').value || null;
+          a.default_rating = d.dfRating.get() || null;
+          a.default_content_type = d.dfContent.get() || null;
           // 「送出」與「生效」不共用提示：這裡明說沒有回溯，因為那正是
           // 使用者最容易誤會的地方。
           note('#dfMsg', `已儲存。既有的 ${(a.post_count || 0).toLocaleString()} 則貼文`
@@ -560,18 +738,17 @@ function openAccountDrawer(a, card) {
             body: JSON.stringify({ display_name: name }),
           });
           await loadCreatorList();
-          const sel = body.querySelector('#dfCreator');
-          sel.innerHTML = ['<option value="">（未歸屬）</option>']
-            .concat(state.creators.map((x) =>
-              `<option value="${x.id}">${esc(x.display_name)}</option>`)).join('');
-          sel.value = String(c.id);
+          // setOptions 會自己把「（未歸屬）」那一項補在最前面
+          d.dfCreator.setOptions(state.creators.map((x) =>
+            ({ value: String(x.id), text: x.display_name })));
+          d.dfCreator.set(String(c.id));
           body.querySelector('#dfNewCreator').value = '';
           note('#dfLinkMsg', `已建立「${name}」—— 還要按「套用」才會掛上去`, 'good');
         } catch (e) { note('#dfLinkMsg', `建立失敗：${e.message}`, 'bad'); }
       });
 
       body.querySelector('#dfLink').addEventListener('click', async () => {
-        const cid = body.querySelector('#dfCreator').value;
+        const cid = d.dfCreator.get();
         try {
           if (!cid) {
             await api(`/api/accounts/${a.id}/link`, { method: 'DELETE' });
@@ -584,11 +761,11 @@ function openAccountDrawer(a, card) {
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
                 creator_id: Number(cid),
-                role: body.querySelector('#dfRole').value || null,
+                role: d.dfRole.get() || null,
               }),
             });
             a.creator_id = Number(cid);
-            a.role = body.querySelector('#dfRole').value || null;
+            a.role = d.dfRole.get() || null;
             note('#dfLinkMsg', '已歸屬', 'good');
           }
           await loadCreatorList();
@@ -653,19 +830,27 @@ $('aSearch').addEventListener('input', () => {
   accountSearchTimer = setTimeout(loadAccounts, 250);
 });
 
-['aSort', 'aFavOnly', 'aMinStars', 'aFetchStatus',
- 'aDefaultRating', 'aDefaultContent', 'aPlatform'].forEach((id) =>
-  $(id).addEventListener('change', () => {
-    if (id === 'aSort') localStorage.setItem('accountSort', $('aSort').value);
-    state.acctOffset = 0;
-    loadAccounts();
-  }));
+// ⚠️ 這裡只剩 `aFavOnly` —— 它是**真的** checkbox，change 事件真的會發生。
+// 其餘全部改成自製下拉，變動由 `wireAccountFilters()` 裡的 onChange 處理。
+//
+// 這一段有兩次前科，症狀不一樣但都很惡劣：
+//   · id 改名 → `$()` 回 null → 模組頂層 TypeError → 整個 accounts.js 掛掉，
+//     main.js 的 init 中斷，畫面「篩選器全變純文字、格線空白」而 console 沒紅字
+//   · `<select>` 換成 `<span>` → `$()` 回的是元素**不是 null**，
+//     addEventListener 掛得上、不報錯、**永遠不觸發** —— 換了篩選沒反應
+$('aFavOnly').addEventListener('change', () => {
+  clearAcctSelection('換了篩選 —— 選取已清空');
+  state.acctOffset = 0;
+  loadAccounts();
+});
 
 $('aPrev').addEventListener('click', () => {
+  clearAcctSelection('換頁了 —— 選取已清空（不做跨頁記憶：看不見的選取比清掉更危險）');
   state.acctOffset = Math.max(0, state.acctOffset - ACCT_PAGE);
   loadAccounts();
 });
 $('aNext').addEventListener('click', () => {
+  clearAcctSelection('換頁了 —— 選取已清空（不做跨頁記憶：看不見的選取比清掉更危險）');
   state.acctOffset += ACCT_PAGE;
   loadAccounts();
 });
@@ -710,8 +895,6 @@ document.querySelectorAll('input[name="aView"]').forEach((r) =>
 export async function loadCreatorList() {
   const list = await api('/api/creators');
   state.creators = list;
-  $('fCreator').innerHTML = '<option value="">全部 creator</option>'
-    + list.map((c) => `<option value="${c.id}">${esc(c.display_name)}</option>`).join('');
   paintMoreNotes();
   return list;
 }
@@ -757,12 +940,11 @@ async function loadPlatforms() {
   if (platformsLoaded) return;
   try {
     const d = await api('/api/accounts/platforms');
-    const cur = $('aPlatform').value;
-    $('aPlatform').innerHTML = '<option value="">全部平台</option>'
-      + d.items.map((it) =>
-        `<option value="${esc(it.platform)}">${esc(it.platform)}（${
-          it.count.toLocaleString()}）</option>`).join('');
-    $('aPlatform').value = cur;
+    // setOptions() 自己保留目前值（不在新清單裡就退回「全部平台」）。
+    aDrops.aPlatform.setOptions(d.items.map((it) => ({
+      value: it.platform,
+      text: `${it.platform}（${it.count.toLocaleString()}）`,
+    })));
     platformsLoaded = true;
   } catch { /* 補充選項，拿不到就維持「全部平台」，不必報錯 */ }
 }
@@ -772,3 +954,345 @@ export function loadAccountsView() {
   loadPlatforms();
   return loadAccounts();
 }
+
+// ── 選取與批次 ─────────────────────────────────────────
+//
+// ⚠️ 這一整段最危險的一題是「使用者現在選的是哪些」。
+// 4,653 筆的清單上，「全選」是**兩個不同的動作**：本頁 100、或篩選後的全部。
+// 合成一顆按鈕是批次功能最經典的災難 —— 而批次不可逆。
+//
+// ⚠️ 第二個硬約束：**SQLite 一次繫結變數上限 999**。4,653 個 id 一次送出
+// 會直接 OperationalError，所以要分批 —— 而**分批由前端做**，因為只有它
+// 知道要顯示「第 2 / 5 批」。後端默默切的話，那段等待時間裡畫面完全靜止，
+// 看起來像當掉。
+
+let acctSelecting = false;
+const acctPicked = new Set();
+// 'page' = 只有畫面上勾的那些；'all' = 篩選後的全部（含看不到的）。
+// 這個值必須寫在畫面上 —— 使用者不會記得自己按過哪顆按鈕。
+let acctPickScope = 'page';
+// 'all' 模式下的 id 全集。由 /api/accounts/ids 取得。
+let acctAllIds = [];
+let acctAllIdSet = new Set();
+let acctBulkBusy = false;
+
+const BULK_ID_LIMIT = 900;   // 與後端 api/prefs.py 的同名常數一致
+
+/** 批次可改的欄位。`clear` 為 true 的那些多一個「（清除）」選項。 */
+const BULK_FIELDS = [
+  { key: 'is_ignored', label: '忽略', opts: [
+    ['true', '設為忽略'], ['false', '取消忽略']] },
+  { key: 'is_tracked', label: '追蹤', opts: [
+    ['true', '恢復追蹤'], ['false', '停止追蹤']] },
+  { key: 'default_rating', label: '預設分級', clear: true, opts: [
+    ['sfw', 'sfw'], ['r18', 'r18']] },
+  { key: 'default_content_type', label: '預設類型', clear: true,
+    opts: CONTENT_VALUES.map((v) => [v, v]) },
+  { key: 'is_favorite', label: '我的最愛', opts: [
+    ['true', '加入 ♥'], ['false', '移出 ♥']] },
+  { key: 'stars', label: '評分', clear: true, opts: [
+    ['5', '★★★★★'], ['4', '★★★★'], ['3', '★★★'], ['2', '★★'], ['1', '★']] },
+];
+
+function pickedCount() {
+  return acctPickScope === 'all' ? acctAllIds.length : acctPicked.size;
+}
+
+function pickedIds() {
+  return acctPickScope === 'all' ? acctAllIds.slice() : [...acctPicked];
+}
+
+function isPicked(id) {
+  return acctPickScope === 'all' ? acctAllIdSet.has(id) : acctPicked.has(id);
+}
+
+/** 批次列選了什麼。**值存在這裡，不存在 DOM 上。**
+ *
+ *  ⚠️ `renderSelBar()` 每次都是整段 `innerHTML` 換掉 —— 值如果只活在
+ *  控制項上，任何一次重畫都會把它清掉。原本就有這個 bug：選好欄位再按
+ *  「全選本頁」，那排下拉會靜默跳回「—」，而使用者以為還選著。
+ *  值搬到這裡之後重畫不再有副作用。 */
+const bulkValues = {};
+
+function currentBulkFields() {
+  const fields = {};
+  for (const [k, v] of Object.entries(bulkValues)) {
+    if (v) fields[k] = v;
+  }
+  return fields;
+}
+
+/** 套用完 / 離開選取模式時清掉，否則下一批會沿用上一批的欄位。 */
+function clearBulkFields() {
+  for (const k of Object.keys(bulkValues)) delete bulkValues[k];
+}
+
+function renderSelBar() {
+  const bar = $('aSelBar');
+  bar.classList.toggle('hidden', !acctSelecting);
+  $('aSelectMode').textContent = acctSelecting ? '離開選取' : '選取';
+  if (!acctSelecting) return;
+
+  const pageN = state.accounts.length;
+  const total = state.acctTotal;
+  const n = pickedCount();
+  const scope = acctPickScope === 'all'
+    ? '（<b>全部符合篩選的</b>，不只這一頁）'
+    : '（本頁）';
+
+  // ⚠️ 兩顆按鈕、兩個數字。第二顆在 total ≤ pageN 時**不出現** ——
+  // 那時它與第一顆同義，兩顆一樣的按鈕只會製造疑惑。
+  const buttons = acctPickScope === 'all'
+    ? `<button type="button" class="ghost" data-sel="page">改成只選本頁 ${pageN}</button>`
+    : `<button type="button" class="ghost" data-sel="page">全選本頁 ${pageN}</button>`
+      + (total > pageN
+        ? `<button type="button" class="ghost" data-sel="all">選取全部符合篩選的 ${
+            total.toLocaleString()}</button>`
+        : '');
+
+  const warn = acctPickScope === 'all' && total > pageN
+    ? `<div class="sel-warn">這超出目前這一頁 —— 套用會改到你現在<b>看不到</b>的 ${
+        (total - pageN).toLocaleString()} 個帳號。</div>`
+    : '';
+
+  const fields = BULK_FIELDS.map((f) =>
+    `<label class="chk">${f.label}<span data-bulk="${f.key}" class="ms-host"></span></label>`
+  ).join('');
+
+  bar.innerHTML = `
+    <div class="sel-row">
+      <span class="sel-count">已選 <b>${n.toLocaleString()}</b> 個 ${scope}</span>
+      ${buttons}
+      <button type="button" class="ghost" data-sel="none">清除選取</button>
+    </div>
+    ${warn}
+    ${bar.dataset.note ? `<div class="sel-warn">${esc(bar.dataset.note)}</div>` : ''}
+    <div class="sel-row">
+      ${fields}
+      <span class="spacer"></span>
+      <span class="muted">批次一律「選了再按套用」—— 與卡上 ♥★ 的立即生效不同</span>
+      <button type="button" id="aBulkApply"${n ? '' : ' disabled'}
+        data-tip="${n ? '' : '先選帳號'}">套用</button>
+    </div>`;
+
+  // innerHTML 換完才有佔位元素可以掛。值從 bulkValues 回填 —— 重畫不清空。
+  mountDrops(bar, Object.fromEntries(BULK_FIELDS.map((f) => [
+    `[data-bulk="${f.key}"]`,
+    {
+      label: '—',
+      emptyText: '—',
+      ariaLabel: `批次${f.label}`,
+      values: f.opts.map(([v, t]) => ({ value: v, text: t }))
+        .concat(f.clear ? [{ value: '__clear__', text: '（清除）' }] : []),
+      value: bulkValues[f.key] || '',
+      onChange: (v) => { bulkValues[f.key] = v; },
+    },
+  ])));
+}
+
+/** 套用前的預演。**不可逆的動作要先講後果**，而且講的是使用者關心的後果
+ *  （「我之後還抓得到東西嗎」「我的檔案還在嗎」），不是筆數。 */
+function renderBulkPreview(fields) {
+  const box = $('aBulkBox');
+  if (!fields) { box.innerHTML = ''; return; }
+  const n = pickedCount();
+  const LABEL = {
+    is_ignored: (v) => (v === 'true' ? '設為「忽略」' : '取消「忽略」'),
+    is_tracked: (v) => (v === 'true' ? '恢復追蹤' : '停止追蹤'),
+    is_favorite: (v) => (v === 'true' ? '加入我的最愛' : '移出我的最愛'),
+    default_rating: (v) => (v === '__clear__' ? '清除預設分級' : `預設分級設為 ${v}`),
+    default_content_type: (v) => (v === '__clear__' ? '清除預設類型' : `預設類型設為 ${v}`),
+    stars: (v) => (v === '__clear__' ? '清除評分' : `評分設為 ${v} 星`),
+  };
+  const lines = Object.entries(fields).map((e) => `<li>${esc(LABEL[e[0]](e[1]))}</li>`);
+  if (fields.is_ignored === 'true') {
+    lines.push('<li>這些帳號之後<b>不會</b>被一鍵更新抓 ——'
+      + ' 抓取頁的「可抓 N 個」會跟著變少。</li>');
+  }
+  const batches = Math.ceil(n / BULK_ID_LIMIT);
+  if (batches > 1) {
+    lines.push(`<li>會分 <b>${batches}</b> 批寫入 ——`
+      + ` SQLite 一次最多 ${BULK_ID_LIMIT} 個 id。</li>`);
+  }
+  box.innerHTML = `<div class="bulk-box">
+    <h4>要改 ${n.toLocaleString()} 個帳號</h4>
+    <ul>${lines.join('')}
+      <li class="ok-line"><b>一則貼文、一個媒體都不會被刪或改。</b></li>
+      <li>沒有復原鍵，但可以再批次一次改回來。</li>
+    </ul>
+    <div class="row">
+      <button type="button" id="aBulkYes">確定，改 ${n.toLocaleString()} 個</button>
+      <button type="button" id="aBulkNo" class="ghost">取消</button>
+    </div>
+    <div id="aBulkProgress" class="muted"></div>
+  </div>`;
+}
+
+/** 分批送出。**序列，不併發** —— 同一張表的寫入併發沒有好處，
+ *  而且併發之後「第 N/M 批」就沒有意義了。 */
+async function runBulk(fields) {
+  const ids = pickedIds();
+  const batches = [];
+  for (let i = 0; i < ids.length; i += BULK_ID_LIMIT) {
+    batches.push(ids.slice(i, i + BULK_ID_LIMIT));
+  }
+  const prog = $('aBulkProgress');
+  let updated = 0;
+  const missing = [];
+
+  for (let b = 0; b < batches.length; b++) {
+    // 只有一批時不講「第 1/1 批」—— 那是噪音
+    prog.innerHTML = batches.length > 1
+      ? `寫入中… 第 ${b + 1} / ${batches.length} 批（${batches[b].length} 個）`
+      : '寫入中…';
+    const body = { ids: batches[b] };
+    for (const [k, v] of Object.entries(fields)) {
+      if (v === '__clear__') body[k] = '__clear__';
+      else if (k === 'stars') body[k] = Number(v);
+      else if (k.indexOf('is_') === 0) body[k] = v === 'true';
+      else body[k] = v;
+    }
+    try {
+      const r = await api('/api/accounts/bulk-prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      updated += r.updated;
+      missing.push(...(r.missing || []));
+    } catch (e) {
+      // ⚠️ **不回滾前面幾批**（跨批交易的代價不值），但一定要說清楚
+      // 哪些已經生效 —— 讓使用者以為全部沒改，他會再按一次。
+      prog.innerHTML = `<span class="err">第 ${b + 1} 批失敗：${esc(e.message)}</span><br>`
+        + (b > 0
+          ? `<b>前 ${b} 批（${updated.toLocaleString()} 個）已經生效</b>，沒有回滾。`
+          : '一筆都還沒改。');
+      return;
+    }
+  }
+
+  // ③ 結果。`missing` 一定要講 —— 只說「改好 4,650 個」而使用者選了 4,653，
+  // 那 3 個去哪了沒人講得出來。
+  prog.innerHTML = `<span class="ok-line">改好 ${updated.toLocaleString()} 個。</span>`
+    + (missing.length
+      ? `<br><span class="err">${missing.length} 個沒改到</span>`
+        + ` —— 這幾筆已經不存在了（期間被刪）：${
+          esc(missing.slice(0, 20).join('、'))}${missing.length > 20 ? ' …' : ''}`
+      : '')
+    + (fields.is_ignored ? '<br>抓取頁的「可抓 N 個」已經跟著變了。' : '');
+}
+
+function exitSelect() {
+  acctSelecting = false;
+  clearBulkFields();
+  acctPicked.clear();
+  acctPickScope = 'page';
+  acctAllIds = [];
+  acctAllIdSet = new Set();
+  renderBulkPreview(null);
+  renderSelBar();
+  loadAccountsView();
+}
+
+/** 換頁或改篩選時清空選取，**而且要講出來**。
+ *  留著跨頁選取但畫面上看不到它們，比清掉更危險。 */
+export function clearAcctSelection(reason) {
+  if (!acctPicked.size && acctPickScope !== 'all') return;
+  acctPicked.clear();
+  acctPickScope = 'page';
+  acctAllIds = [];
+  acctAllIdSet = new Set();
+  renderBulkPreview(null);
+  if (acctSelecting && reason) $('aSelBar').dataset.note = reason;
+}
+
+/** 只更新卡片的選取外觀，不重新請求。 */
+function paintPickedCards() {
+  for (const card of document.querySelectorAll('#accountList .card')) {
+    const on = isPicked(Number(card.dataset.id));
+    card.classList.toggle('picked', on);
+    const box = card.querySelector('.acct-pick');
+    if (box) box.checked = on;
+  }
+}
+
+$('aSelectMode').addEventListener('click', () => {
+  if (acctSelecting) { exitSelect(); return; }
+  // 創作者檢視沒有帳號 id 可以批次 —— 進不去，而且要說得出原因
+  if (state.acctMode !== 'accounts') {
+    $('aSelectMode').dataset.tip = '創作者不支援批次，切回「帳號」檢視';
+    return;
+  }
+  acctSelecting = true;
+  $('aSelBar').dataset.note = '';
+  renderSelBar();
+  loadAccountsView();
+});
+
+$('aSelBar').addEventListener('click', async (ev) => {
+  const sel = ev.target.closest('[data-sel]');
+  if (sel) {
+    const what = sel.dataset.sel;
+    if (what === 'none') {
+      acctPicked.clear(); acctPickScope = 'page';
+      acctAllIds = []; acctAllIdSet = new Set();
+    } else if (what === 'page') {
+      acctPickScope = 'page';
+      acctPicked.clear();
+      for (const a of state.accounts) acctPicked.add(a.id);
+    } else if (what === 'all') {
+      // 只取 id，不取卡片資料 —— 4,653 張卡的 payload 含預覽縮圖陣列，
+      // 為了一組 id 付那個成本不划算。
+      sel.disabled = true;
+      try {
+        const p = new URLSearchParams(accountQuery());
+        // 這三個與「篩選」無關，帶過去只會讓後端多解析
+        p.delete('sort'); p.delete('limit'); p.delete('offset');
+        const r = await api(`/api/accounts/ids?${p}`);
+        acctAllIds = r.ids;
+        acctAllIdSet = new Set(r.ids);
+        acctPickScope = 'all';
+      } catch (e) {
+        sel.textContent = `取不到 id：${e.message}`;
+        sel.disabled = false;
+        return;
+      }
+      sel.disabled = false;
+    }
+    $('aSelBar').dataset.note = '';
+    renderBulkPreview(null);
+    renderSelBar();
+    paintPickedCards();
+    return;
+  }
+
+  if (ev.target.closest('#aBulkApply')) {
+    const fields = currentBulkFields();
+    if (!Object.keys(fields).length) {
+      // disabled 的兩種理由要分開：沒選帳號 vs 沒選欄位
+      $('aSelBar').dataset.note = '先選要改什麼（上面那排下拉還都是「—」）';
+      renderBulkPreview(null);
+      renderSelBar();
+      return;
+    }
+    renderBulkPreview(fields);
+  }
+});
+
+$('aBulkBox').addEventListener('click', async (ev) => {
+  if (ev.target.closest('#aBulkNo')) { renderBulkPreview(null); return; }
+  if (!ev.target.closest('#aBulkYes') || acctBulkBusy) return;
+  acctBulkBusy = true;
+  const fields = currentBulkFields();
+  $('aBulkYes').disabled = true;
+  $('aBulkNo').disabled = true;
+  try {
+    await runBulk(fields);
+    // 重新載入才看得到改完的樣子（忽略標記、♥、★ 都在卡上）
+    await loadAccountsView();
+  } finally {
+    acctBulkBusy = false;
+    const no = $('aBulkNo');
+    if (no) { no.disabled = false; no.textContent = '關閉'; }
+  }
+});

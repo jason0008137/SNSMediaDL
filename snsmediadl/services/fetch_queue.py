@@ -170,7 +170,13 @@ def plan_refresh(session: Any, cfg: Config, *, include_pixiv: bool = False) -> R
     plan = RefreshPlan()
     for acc in session.scalars(select(Account).order_by(Account.id)).all():
         label = account_label(acc)
-        if not acc.is_tracked:
+        # ⚠️ **排在 `is_tracked` 之前判斷。** 一個既被忽略又沒在追蹤的帳號，
+        # 講「你標記為忽略」比講「已取消追蹤」有用 —— 那是使用者剛做的事，
+        # 而且是他自己能改回來的那一個。順序顛倒的話，他會去查一個
+        # 其實與他無關的自動退訂。
+        if acc.is_ignored:
+            plan.skip("ignored", label)
+        elif not acc.is_tracked:
             plan.skip("untracked", label)
         elif not can_fetch(acc.platform):
             plan.skip("cannot_fetch", label)
@@ -211,6 +217,19 @@ class Job:
     result: dict[str, Any] | None = None
     error: str | None = None
     reason: str | None = None
+    # 這一輪的結果分類（`FetchStatus` 的值）。**`_process()` 本來就算出來了**，
+    # 只是以前沒往外送 —— 前端因此只看得到一個紅色的 failed，要分類就只能去
+    # 比對錯誤字串裡有沒有「429」，而那是平台文案一改就失效的耦合。
+    #
+    # ⚠️ 重試功能的**所有**分類都以這個欄位為準，不准再解析 `error`。
+    fetch_status: str | None = None
+    # 第幾次嘗試。前端把同一個帳號的多次嘗試摺疊成一列，徽章顯示它。
+    attempt: int = 1
+    # 上一次嘗試的 job id，串起歷次（展開徽章時要逐次列出原因）
+    retry_of: int | None = None
+    # 續抓：從 `accounts.resume_cursor` 接下去，不是從第 1 頁重來。
+    # ⚠️ 與 full 不同 —— full 是「從頭重掃且不提早停」。
+    resume: bool = False
     # 這一輪的「找不到」是 **recon 驗證過的形狀**嗎？只有它才累積退訂計數。
     # 泛用的 HTTP 404（可能只是端點沒了、或 Fediverse 改名）不算 ——
     # 見 `PixivNotFound` 的說明。
@@ -236,7 +255,48 @@ class Job:
             "result": self.result,
             "error": self.error,
             "reason": self.reason,
+            "fetch_status": self.fetch_status,
+            "attempt": self.attempt,
+            "retry_of": self.retry_of,
+            "resume": self.resume,
+            # 前端摺疊要用的分組鍵。讓後端給，而不是前端自己拼 ——
+            # 拼法不一致的話，同一個帳號會被拆成兩列（或兩個帳號被併成一列）。
+            "key": "|".join(self.key),
+            "retryable": self.retryable,
+            "resumable": self.resumable,
         }
+
+    # ── 重試分類 ─────────────────────────────────────
+    #
+    # 「全部重試」只吃這三類。另外兩類（缺憑證、找不到）**不是**做成
+    # disabled 按鈕，而是文案不同的「仍要重試」——
+    # 使用者剛填完憑證、剛確認過改名時，他知道的比系統多。
+
+    @property
+    def retryable(self) -> bool:
+        """值得放進「全部重試」嗎。
+
+        `SKIPPED` 是最主要的服務對象：站台被限速那一輪它**根本沒跑過**。
+        """
+        return self.fetch_status in {
+            FetchStatus.SKIPPED.value,
+            FetchStatus.RATE_LIMITED.value,
+            FetchStatus.FAILED.value,
+        }
+
+    @property
+    def resumable(self) -> bool:
+        """撞到頁數上限、可以「繼續抓」嗎。
+
+        ⚠️ 這**不是失敗**（state 是 done）。與重試分開成兩個動作、兩套文案 ——
+        混在一起會讓失敗分類的明細說謊。
+
+        id 清單式平台（pixiv）走 `_fetch_by_id_list`，**沒有頁數上限的概念**，
+        所以永遠不會 resumable。
+        """
+        if self.state != "done" or not self.result:
+            return False
+        return "頁數上限" in str(self.result.get("stopped_because") or "")
 
 
 @dataclass
@@ -272,6 +332,9 @@ class FetchQueue:
         full: bool = False,
         download_after: bool = False,
         user_id: str | None = None,
+        attempt: int = 1,
+        retry_of: int | None = None,
+        resume: bool = False,
     ) -> Job | None:
         """排一個帳號。已經在跑或已在佇列裡就回 None（不重複排）。"""
         key = (target.platform, target.host, target.acct.lower())
@@ -292,6 +355,9 @@ class FetchQueue:
             acct=target.acct,
             full=full,
             user_id=user_id,
+            attempt=attempt,
+            retry_of=retry_of,
+            resume=resume,
         )
         self._next_id += 1
         self._active.add(key)
@@ -340,6 +406,11 @@ class FetchQueue:
             "auto_untracked": list(self._auto_untracked),
             # 重啟就沒了，介面要講明
             "volatile": True,
+            # ⚠️ 歷史滿了 = 更早的結果**已經沒了**，「全部重試」做不到真的全部。
+            # 一鍵更新是 442 個帳號而上限是 200，所以這是預設情況不是邊緣情況。
+            # 介面要照實講，不可以讓數字自己對不上。
+            "history_limit": _HISTORY_LIMIT,
+            "history_full": len(history) >= _HISTORY_LIMIT,
         }
 
     def start(self) -> None:
@@ -350,6 +421,121 @@ class FetchQueue:
         也不是 thread-safe —— 所以排入佇列的端點一律寫成 `async def`。
         """
         self._ensure_worker()
+
+    # ── 重試 ─────────────────────────────────────────────
+
+    def _requeue(self, job: Job, *, resume: bool = False) -> Job | None:
+        """把一筆歷史工作重新排進去。回 None = 該帳號已經在佇列裡。"""
+        return self.enqueue(
+            Target(platform=job.platform, host=job.host, acct=job.acct),
+            full=job.full,
+            user_id=job.user_id,
+            attempt=job.attempt + 1,
+            retry_of=job.id,
+            resume=resume,
+        )
+
+    def _find(self, job_id: int) -> Job | None:
+        for job in self._history:
+            if job.id == job_id:
+                return job
+        return None
+
+    def retry(self, job_id: int, *, resume: bool = False) -> dict[str, Any]:
+        """重試（或續抓）單一筆。
+
+        單筆是**使用者覆寫**：不可重試的類別（缺憑證、找不到）也允許，
+        因為使用者剛去設定頁填完憑證、剛在帳號頁確認過改名時，
+        他知道的比系統多。擋掉他等於擋掉唯一合理的使用情境。
+        """
+        job = self._find(job_id)
+        if job is None:
+            # 歷史只留 `_HISTORY_LIMIT` 筆，滾掉了就真的沒了。
+            # 出聲，不要靜默失敗 —— 使用者會以為按了有效。
+            return {"requeued": False, "job": None,
+                    "refused_reason": "這筆已經不在佇列歷史裡（只留最後"
+                                      f" {_HISTORY_LIMIT} 筆）"}
+        if resume and not job.resumable:
+            return {"requeued": False, "job": job.as_dict(),
+                    "refused_reason": "這筆沒有撞到頁數上限，不需要續抓"}
+        fresh = self._requeue(job, resume=resume)
+        if fresh is None:
+            return {"requeued": False, "job": job.as_dict(),
+                    "refused_reason": f"{job.label} 已經在佇列裡了"}
+        return {"requeued": True, "job": fresh.as_dict(), "refused_reason": None}
+
+    def retry_failed(
+        self,
+        *,
+        include_skipped: bool = True,
+        include_unretryable: bool = False,
+        clear_rate_limit: bool = False,
+    ) -> dict[str, Any]:
+        """把歷史裡可重試的全部重排。
+
+        ⚠️ **先清旗標再排。** 反過來的話，中間那段時間窗會讓前幾筆在
+        `_process()` 開頭就被標成 skipped —— 使用者會看到「已排入 201 個」
+        然後幾秒內全部變 ⊘，而完全不知道發生了什麼。
+        """
+        if clear_rate_limit:
+            self.clear_rate_limit()
+
+        # 同一個帳號在歷史裡可能有好幾筆（重試過幾次）。只重排**最新那一筆**，
+        # 否則一個帳號會被排三次 —— 而 `_active` 只擋得住其中兩次，
+        # 剩下那次的 attempt 還會是舊的。
+        latest: dict[tuple[str, str, str], Job] = {}
+        for job in self._history:
+            latest[job.key] = job
+
+        candidates: list[Job] = []
+        for job in latest.values():
+            if job.retryable:
+                if job.fetch_status == FetchStatus.SKIPPED.value and not include_skipped:
+                    continue
+                candidates.append(job)
+            elif include_unretryable and job.state == "failed":
+                candidates.append(job)
+
+        queued: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        will_be_skipped = 0
+        for job in candidates:
+            fresh = self._requeue(job)
+            if fresh is None:
+                refused.append({"job_id": job.id, "label": job.label,
+                                "reason": "已經在佇列裡"})
+                continue
+            queued.append(fresh.as_dict())
+            # 旗標還掛著的站台，這一筆進去也是直接被跳過。**事前講**，
+            # 不要讓使用者事後自己發現。
+            if (fresh.platform, fresh.host) in self._rate_limited:
+                will_be_skipped += 1
+
+        return {
+            "requeued": len(queued),
+            "jobs": queued,
+            "refused": refused,
+            "will_be_skipped": will_be_skipped,
+        }
+
+    def resume_capped(self) -> dict[str, Any]:
+        """把撞到頁數上限的全部續抓。與 `retry_failed()` 是**兩個**動作。"""
+        latest: dict[tuple[str, str, str], Job] = {}
+        for job in self._history:
+            latest[job.key] = job
+
+        queued: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        for job in latest.values():
+            if not job.resumable:
+                continue
+            fresh = self._requeue(job, resume=True)
+            if fresh is None:
+                refused.append({"job_id": job.id, "label": job.label,
+                                "reason": "已經在佇列裡"})
+            else:
+                queued.append(fresh.as_dict())
+        return {"requeued": len(queued), "jobs": queued, "refused": refused}
 
     def clear_rate_limit(self) -> None:
         """使用者等過一段時間後手動解除。自動解除需要知道對方的窗口長度，
@@ -437,6 +623,9 @@ class FetchQueue:
         if limited:
             job.state = "skipped"
             job.reason = limited
+            # ⚠️ 這條路徑提早 return，很容易在加欄位時被漏掉 ——
+            # 而 skipped 正是**最該被重試**的一類（它根本沒跑過）。
+            job.fetch_status = FetchStatus.SKIPPED.value
             self._active.discard(job.key)
             self._remember(job)
             # 跳過也算「這一輪碰過它了」—— 不記的話使用者看到的是
@@ -451,6 +640,7 @@ class FetchQueue:
                 self.cfg, self.maker,
                 platform=job.platform, host=job.host, acct=job.acct,
                 full=job.full, user_id=job.user_id, transport=self.transport,
+                resume=job.resume,
             )
             job.state = "done"
             job.result = result.as_dict()
@@ -501,6 +691,10 @@ class FetchQueue:
             self._running = None
             self._active.discard(job.key)
             self._remember(job)
+
+        # 分類要送到前端。以前只寫進 DB 的 accounts.last_fetch_status，
+        # 佇列這邊丟掉了 —— 於是畫面上五種結局全部壓成一個紅色的 failed。
+        job.fetch_status = outcome[0]
 
         # 失敗一樣要記 —— 那正是最需要被看見的一種。
         await self._record(job, *outcome)

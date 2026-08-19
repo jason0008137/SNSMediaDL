@@ -39,7 +39,7 @@ def _configure_sqlite(dbapi_conn, _record) -> None:
     # 「ingest 一批 4.67 ms vs 2.39 ms」。省下的 1.5 ms 在 GUI 上量不出來，
     # 而代價是 crash 時可能丟掉最後幾筆交易 —— 那幾筆恰好是使用者剛按下的
     # 評分與分級，也就是全庫唯一**不可重建**的資料（採集資料重跑就回來了）。
-    # 同一個決定的另一半 —— crash 真的發生之後怎麼收拾 —— 見 `db/recovery.py`。
+    # 所以這裡選 FULL：省不到的效能，不值得拿唯一不可重建的資料去換。
     cur.close()
 
 

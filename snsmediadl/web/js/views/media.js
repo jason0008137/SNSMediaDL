@@ -5,12 +5,15 @@
 // 四個字。之所以沒被發現，是因為當時影片走佔位 div 不走 <img>，
 // onerror 幾乎不會觸發。
 import {
-  $, esc, fileErrorText, fmtBytes, starsHtml, wireStars,
+  $, autoClose, esc, fileErrorText, fmtBytes, mountDrops, multiDrop, singleDrop,
+  starsHtml, wireStars,
 } from '../dom.js';
 import { api } from '../api.js';
 import { PAGE, state, safeMode, onSafeModeChange } from '../state.js';
 import { showView, invalidateView } from '../nav.js';
-import { RATINGS, CONTENTS, opts } from '../enums.js';
+import {
+  KINDS, RATING_VALUES, CONTENT_VALUES,
+} from '../enums.js';
 import { pushDismissable } from '../overlay.js';
 import { openViewer } from '../viewer.js';
 
@@ -18,6 +21,9 @@ import { openViewer } from '../viewer.js';
 // 人不在媒體頁時不必立刻重查 —— 但快取要作廢，否則切回來會看到一份
 // 用舊安全模式篩出來的畫面，而開關卻顯示新的狀態。
 onSafeModeChange(() => {
+  // 安全模式一開，r18 那格就要立刻變成不可選並寫出原因 —— 不能等到
+  // 使用者點開下拉才發現。`drops` 還沒建好時跳過（wireFilters() 會補做）。
+  if (drops.fRating) applySafeModeGate();
   resetMediaPaging();
   if (state.view === 'media') loadMedia();
   else invalidateView('media');
@@ -26,44 +32,83 @@ onSafeModeChange(() => {
 // ── 篩選 ───────────────────────────────────────────────
 
 /** 篩選下拉的定義。標籤文字與取值集中在一處 —— 篩選列、標籤列、
- *  「清除這一個」三處都讀它，各寫一份必然會漂移。 */
+ *  「清除這一個」三處都讀它，各寫一份必然會漂移。
+ *
+ *  ⚠️ **全部都是多選**，所以這裡沒有 `multi` 旗標了。原本有一條
+ *  「單選就讀 `$(id).value`」的分支，在原生 `<select>` 退場之後不但沒人用，
+ *  留著還有害：那些 id 現在是 `<span>`，`.value` 回 undefined ——
+ *  條件會靜默消失，不報錯、標籤列也不顯示。 */
 const FILTERS = [
   { id: 'fRating', param: 'rating', label: '分級' },
   { id: 'fContent', param: 'content_type', label: '類型' },
   { id: 'fKind', param: 'kind', label: '型別' },
-  { id: 'fCreator', param: 'creator_id', label: 'creator', text: (el) => el.selectedOptions[0]?.text },
   { id: 'fStatus', param: 'status', label: '下載狀態' },
-  { id: 'fMinStars', param: 'min_stars', label: '評分', text: (v) => `${v} 星以上` },
+  // ⚠️ 評分是**篩特定星數**（`stars=3,5`），不是「幾星以上」。
+  // 舊版是 min_stars（`>=`），2026-08-19 使用者裁示改掉：
+  // 「不要用幾星以上，直接篩那個星數，讓我多選就可以了」。
+  // 後端也一起換了，**沒有留 min_stars** —— 兩套語意並存遲早會用錯。
+  { id: 'fStars', param: 'stars', label: '評分' },
 ];
 
-/** 只有篩選條件，不含分頁與排序。**清單與總數共用**，兩邊各組一次會對不上。 */
+/** 評分下拉的選項。值是數字字串（後端的 `stars` 吃 1–5），顯示是星星。
+ *  ⚠️ 沒有「未評分」這一項 —— NULL 不是 0 分。要篩它得另開參數。 */
+export const STAR_VALUES = ['5', '4', '3', '2', '1'];
+const STAR_TEXT = (v) => '★'.repeat(Number(v));
+
+/** 所有自製下拉的實例 —— 篩選（多選）、排序鍵與批次列（單選）都放這裡。
+ *  `wireFilters()` 建好之後才有東西。 */
+const drops = {};
+
+/** 那一組目前選了哪些。 */
+function filterValues(f) {
+  return drops[f.id] ? drops[f.id].get() : [];
+}
+
+/** 只有篩選條件，不含分頁與排序。**清單與總數共用**，兩邊各組一次會對不上。
+ *
+ *  ⚠️ 多值用 `append` 不是 `set` —— `set` 會把前一個蓋掉，症狀是
+ *  「勾了三個型別，結果只篩到最後一個」，而且畫面上的標籤是對的，
+ *  所以看起來像後端壞了。 */
 export function mediaFilters() {
   const p = new URLSearchParams();
   if (safeMode()) p.set('exclude_rating', 'r18');
   if (state.accountFilter) p.set('account_id', state.accountFilter);
+  // creator 沒有自己的下拉 —— 它只從帳號頁點進來（2026-08-19 使用者裁示）。
+  // 走與帳號篩選同一套：state 存值、標籤列上出現一個可移除的標籤。
+  if (state.creatorFilter) p.set('creator_id', state.creatorFilter);
   for (const f of FILTERS) {
-    const v = $(f.id).value;
-    if (v) p.set(f.param, v);
+    for (const v of filterValues(f)) p.append(f.param, v);
   }
   return p;
 }
 
 /** 生效中的條件，給標籤列用。安全模式**不在裡面** —— 它不是篩選列上的條件，
- *  它的狀態在 header，而它擋掉幾筆由筆數那一行負責講。 */
+ *  它的狀態在 header，而它擋掉幾筆由筆數那一行負責講。
+ *
+ *  ⚠️ 這一列顯示**全部**條件（不是只顯示「畫面上看不見的」）。
+ *  篩選用的是下拉，收起來時摘要只寫得下「photo…（3）」——「哪三個」答不出來。
+ *  標籤列是唯一逐一列出每個值的地方，所以不能省。 */
 function activeConditions() {
   const out = [];
   if (state.accountFilter) {
     out.push({ kind: 'account', label: '帳號', value: state.accountLabel || state.accountFilter });
   }
+  if (state.creatorFilter) {
+    out.push({ kind: 'creator', label: 'creator', value: state.creatorLabel || state.creatorFilter });
+  }
   for (const f of FILTERS) {
-    const el = $(f.id);
-    if (!el.value) continue;
-    const value = typeof f.text === 'function'
-      ? f.text(f.id === 'fMinStars' ? el.value : el)
-      : el.value;
-    out.push({ kind: 'select', id: f.id, label: f.label, value });
+    const vals = filterValues(f);
+    if (!vals.length) continue;
+    // 同一組內是 OR。**「或」要看得見** —— 不寫出來的話，
+    // 使用者會以為勾兩個是「同時符合」，然後奇怪為什麼筆數變多了。
+    out.push({ kind: 'multi', id: f.id, label: f.label, value: vals.join(' 或 ') });
   }
   return out;
+}
+
+/** 某一組被勾滿了嗎。勾滿 ≠ 不勾：`rating IN ('sfw','r18')` 會濾掉 NULL。 */
+function fullySelected(id, all) {
+  return drops[id] && drops[id].get().length === all.length;
 }
 
 function renderChips() {
@@ -74,20 +119,27 @@ function renderChips() {
   bar.innerHTML = '<span class="lead">生效中：</span>'
     + conds.map((c) => `<span class="chip">${esc(c.label)}
         <b>${esc(c.value)}</b>
-        <button type="button" data-clear="${esc(c.kind === 'account' ? 'account' : c.id)}"
+        <button type="button" data-clear="${esc(c.kind === 'account' || c.kind === 'creator' ? c.kind : c.id)}"
                 aria-label="移除這個條件">×</button></span>`).join('')
     + '<span class="spacer"></span>'
     + '<button type="button" class="ghost small" data-clear="__all__">全部清除</button>';
 }
 
 function clearCondition(what) {
+  const clearOne = (f) => drops[f.id].clear();
   if (what === '__all__') {
-    for (const f of FILTERS) $(f.id).value = '';
+    for (const f of FILTERS) clearOne(f);
     setAccountFilter('', '');
+    setCreatorFilter('', '');
   } else if (what === 'account') {
     setAccountFilter('', '');
+  } else if (what === 'creator') {
+    setCreatorFilter('', '');
   } else {
-    $(what).value = '';
+    // 標籤的 × 一次清掉**整個欄位**（不是其中一個值）——
+    // 一顆 × 只清一個值的話，勾了四個型別就得按四次。
+    const f = FILTERS.find((x) => x.id === what);
+    if (f) clearOne(f); else $(what).value = '';
   }
   // 排序不是篩選 —— 「全部清除」不該把使用者選的排序也一起打掉
   resetMediaPaging();
@@ -99,17 +151,69 @@ $('chipBar').addEventListener('click', (ev) => {
   if (btn) clearCondition(btn.dataset.clear);
 });
 
+// ── 排序：鍵 + 方向兩個獨立控制項 ──────────────────────
+//
+// 方向是**看得見的獨立按鈕**，不是「在鍵上再按一次」。後者的指意只寫得進
+// hover 提示，鍵盤與觸控使用者永遠看不到。
+
+const SORT_KEYS = ['added', 'posted', 'stars'];
+const SORT_ORDERS = ['desc', 'asc'];
+
+/** 排序鍵下拉的顯示字。值域就是 `SORT_KEYS`，不另立一份。 */
+const SORT_KEY_TEXT = { added: '加入順序', posted: '推文時間', stars: '評分' };
+
+/** 每個鍵的預設方向。換鍵時套用它，而不是沿用上一個鍵的方向 ——
+ *  「評分 · 低→高」不是任何人想要的第一眼。 */
+const DEFAULT_ORDER = { added: 'desc', posted: 'desc', stars: 'desc' };
+
+/** 方向鈕的完整語意。按鈕上只有箭頭（使用者裁示：文字太長），
+ *  所以兩可的地方靠 aria-label 與提示補：說的是**目前**的順序。 */
+const DIR_TEXT = {
+  added: { desc: '目前：新→舊。按一下改成舊→新', asc: '目前：舊→新。按一下改成新→舊' },
+  posted: { desc: '目前：新→舊。按一下改成舊→新', asc: '目前：舊→新。按一下改成新→舊' },
+  stars: { desc: '目前：高→低。按一下改成低→高', asc: '目前：低→高。按一下改成高→低' },
+};
+
+/** 選到某個鍵時要講的話。空字串 = 沒有要講的，但那一列仍然佔位。 */
+const SORT_NOTE = {
+  added: '',
+  posted: '時間未知的媒體固定排在最後（升冪、降冪都一樣）',
+  stars: '目前全庫幾乎都還沒評分，這個順序的鑑別力很低',
+};
+
+/** ⚠️ `drops.fSortKey` 由 `wireFilters()` 建立 —— 這個函式在那之前不能呼叫。
+ *  `main.js` 的順序（wireFilters → restoreSort → loadMedia）已經保證了。 */
+const sortKey = () => drops.fSortKey.get();
+const sortOrder = () => ($('fSortDir').dataset.order === 'asc' ? 'asc' : 'desc');
+
 /** `sort=stars` 的排序鍵是 (stars, id) 複合又含 NULL，後端不支援 keyset。 */
-const usesKeyset = () => $('fSort').value !== 'stars';
+const usesKeyset = () => sortKey() !== 'stars';
+
+function paintSortControls() {
+  const key = sortKey();
+  const order = sortOrder();
+  const btn = $('fSortDir');
+  btn.textContent = order === 'desc' ? '↓' : '↑';
+  const why = DIR_TEXT[key][order];
+  btn.setAttribute('aria-label', `排序方向。${why}`);
+  btn.dataset.tip = why;
+  $('sortNote').textContent = SORT_NOTE[key];
+}
 
 function mediaQuery() {
   const p = mediaFilters();
   p.set('limit', PAGE);
-  p.set('sort', $('fSort').value);
+  p.set('sort', sortKey());
+  p.set('order', sortOrder());
   if (usesKeyset()) {
     // 游標堆疊的最後一個 = 這一頁的起點。第一頁是 null（不帶游標）。
     const cursor = state.cursors[state.cursors.length - 1];
-    if (cursor != null) p.set($('fSort').value === 'oldest' ? 'after_id' : 'before_id', cursor);
+    if (cursor != null) {
+      // `posted` 走兩段式游標（`p:<iso>|<id>` / `n:<id>`），因為 NULL 進不了
+      // `(posted_at, id) < (?, ?)` 這種比較 —— 詳見 api/query.py 的 _posted_page()。
+      if (sortKey() === 'posted') p.set('cursor', cursor);
+      else p.set(sortOrder() === 'asc' ? 'after_id' : 'before_id', cursor);
+    }
   } else {
     p.set('offset', state.offset);
   }
@@ -145,6 +249,17 @@ function paintCount() {
   if (state.hiddenBySafe) {
     parts.push(`<span class="hidden-note">另有 ${state.hiddenBySafe.toLocaleString()}`
       + ' 筆因安全模式隱藏</span>');
+  }
+  // ⚠️ **勾滿 ≠ 不勾。** `rating IN ('sfw','r18')` 會濾掉 rating 是 NULL 的那些，
+  // 不勾才是全都要。不做「勾滿自動視為不勾」的貼心處理 —— 那會讓未標記的
+  // 筆數靜默消失，正是根因原則禁止的兜底。改成把差異講出來。
+  const full = [];
+  if (fullySelected('fRating', RATING_VALUES)) full.push('分級');
+  if (fullySelected('fContent', CONTENT_VALUES)) full.push('類型');
+  if (fullySelected('fKind', KINDS)) full.push('型別');
+  if (full.length) {
+    parts.push(`<span class="hidden-note">${esc(full.join('、'))}已勾滿 ——`
+      + ' 但「未標記」的不在任何一格，全部取消勾選才是全都要</span>');
   }
   el.innerHTML = parts.join(' ');
   el.className = 'count-line muted';
@@ -369,7 +484,12 @@ export async function loadMedia({ withCount = true } = {}) {
     if (seq !== mediaReqSeq) return;    // 有更新的請求出去了，這份已經過期
     state.items = data.items;
     state.hasMore = data.has_more;
-    state.nextCursor = data.next_before_id ?? data.next_after_id ?? null;
+    // `posted` 的游標是字串（`p:…` / `n:…`），`added` 的是 id。
+    // ⚠️ 順序不可以顛倒：`added` 的回應裡 next_cursor 也有值（就是 id 的字串
+    // 形式），先讀它會讓 before_id 變成字串 —— 目前後端吃得下，但那是巧合。
+    state.nextCursor = sortKey() === 'posted'
+      ? (data.next_cursor ?? null)
+      : (data.next_before_id ?? data.next_after_id ?? null);
     $('grid').innerHTML = data.items.length
       ? data.items.map(cellHtml).join('')
       : emptyGridHtml();
@@ -488,8 +608,8 @@ function bulkMsg(text, cls = '') {
 
 function buildBulkBody() {
   const body = { post_ids: pickedPostIds() };
-  const r = $('bulkRating').value;
-  const c = $('bulkContent').value;
+  const r = drops.bulkRating.get();
+  const c = drops.bulkContent.get();
   if (r) body.rating = r === '__clear__' ? null : r;
   if (c) body.content_type = c === '__clear__' ? null : c;
   return body;
@@ -500,7 +620,7 @@ function buildBulkBody() {
  *  與分級的關鍵差別：**stars 掛在 media，不掛 post**，所以送的是 media_ids
  *  而不是去重過的 post_ids。選了同則貼文的三張圖就是改三張，不會波及第四張。 */
 function buildBulkStarsBody() {
-  const s = $('bulkStars').value;
+  const s = drops.bulkStars.get();
   if (!s) return null;
   return { media_ids: [...state.picked], stars: s === '__clear__' ? null : Number(s) };
 }
@@ -556,9 +676,9 @@ $('bulkYes').addEventListener('click', async () => {
     }
     state.picked.clear();
     state.lastPickIndex = null;
-    $('bulkRating').value = '';
-    $('bulkContent').value = '';
-    $('bulkStars').value = '';
+    drops.bulkRating.clear();
+    drops.bulkContent.clear();
+    drops.bulkStars.clear();
     await loadMedia();
     bulkMsg(`已更新 ${done.join(' 與 ')}`, 'ok');
   } catch (e) {
@@ -572,15 +692,132 @@ $('bulkYes').addEventListener('click', async () => {
 
 $('refresh').addEventListener('click', () => loadMedia());
 
-for (const f of FILTERS) {
-  $(f.id).addEventListener('change', () => { resetMediaPaging(); loadMedia(); });
-}
+// ── 篩選與排序的建立與綁定 ─────────────────────────────
 
-$('fSort').addEventListener('change', () => {
-  localStorage.setItem('mediaSort', $('fSort').value);
+/** 每次勾選都重查。**不是面板關閉才查** —— `336ad1c` 回朔的就是那一版。
+ *
+ *  慢的只有總數（正式庫一次 COUNT 約 1.3 秒），而它本來就是非阻塞、
+ *  可取消的（`refreshMediaCount()` 的 AbortController）。結果本身只要 1 ms，
+ *  所以每勾一次就重查完全撐得住 —— 而且那是使用者唯一的即時回饋。 */
+function onFilterChanged() {
   resetMediaPaging();
   loadMedia();
+}
+
+function buildDrop(id, label, values, text) {
+  drops[id] = multiDrop($(id), {
+    label,
+    values: values.map((v) => ({ value: v, text: text ? text(v) : undefined })),
+    onChange: onFilterChanged,
+  });
+}
+
+/** 安全模式開著時 r18 不可選。**不是把它藏掉** —— 藏掉就答不出
+ *  「為什麼我看不到 r18」。disabled + 面板裡寫出原因。 */
+function applySafeModeGate() {
+  drops.fRating.setDisabled(
+    'r18', safeMode() ? '安全模式開著，r18 不可選（開關在右上角）' : null,
+  );
+}
+
+/** 排序鍵換了要做的事。原本掛在 `<select>` 的 change 上；改成自製下拉之後
+ *  必須改走 `onChange`。
+ *
+ *  ⚠️ 這裡是這一輪最容易靜默失敗的地方：`$('fSortKey')` 現在回傳的是一個
+ *  `<span>`，**不是 null** —— 舊的 `addEventListener('change', …)` 掛得上去、
+ *  不會報錯，只是永遠不會觸發。症狀是「換排序沒反應」，console 全白。 */
+function onSortKeyChanged() {
+  // 換鍵時套用**該鍵的預設方向**，不沿用上一個鍵的。
+  $('fSortDir').dataset.order = DEFAULT_ORDER[sortKey()] || 'desc';
+  saveSort();
+  paintSortControls();
+  // ⚠️ 游標堆疊一定要清空：換了排序鍵之後，舊游標指的是另一種順序裡的位置，
+  // 拿去翻頁會拿到一頁莫名其妙的東西（而且看起來像資料壞了）。
+  resetMediaPaging();
+  // 排序不改變筆數 —— **不重算總數**，省掉一次 1.3 秒的 COUNT。
+  loadMedia({ withCount: false });
+}
+
+/** 批次列的三個。**單選是對的** —— 批次是「把選中的媒體改成這個值」，
+ *  不是「篩出這些值」。這裡不要順手改成多選。
+ *
+ *  值域取自 `enums.js`，不再在 index.html 裡抄第二份（那份 test_enums_sync
+ *  掃不到，加了新的 content type 只會發現「這裡選得到、那裡選不到」）。 */
+function wireBulkDrops() {
+  const mk = (id, label, ariaLabel, values) => {
+    drops[id] = singleDrop($(id), {
+      label, ariaLabel, values, onChange: () => {},
+      // 「不變」= 這一批不動這個欄位。原生 select 的 `<option value="">`
+      // 就是幹這個的；沒有它，選錯了就再也回不到「不套用」。
+      emptyText: '不變',
+    });
+  };
+  const clear = (text) => ({ value: '__clear__', text });
+  mk('bulkRating', '分級…', '批次分級',
+     [...RATING_VALUES.map((v) => ({ value: v })), clear('（清除）')]);
+  mk('bulkContent', '類型…', '批次類型',
+     CONTENT_VALUES.map((v) => ({ value: v })));
+  mk('bulkStars', '評分…', '批次評分',
+     [...STAR_VALUES.map((v) => ({ value: v, text: STAR_TEXT(v) })),
+      clear('（清除評分）')]);
+}
+
+export function wireFilters() {
+  // 排序鍵。值域是 SORT_KEYS，顯示字由 SORT_KEY_TEXT 給。
+  drops.fSortKey = singleDrop($('fSortKey'), {
+    label: '排序',
+    values: SORT_KEYS.map((v) => ({ value: v, text: SORT_KEY_TEXT[v] })),
+    value: 'added',
+    onChange: onSortKeyChanged,
+  });
+  wireBulkDrops();
+  buildDrop('fRating', '分級', RATING_VALUES);
+  buildDrop('fContent', '類型', CONTENT_VALUES);
+  buildDrop('fKind', '型別', KINDS);
+  // 「更多篩選」裡的三個 —— 與主篩選列同一種形態。
+  buildDrop('fStatus', '下載狀態', ['done', 'pending', 'failed']);
+  buildDrop('fStars', '評分', STAR_VALUES, STAR_TEXT);
+  // 「更多篩選」是靜態寫在 HTML 裡的 <details> —— 原生 <details> 沒有
+  // 「點外面收起」，要自己接上（症狀是拉開之後按別的地方它一直開著）。
+  // 兩個分頁各有一個，一起接。
+  autoClose($('fMore'));
+  autoClose($('aMore'));
+  applySafeModeGate();
+}
+
+// 全部的篩選器都是多選下拉了（2026-08-19 使用者裁示）。
+// 先前這裡留了一段「更多篩選那三個維持單選」的理由 ——「真實資料上鑑別力
+// 為零，升級是為零筆結果付複雜度」。那個判斷是拿 dev 的空資料做的；
+// 正式庫有 4,653 個帳號，creator 與評分都是真的有東西可篩。
+
+$('fSortDir').addEventListener('click', () => {
+  $('fSortDir').dataset.order = sortOrder() === 'desc' ? 'asc' : 'desc';
+  saveSort();
+  paintSortControls();
+  resetMediaPaging();
+  loadMedia({ withCount: false });
 });
+
+function saveSort() {
+  localStorage.setItem('mediaSort', `${sortKey()}:${sortOrder()}`);
+}
+
+/** 還原偏好。**白名單驗證** —— 認不得就用預設。
+ *
+ *  這裡有前科：分段控制那版存的是 `added:desc`，回朔後的舊 `<select>` 吃到
+ *  會變成空值，然後送出 `sort=`（一個靜默的空條件，不會報錯也不會生效）。
+ *  所以絕不直接把 localStorage 的字串塞進控制項。 */
+export function restoreSort() {
+  const raw = localStorage.getItem('mediaSort') || '';
+  // 舊值相容：`newest` / `oldest` / `stars` 是分段控制之前那一版存的
+  const legacy = { newest: 'added:desc', oldest: 'added:asc', stars: 'stars:desc' };
+  const [key, order] = (legacy[raw] || raw).split(':');
+  const okKey = SORT_KEYS.includes(key) ? key : 'added';
+  const okOrder = SORT_ORDERS.includes(order) ? order : DEFAULT_ORDER[okKey];
+  drops.fSortKey.set(okKey);
+  $('fSortDir').dataset.order = okOrder;
+  paintSortControls();
+}
 
 // ── 「更多篩選」裡那三個在真實資料上鑑別力為零的下拉 ──
 //
@@ -603,11 +840,8 @@ $('fMore').addEventListener('toggle', () => {
     .catch(() => { $('fStarsNote').textContent = ''; });
 });
 
-/** creator 與下載狀態的說明。兩者的資料本來就在手上（creators 清單、
- *  輪詢中的佇列狀態），不必額外請求。 */
+/** 下載狀態的說明。資料本來就在手上（輪詢中的佇列狀態），不必額外請求。 */
 export function paintMoreNotes() {
-  const n = state.creators.length;
-  $('fCreatorNote').textContent = n ? `目前 ${n} 位` : '目前 0 位 —— 還沒建過創作者';
   const q = state.queue;
   if (!q) { $('fStatusNote').textContent = ''; return; }
   const active = (q.pending || 0) + (q.downloading || 0) + (q.failed || 0);
@@ -651,8 +885,8 @@ $('nextPage').addEventListener('click', () => pageTurn(() => {
  *
  *  ⚠️ 正式庫 163 萬則貼文的 `rating_source` 是 `manual`，但那是**匯入器寫的**，
  *  不是人工確認過的。直接顯示「manual」會讓使用者以為「我標過了，不用再看」。
- *  真正的修法是匯入器改寫一個 `import` 值（那是資料層改動，尚未做），
- *  這裡先用不會騙人的文案。 */
+ *  真正的修法是匯入器改寫一個 `import` 值（那是資料層改動，見
+ *  那是資料層改動，尚未做），這裡先用不會騙人的文案。 */
 function sourceText(src) {
   if (!src) return '尚未標記';
   if (src === 'manual') return 'manual（人工或匯入時分類 —— 目前分不出來）';
@@ -750,8 +984,8 @@ export async function showDetail(mediaId) {
     <div class="scope-card">
       <h4>整則貼文${sibs.length > 1 ? `（${sibs.length} 張）` : ''}</h4>
       <div class="row">
-        <select id="dRating">${opts(RATINGS, p.rating)}</select>
-        <select id="dContent">${opts(CONTENTS, p.content_type)}</select>
+        <span id="dRating" class="ms-host"></span>
+        <span id="dContent" class="ms-host"></span>
         <span id="dSaved" class="saved"></span>
       </div>
       ${sibs.length > 1
@@ -821,8 +1055,10 @@ export async function showDetail(mediaId) {
 
   // 自動儲存。沒有回饋的自動儲存比手動按鈕更糟 —— 使用者無從確認有沒有生效，
   // 所以成功要有短暫提示，失敗一定要還原並說明。
-  const autoSave = async (el, field, previous) => {
-    const value = el.value;
+  // ⚠️ 第一個參數是**下拉握把**不是 DOM 元素：詳情面板每次開都重畫，
+  // 那兩個欄位現在是自製下拉，讀寫要走 get() / set()。
+  const autoSave = async (drop, field, previous) => {
+    const value = drop.get();
     if (value === previous) return;
     const flash = $('dSaved');
     flash.textContent = '儲存中…';
@@ -842,7 +1078,7 @@ export async function showDetail(mediaId) {
       // 只更新受影響的格子，**不重載整頁**。
       patchCellsForPost(p.id, { rating: r.rating });
     } catch (e) {
-      el.value = previous;   // 還原，不要讓畫面顯示一個沒存進去的值
+      drop.set(previous);    // 還原，不要讓畫面顯示一個沒存進去的值
       flash.textContent = `儲存失敗：${e.message}`;
       flash.className = 'saved err';
     }
@@ -873,20 +1109,31 @@ export async function showDetail(mediaId) {
     },
   );
 
-  const ratingEl = $('dRating');
-  const contentEl = $('dContent');
-  let lastRating = ratingEl.value;
-  let lastContent = contentEl.value;
-
-  ratingEl.addEventListener('change', async () => {
-    const prev = lastRating;
-    lastRating = ratingEl.value;
-    await autoSave(ratingEl, 'rating', prev);
-  });
-  contentEl.addEventListener('change', async () => {
-    const prev = lastContent;
-    lastContent = contentEl.value;
-    await autoSave(contentEl, 'content_type', prev);
+  // ⚠️ 不可以再對 $('dRating') 掛 change —— 它現在是 <span>，
+  // addEventListener 掛得上、不報錯、永遠不觸發（「改了沒存到」）。
+  let lastRating = p.rating || '';
+  let lastContent = p.content_type || '';
+  const d = mountDrops($('detailBody'), {
+    dRating: {
+      label: '分級（未標）', emptyText: '（未標）', ariaLabel: '整則貼文的分級',
+      values: RATING_VALUES.map((v) => ({ value: v })),
+      value: lastRating,
+      onChange: async () => {
+        const prev = lastRating;
+        lastRating = d.dRating.get();
+        await autoSave(d.dRating, 'rating', prev);
+      },
+    },
+    dContent: {
+      label: '類型（未標）', emptyText: '（未標）', ariaLabel: '整則貼文的類型',
+      values: CONTENT_VALUES.map((v) => ({ value: v })),
+      value: lastContent,
+      onChange: async () => {
+        const prev = lastContent;
+        lastContent = d.dContent.get();
+        await autoSave(d.dContent, 'content_type', prev);
+      },
+    },
   });
 }
 
@@ -968,6 +1215,13 @@ export function wireAccountPicker() {
   });
 }
 
+/** 設定 creator 篩選。與帳號篩選同一套：畫面上沒有下拉，只有標籤列上
+ *  那個可移除的標籤 —— 入口是帳號頁的「看這位的媒體」。 */
+export function setCreatorFilter(creatorId, label) {
+  state.creatorFilter = creatorId ? String(creatorId) : '';
+  state.creatorLabel = creatorId ? (label || '') : '';
+}
+
 /** 設定帳號篩選。標籤要寫得出名字，所以 id 與顯示名一起存。 */
 export function setAccountFilter(accountId, label) {
   state.accountFilter = accountId ? String(accountId) : '';
@@ -989,7 +1243,7 @@ export function jumpToMedia({ account, creator, label }) {
 
   // 一次只套一種，另一種要清掉 —— 否則會疊加成「這個 creator 底下的這個帳號」，
   // 而使用者沒有要求那個
-  $('fCreator').value = creator || '';
+  setCreatorFilter(creator || '', creator ? label : '');
   setAccountFilter(account || '', account ? label : '');
 
   resetMediaPaging();

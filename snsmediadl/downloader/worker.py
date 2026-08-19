@@ -78,11 +78,16 @@ class WorkerStats:
 
 
 class Throttle:
-    """全域的下載起始節流。
+    """下載起始節流。**一個平台一個實例。**
 
-    只有 semaphore（同時幾個）是不夠的：四個並行工作一完成就立刻抓下一批，
+    只有 semaphore（同時幾個）是不夠的：並行工作一完成就立刻抓下一批，
     實際速率只受頻寬限制。X 超速會鎖整個帳號約一天，所以還要限制
     「任兩次下載開始的最小間隔」。
+
+    ⚠️ 這東西原本是**全域單一實例**，於是 pixiv 的下載會被 X 的政策擋住，
+    而且兩個平台還互相排隊 —— 它們打的是完全不同的 host，互相等沒有道理。
+    間隔值現在來自 adapter 的 `RateLimitPolicy`（平台屬性），實際值取
+    `max(平台值, Config.download_delay_seconds 這個全平台下限)`。
     """
 
     def __init__(self, min_interval: float) -> None:
@@ -99,6 +104,25 @@ class Throttle:
             if gap < self.min_interval:
                 await asyncio.sleep(self.min_interval - gap)
             self._last_start = asyncio.get_running_loop().time()
+
+
+def _platform_delay(cfg: Config, platform: str) -> float:
+    """這個平台兩次下載開始之間要隔多久（秒）。
+
+    平台自己的值來自 adapter 的 `RateLimitPolicy` —— 那是平台屬性，
+    跟 429 的處置政策同一個道理（見 `adapters/base.py` 的說明）。
+    `Config.download_delay_seconds` 不是 None 時**覆寫所有平台**。
+
+    ⚠️ 覆寫是「取代」不是「取下限」。一開始寫成 `max()`，結果是
+    `conftest` 設的 0.0 失效、測試回頭去等 X 的 1 秒 —— 而使用者也就
+    再也沒有辦法把節流關掉。想要「不得低於」的人自己填一個大一點的數。
+
+    ⚠️ **認不得的平台要炸**，不要默默給一個保守值當作沒事 ——
+    那會讓「新平台忘了註冊 adapter」變成一個只是「跑得有點慢」的靜默症狀。
+    """
+    if cfg.download_delay_seconds is not None:
+        return cfg.download_delay_seconds
+    return get_adapter(platform).rate_limit_policy.download_delay_seconds
 
 
 def _load_pending(session: Session, limit: int | None) -> list[WorkItem]:
@@ -461,20 +485,27 @@ async def run_worker(
         return stats
 
     cfg.output_root.mkdir(parents=True, exist_ok=True)
-    semaphore = asyncio.Semaphore(cfg.concurrency)
     name_lock = asyncio.Lock()
     db_lock = asyncio.Lock()
-    throttle = Throttle(cfg.download_delay_seconds)
+
+    # ⚠️ semaphore 與 throttle 都是**每個平台一份**。共用一份的後果是
+    # 「pixiv 在等 X」：兩者打的是不同 host，互相排隊只是把兩邊都拖慢。
+    # 每個平台各自「同時 N 個、做完一個補一個」，這正是 PBD 的作法。
+    semaphores: dict[str, asyncio.Semaphore] = {}
+    throttles: dict[str, Throttle] = {}
+    for platform in {i.platform for i in items}:
+        semaphores[platform] = asyncio.Semaphore(cfg.concurrency)
+        throttles[platform] = Throttle(_platform_delay(cfg, platform))
 
     async with httpx.AsyncClient(
         transport=transport, timeout=cfg.timeout_seconds
     ) as client:
 
         async def guarded(item: WorkItem) -> None:
-            async with semaphore:
+            async with semaphores[item.platform]:
                 await _download_one(
-                    client, cfg, maker, item, stats, name_lock, db_lock, throttle,
-                    transport,
+                    client, cfg, maker, item, stats, name_lock, db_lock,
+                    throttles[item.platform], transport,
                 )
 
         await asyncio.gather(*(guarded(i) for i in items))

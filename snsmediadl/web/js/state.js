@@ -21,6 +21,9 @@ export const state = {
   accountFilter: '',    // 生效中的 account_id（'' = 全部）
   accountLabel: '',     // 那個 id 對應的顯示名（標籤要寫得出名字）
   creators: [],
+  // creator 篩選（沒有下拉，只從帳號頁點進來）—— 比照 accountFilter
+  creatorFilter: '',
+  creatorLabel: '',
   items: [],              // 目前這頁的媒體，選取與 shift 範圍要用
   selecting: false,
   picked: new Set(),      // media id

@@ -192,6 +192,11 @@ if ($migrationsAdded) {
         Write-Host "      已備份：$(Split-Path -Leaf $bak)" -ForegroundColor DarkGray
     }
 
+    # ⚠️ 大型資料庫的 migration 有好幾段是完全沒有輸出的（建索引、COMMIT 時把
+    #    WAL 寫回主檔）。不先講的話，使用者會在某一行訊息上停住並以為當掉了。
+    Write-Host "      資料量大的話這裡會跑很久，而且中間有幾段完全沒有輸出。" -ForegroundColor DarkGray
+    Write-Host "      請不要關掉這個視窗 —— 中斷會整個回滾，得重跑一次。" -ForegroundColor DarkGray
+
     & $py -m alembic upgrade head
     if ($LASTEXITCODE -ne 0) {
         Fail "資料庫更新失敗。" @(

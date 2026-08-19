@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..db.enums import ContentType, Rating
 from ..db.models import Account, Media
 from .app import get_session
 
@@ -39,6 +40,10 @@ class AccountPrefsIn(BaseModel):
     # 只把 is_tracked 打開的話，下一次找不到就是第 3 次，立刻又被退訂，
     # 使用者會覺得「恢復追蹤」這個按鈕根本沒有用。
     is_tracked: bool | None = None
+    # 一鍵更新排除。⚠️ **與 is_tracked 各走各的，不互相牽動** ——
+    # 見 `db/models.py::Account.is_ignored`。設為忽略時**不要**順手關掉
+    # is_tracked：綁在一起就再也分不出「使用者標的」與「系統退訂的」。
+    is_ignored: bool | None = None
 
 
 def _validate_stars(stars: int | None) -> None:
@@ -104,6 +109,10 @@ def set_account_prefs(
             # 否則下一次找不到就達標，按鈕等於沒按。
             account.not_found_streak = 0
             account.last_fetch_note = None
+    if "is_ignored" in provided and body.is_ignored is not None:
+        # ⚠️ 這裡**刻意什麼都不連帶做**：不動 is_tracked、不動 streak、
+        # 不動任何資料。忽略只是一個旗標。
+        account.is_ignored = body.is_ignored
     session.commit()
 
     return {
@@ -111,5 +120,126 @@ def set_account_prefs(
         "stars": account.stars,
         "is_favorite": account.is_favorite,
         "is_tracked": account.is_tracked,
+        "is_ignored": account.is_ignored,
         "not_found_streak": account.not_found_streak,
+    }
+
+
+# ── 批次 ─────────────────────────────────────────────────
+#
+# ⚠️ 這一整段最重要的約束：**SQLite 一次繫結變數上限 999**。
+# 一次 `WHERE id IN (...)` 塞 4,653 個直接丟 OperationalError，
+# 而使用者看到的是「批次失敗」四個字 —— 那時他已經按過確認了，
+# 還不知道有沒有改到一半。所以超過就 422，讓呼叫端自己分批。
+
+
+# 「把這個欄位設成 NULL」的哨符。
+#
+# ⚠️ 不可以用 `null` 表示這件事：`null` 已經是「這個欄位不動」的意思
+# （批次一次可以只改其中幾個欄位）。同一個值表示兩種意思，就會做出
+# 「想清空卻清不掉」或「不想動卻被清掉」的 bug。
+# 既有的媒體批次已經用這個字串，沿用它，不要發明第二種。
+CLEAR = "__clear__"
+
+# 與 `api/query.py::BULK_ID_LIMIT` 同一個數字。故意各自寫一份常數而不是
+# 互相 import —— 這兩個模組目前沒有相依關係，為一個整數建立它不划算。
+# 兩邊的測試都會釘住 900 這個值。
+BULK_ID_LIMIT = 900
+
+
+class BulkAccountPrefsIn(BaseModel):
+    ids: list[int]
+    # 三個布林旗標。`None` = 這個欄位不動。
+    is_ignored: bool | None = None
+    is_tracked: bool | None = None
+    is_favorite: bool | None = None
+    # 這三個吃 `CLEAR` 哨符（設成 NULL）。`None` 仍然是「不動」。
+    stars: int | str | None = None
+    default_rating: str | None = None
+    default_content_type: str | None = None
+
+
+def _bulk_value(raw: str | int | None) -> tuple[bool, object]:
+    """把批次欄位的值翻成 (要不要改, 改成什麼)。"""
+    if raw is None:
+        return False, None
+    if raw == CLEAR:
+        return True, None
+    return True, raw
+
+
+@router.post("/accounts/bulk-prefs")
+def bulk_account_prefs(
+    body: BulkAccountPrefsIn, session: Session = Depends(get_session)
+) -> dict:
+    """批次改帳號偏好。
+
+    `missing` **一定要回**：使用者選了 4,653 個而只改到 4,650 個時，
+    那 3 個去哪了必須講得出來 —— 不回就是靜默漏掉，而他已經按過
+    一個不可逆的確認鈕了。
+
+    ⚠️ 這支**不分批**。分批是呼叫端的責任，因為只有它知道要顯示
+    「第 2 / 5 批」的進度 —— 後端默默切的話，4,653 筆的等待時間裡畫面
+    完全靜止，看起來像當掉。
+    """
+    if not body.ids:
+        raise HTTPException(422, "ids 是空的")
+    if len(body.ids) > BULK_ID_LIMIT:
+        raise HTTPException(
+            422,
+            f"一次最多 {BULK_ID_LIMIT} 個 id（收到 {len(body.ids)} 個）—— "
+            "SQLite 一次繫結變數上限是 999，請由呼叫端分批並顯示進度",
+        )
+
+    # ⚠️ 值域一律在這裡擋。DB 的 CHECK 是最後一道防線，不是錯誤訊息的來源 ——
+    # 讓它擋下來的話使用者看到的是 500 + SQLite 的英文約束名，而他剛剛按的是
+    # 一個改 4,653 筆的確認鈕。
+    if body.stars is not None and body.stars != CLEAR:
+        if not isinstance(body.stars, int) or isinstance(body.stars, bool):
+            raise HTTPException(422, f"stars 要給 1–5 的整數，或 '{CLEAR}' 清除")
+        _validate_stars(body.stars)
+    for name, allowed in (
+        ("default_rating", Rating.values()),
+        ("default_content_type", ContentType.values()),
+    ):
+        val = getattr(body, name)
+        if val is not None and val != CLEAR and val not in allowed:
+            raise HTTPException(
+                422, f"{name} 必須是 {allowed} 之一，或 '{CLEAR}' 清除")
+
+    # (欄位名, 改成什麼)
+    changes: list[tuple[str, object]] = []
+    for name in ("is_ignored", "is_tracked", "is_favorite"):
+        val = getattr(body, name)
+        if val is not None:
+            changes.append((name, val))
+    for name in ("stars", "default_rating", "default_content_type"):
+        do, val = _bulk_value(getattr(body, name))
+        if do:
+            changes.append((name, val))
+
+    if not changes:
+        # 沒指定要改什麼卻送出，是呼叫端的 bug。靜默回 updated=0 會讓那個
+        # bug 潛伏 —— 畫面顯示「改好 4,653 個」而一筆都沒動。
+        raise HTTPException(422, "沒有指定要改什麼")
+
+    rows = session.scalars(
+        select(Account).where(Account.id.in_(body.ids))
+    ).all()
+    found = {a.id for a in rows}
+
+    for acc in rows:
+        for name, val in changes:
+            setattr(acc, name, val)
+            # 恢復追蹤要連 streak 歸零，理由同單筆那支。
+            if name == "is_tracked" and val:
+                acc.not_found_streak = 0
+                acc.last_fetch_note = None
+    session.commit()
+
+    return {
+        "updated": len(rows),
+        # 選了但已經不存在的（期間被刪了）。逐筆回，不只回一個數字。
+        "missing": sorted(set(body.ids) - found),
+        "changed_fields": [name for name, _ in changes],
     }

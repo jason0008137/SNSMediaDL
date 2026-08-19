@@ -1,9 +1,11 @@
 """pixiv adapter：id 清單列舉、多頁推導、動圖、增量、憑證。全部走 MockTransport。
 
 ⚠️ **這裡的 fixture 是手寫的，不是真實回應。**
-它們反映的是「PixivBatchDownloader 的原始碼說 pixiv 長這樣」。
+它們反映的是「PBD 的原始碼說 pixiv 長這樣」（見
+https://github.com/xuejianxianzun/PixivBatchDownloader）。
 
-2026-08-16 對真實 API 打過一次，對上了三件事：
+2026-08-16 對真實 API 打過一次（見
+2026-08-16 實測），對上了三件事：
 `profile/all` 的 `illusts` 字典 / `manga` 空陣列兩種形狀、`illust` 詳情的欄位名、
 以及 `i.pximg.net` 只要 Referer。**其餘仍未驗證** —— 尤其是多頁作品的
 `_p0` → `_pN` 推導與動圖的 `ugoira_meta`，那兩項還只是「PBD 這樣做」。

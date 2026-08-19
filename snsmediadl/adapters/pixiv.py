@@ -223,7 +223,13 @@ class PixivAdapter:
     # PBD 的實測經驗是 429 等 200 秒重試通常會成功（有帳號要重試 6 次）。
     # 但我們**不抄它的無限重試** —— 對一個會長時間跑的背景佇列，
     # 「無限次等 200 秒」的使用者體感是佇列卡死，不是錯誤。上限 2 次。
-    rate_limit_policy = RateLimitPolicy(max_retries=2, wait_seconds=200.0)
+    # ⚠️ `download_delay_seconds=0` 是**有證據的**，不是為了快而放寬：
+    # PixivBatchDownloader 的慢速抓取（slowCrawlDealy 1800ms）只套用在
+    # `getWorksData()`（作品資料 API），下載端是 6 條並行、做完一個立刻補
+    # 下一個，中間零延遲。我們的列舉端節流另外算（見 `fetch` 那一路），
+    # 這裡只管 `i.pximg.net` 的檔案下載。
+    rate_limit_policy = RateLimitPolicy(
+        max_retries=2, wait_seconds=200.0, download_delay_seconds=0.0)
 
     # `www.pixiv.net` 的 ajax API 在 Cloudflare 後面，要瀏覽器 UA + Chrome
     # 的 cipher 順序才進得去（見檔案上方的實測表格）。

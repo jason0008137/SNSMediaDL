@@ -612,6 +612,11 @@ def run(args) -> int:
     print(f"仍在追蹤的 pixiv 哨符帳號：{left}")
 
     if args.commit:
+        # ⚠️ 報告已經印完了，接下來這一步**沒有任何輸出**。
+        # 幾十萬列的 UPDATE 堆在 -wal 裡，commit 要 fsync 再 checkpoint 回主檔，
+        # 在外接碟上可能是好幾分鐘。不先講的話，畫面看起來就是「印完報告後當掉」。
+        print("\n寫入磁碟中（COMMIT + WAL checkpoint）—— 這一步沒有進度輸出，")
+        print("大型資料庫可能要數分鐘，請不要中斷。", flush=True)
         con.commit()
         print("\n已 commit。")
     else:

@@ -6,8 +6,10 @@ import { registerView, wireTabs } from './nav.js';
 import { refreshQueue, loadSettings, onQueueChange } from './queue.js';
 import { initTooltips } from './tooltip.js';
 import { wireHeader } from './header.js';
-import { loadMedia, wireAccountPicker, paintMoreNotes } from './views/media.js';
-import { loadAccountsView, loadCreatorList } from './views/accounts.js';
+import {
+  loadMedia, wireAccountPicker, paintMoreNotes, wireFilters, restoreSort,
+} from './views/media.js';
+import { loadAccountsView, loadCreatorList, wireAccountFilters } from './views/accounts.js';
 import { loadFetchView, refreshFetchQueue } from './views/fetch.js';
 
 // ── 輪詢：有事才快，沒事就慢，看不到就停 ─────────────
@@ -65,13 +67,19 @@ async function init() {
   wireTabs();
   wireHeader();
 
-  // 排序偏好記住。GUI 預設 favorite，而 API 預設是 id（= 舊行為，extension 靠它）
-  $('aSort').value = localStorage.getItem('accountSort') || 'favorite';
-  // ⚠️ 分段控制那一版（已回朔）把偏好存成「鍵:方向」，例如 `added:desc`。
-  // 那個字串塞進 <select> 會變成空值 —— 症狀是送出 `sort=` 而不是報錯。
-  const savedSort = localStorage.getItem('mediaSort');
-  $('fSort').value = ['newest', 'oldest', 'stars'].includes(savedSort)
-    ? savedSort : 'newest';
+  // ⚠️ 順序：篩選下拉要在第一次 loadMedia() **之前**建好 —— 那支會讀
+  // drops 去組查詢參數與條件標籤。晚一步的症狀是首屏送出一份沒有篩選的查詢，
+  // 而畫面上的控制項看起來是有選的。
+  //
+  // 排序鍵與批次列那三個現在也是自製下拉，一併在這裡建。
+  wireFilters();
+  // 帳號頁的篩選與排序下拉。同樣要在第一次 loadAccounts() 之前建好 ——
+  // `accountQuery()` 讀 aDrops 組查詢參數。
+  // 記住的排序偏好也在裡面還原（**經過白名單**，見 storedAccountSort()）。
+  wireAccountFilters();
+  // 存的是「鍵:方向」（例如 added:desc）。還原時白名單驗證，認不得就用預設 ——
+  // 直接套用會送出 `sort=`，那是一個不報錯也不生效的空條件。
+  restoreSort();
 
   // 佇列狀態更新時，媒體頁「更多篩選」裡那句「目前沒有待下載或失敗的項目」
   // 要跟著變 —— 它讀的就是這份資料，不另外請求。
