@@ -3,7 +3,8 @@
 // **不引入任何 lightbox 套件**：這個前端是零建置的原生 ES module，加一個
 // 套件就得加一條建置流程，而縮放與平移本身是幾十行的事。
 
-import { fileErrorText, fmtBytes } from './dom.js';
+import { esc, fileErrorText, fmtBytes } from './dom.js';
+import { t } from './i18n.js';
 import { pushDismissable } from './overlay.js';
 
 // 縮放範圍。下限是「符合視窗」的一半（再小就沒有意義了），
@@ -52,18 +53,18 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   el.className = 'viewer';
   el.innerHTML = `
     <button type="button" class="viewer-close" data-act="close"
-            aria-label="關閉（Esc）">×</button>
-    <button type="button" class="viewer-nav prev" data-act="prev" aria-label="上一張">◀</button>
-    <button type="button" class="viewer-nav next" data-act="next" aria-label="下一張">▶</button>
+            aria-label="${esc(t('viewer.close.aria'))}">×</button>
+    <button type="button" class="viewer-nav prev" data-act="prev" aria-label="${esc(t('viewer.prev.aria'))}">◀</button>
+    <button type="button" class="viewer-nav next" data-act="next" aria-label="${esc(t('viewer.next.aria'))}">▶</button>
     <div class="viewer-stage" data-act="stage"></div>
     <div class="viewer-bar">
-      <span class="dims" data-role="dims">載入中…</span>
+      <span class="dims" data-role="dims">${esc(t('viewer.loading'))}</span>
       <span class="spacer"></span>
       <span class="zoom" data-role="zoom"></span>
-      <button type="button" class="ghost" data-act="reset">重設</button>
+      <button type="button" class="ghost" data-act="reset">${esc(t('viewer.reset'))}</button>
     </div>
     <p class="viewer-hint${localStorage.getItem(HINT_SEEN_KEY) ? ' hidden' : ''}">
-      滾輪縮放 · 拖曳平移 · 雙擊還原 · ← → 換張 · Esc 關閉</p>`;
+      ${esc(t('viewer.hints'))}</p>`;
 
   document.getElementById('overlayRoot').appendChild(el);
   localStorage.setItem(HINT_SEEN_KEY, '1');
@@ -144,7 +145,7 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
     stage.innerHTML = '';
     img = null;
     zoomEl.textContent = '';
-    dimsEl.textContent = '載入中…';
+    dimsEl.textContent = t('viewer.loading');
 
     const playable = media.id === mediaId ? media.kind !== 'photo' : null;
     // 換張時拿不到新的 kind（siblings 只有 id）—— 用 <img> 先試，
@@ -169,10 +170,10 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
         const v = videoNode(mediaId);
         v.addEventListener('error', () => fail(mediaId));
         stage.appendChild(v);
-        dimsEl.textContent = '影片';
+        dimsEl.textContent = t('viewer.video');
       });
     } else {
-      dimsEl.textContent = '影片';
+      dimsEl.textContent = t('viewer.video');
       node.addEventListener('error', () => fail(mediaId));
     }
     stage.appendChild(node);
@@ -181,7 +182,7 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   async function fail(mediaId) {
     const box = document.createElement('p');
     box.className = 'viewer-missing';
-    box.textContent = '讀不到原檔。';
+    box.textContent = t('viewer.missing');
     stage.innerHTML = '';
     stage.appendChild(box);
     dimsEl.textContent = '—';

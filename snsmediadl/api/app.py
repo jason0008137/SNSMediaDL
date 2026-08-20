@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import mimetypes
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
@@ -214,11 +215,14 @@ def create_app(
     )
 
     from . import (
-        creators, deletion, devtools, fetch, files, ingest, logbuf, prefs, query,
-        tagging,
+        creators, deletion, devtools, errors, fetch, files, ingest, logbuf, prefs,
+        query, tagging,
     )
 
     logbuf.install()
+    # 錯誤回應一律 `{"code", "detail"}`。掛在 HTTPException 上（不是只掛
+    # ApiError）—— 形狀不一致的話前端每一個顯示點都要各自防一次。
+    errors.install(app)
 
     app.include_router(fetch.router)
     app.include_router(ingest.router)
@@ -238,6 +242,37 @@ def create_app(
     # 先掛的話 API 路由就進不來了。
     web_dir = Path(__file__).resolve().parent.parent / "web"
     if web_dir.is_dir():
-        app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
+        app.mount("/", _NoHeuristicCache(directory=web_dir, html=True), name="web")
 
     return app
+
+
+# ⚠️ Python 3.12 之前的 `mimetypes` 不認得 `.mjs`，會回 `text/plain`，
+# 而瀏覽器**拒絕**把 `text/plain` 當 ES module 匯入。症狀是
+# `/dev/tests.html` 上三支測試全部「載入失敗 Failed to fetch dynamically
+# imported module」，而檔案其實回 200 —— 看起來像檔案不見了。
+# 3.14 的機器上正常、3.10 的機器上壞掉，所以這件事必須明確宣告，不能靠
+# 直譯器版本。
+mimetypes.add_type("text/javascript", ".mjs")
+
+
+class _NoHeuristicCache(StaticFiles):
+    """靜態檔一律 `Cache-Control: no-cache`。
+
+    ⚠️ **這不是關掉快取**，是關掉「不問就用」。`no-cache` 的語意是
+    「可以留著，但每次都要回來問」—— 沒改的話回 304，成本近乎零
+    （這是 localhost）。
+
+    為什麼非做不可：StaticFiles 只送 ETag 與 Last-Modified，**不送
+    Cache-Control**。少了它，瀏覽器會套「啟發式快取」（依 Last-Modified
+    推算一個保鮮期），在那段時間內連問都不問。
+
+    症狀非常惡劣而且會誤導：`update.bat` 更新之後打開 GUI，載到的是**舊的
+    JS 模組**，而畫面上一切正常 —— 只是新功能不見了、或新舊模組混在一起
+    互相對不上。實測在開發時撞到三次，每次都先去懷疑程式碼。
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["cache-control"] = "no-cache"
+        return resp

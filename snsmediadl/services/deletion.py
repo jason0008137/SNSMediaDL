@@ -105,7 +105,7 @@ def preview_account_deletion(session: Session, account_id: int) -> DeletionSumma
     """
     account = session.get(Account, account_id)
     if account is None:
-        raise LookupError(f"找不到 account#{account_id}")
+        raise LookupError(f"No such account#{account_id}")
 
     stmt = _post_ids(account_id)
     posts = session.scalar(
@@ -159,7 +159,7 @@ def delete_account(session: Session, account_id: int) -> DeletionSummary:
 def preview_post_deletion(session: Session, post_id: int) -> DeletionSummary:
     post = session.get(Post, post_id)
     if post is None:
-        raise LookupError(f"找不到 post#{post_id}")
+        raise LookupError(f"No such post#{post_id}")
 
     stmt = select(Post.id).where(Post.id == post_id)
     media, done, downloading = _count_media(session, stmt)
@@ -197,7 +197,7 @@ def delete_media(session: Session, media_id: int) -> DeletionSummary:
     """刪一筆媒體記錄。貼文與檔案都留著。"""
     media = session.get(Media, media_id)
     if media is None:
-        raise LookupError(f"找不到 media#{media_id}")
+        raise LookupError(f"No such media#{media_id}")
 
     summary = DeletionSummary(
         media=1,

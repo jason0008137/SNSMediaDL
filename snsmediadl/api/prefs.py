@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from ..db.enums import ContentType, Rating
 from ..db.models import Account, Media
 from .app import get_session
+from .errors import ApiError
 
 router = APIRouter(prefix="/api", tags=["prefs"])
 
@@ -50,7 +51,9 @@ def _validate_stars(stars: int | None) -> None:
     """值域集中在一處。DB 的 CHECK 是最後一道防線，不是錯誤訊息的來源 ——
     讓它擋下來的話使用者看到的是 500 + SQLite 的英文約束名。"""
     if stars is not None and not 1 <= stars <= 5:
-        raise HTTPException(422, "stars 必須是 1–5，清除評分請送 null（不是 0）")
+        raise ApiError(
+            "prefs.bad_stars",
+            "stars must be 1-5; send null to clear it (not 0).")
 
 
 @router.patch("/media/{media_id}/stars")
@@ -59,7 +62,7 @@ def set_media_stars(
 ) -> dict:
     media = session.get(Media, media_id)
     if media is None:
-        raise HTTPException(404, "media not found")
+        raise ApiError("media.not_found", "No such media.", 404)
     _validate_stars(body.stars)
     media.stars = body.stars
     session.commit()
@@ -91,7 +94,7 @@ def set_account_prefs(
 ) -> dict:
     account = session.get(Account, account_id)
     if account is None:
-        raise HTTPException(404, "account not found")
+        raise ApiError("account.not_found", "No such account.", 404)
     _validate_stars(body.stars)
 
     # 用 model_fields_set 區分「沒帶這個欄位」與「明確帶 null」——
@@ -183,12 +186,13 @@ def bulk_account_prefs(
     完全靜止，看起來像當掉。
     """
     if not body.ids:
-        raise HTTPException(422, "ids 是空的")
+        raise ApiError("bulk.no_ids", "ids is empty.")
     if len(body.ids) > BULK_ID_LIMIT:
-        raise HTTPException(
-            422,
-            f"一次最多 {BULK_ID_LIMIT} 個 id（收到 {len(body.ids)} 個）—— "
-            "SQLite 一次繫結變數上限是 999，請由呼叫端分批並顯示進度",
+        raise ApiError(
+            "bulk.too_many_ids",
+            f"At most {BULK_ID_LIMIT} ids at a time (got {len(body.ids)}) - "
+            "SQLite binds at most 999 variables per statement, so the caller "
+            "must split the work and show the progress.",
         )
 
     # ⚠️ 值域一律在這裡擋。DB 的 CHECK 是最後一道防線，不是錯誤訊息的來源 ——
@@ -196,7 +200,9 @@ def bulk_account_prefs(
     # 一個改 4,653 筆的確認鈕。
     if body.stars is not None and body.stars != CLEAR:
         if not isinstance(body.stars, int) or isinstance(body.stars, bool):
-            raise HTTPException(422, f"stars 要給 1–5 的整數，或 '{CLEAR}' 清除")
+            raise ApiError(
+                "prefs.bad_stars",
+                f"stars must be an integer 1-5, or '{CLEAR}' to clear it.")
         _validate_stars(body.stars)
     for name, allowed in (
         ("default_rating", Rating.values()),
@@ -204,8 +210,9 @@ def bulk_account_prefs(
     ):
         val = getattr(body, name)
         if val is not None and val != CLEAR and val not in allowed:
-            raise HTTPException(
-                422, f"{name} 必須是 {allowed} 之一，或 '{CLEAR}' 清除")
+            raise ApiError(
+                "prefs.bad_value",
+                f"{name} must be one of {allowed}, or '{CLEAR}' to clear it.")
 
     # (欄位名, 改成什麼)
     changes: list[tuple[str, object]] = []
@@ -221,7 +228,7 @@ def bulk_account_prefs(
     if not changes:
         # 沒指定要改什麼卻送出，是呼叫端的 bug。靜默回 updated=0 會讓那個
         # bug 潛伏 —— 畫面顯示「改好 4,653 個」而一筆都沒動。
-        raise HTTPException(422, "沒有指定要改什麼")
+        raise ApiError("bulk.nothing_to_change", "No field was given to change.")
 
     rows = session.scalars(
         select(Account).where(Account.id.in_(body.ids))

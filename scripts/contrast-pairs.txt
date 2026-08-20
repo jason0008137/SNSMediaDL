@@ -31,7 +31,7 @@
 #00363d #82d3e1 onPrimary/primary(填色按鈕)
 #9eeffe #004f58 onPrimaryContainer/primaryContainer
 
-# ── secondary container（chip）──
+# ── secondary container（chip、segmented button 的選中態）──
 #cde7ec #334b4f onSecondaryContainer/secondaryContainer
 
 # ── error ──
@@ -68,3 +68,10 @@
 #ffb4ab #93000a ui:安全模式關閉的邊框 error/errorContainer
 # 作用中分頁的 3px 指示條，襯在 header 的 surfaceContainer 上。
 #82d3e1 #1b2122 ui:分頁指示條 primary/surfaceContainer
+
+# ── segmented button（帳號頁的檢視切換）──
+# 外框是「這兩格是同一個控制項」的唯一載體 → 走 outline（outlineVariant 只有
+# 1.98:1，量過的，不要退回去）。內部分隔線可以是裝飾級：兩格永遠有一格填底，
+# 真正的分界是那個填色邊緣。選中態另有 ✓ 這個非顏色通道。
+#899294 #0e1415 ui: segmented 外框 outline/surface
+#bfc8ca #0e1415 segmented 未選字 onSurfaceVariant/surface

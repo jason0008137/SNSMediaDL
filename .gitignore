@@ -52,3 +52,8 @@ env/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# GUI 按出來的偏好（背景下載、介面語言）。config.toml 是**人寫的**，
+# 這一份是**程式寫的** —— 兩者刻意分開，見 config.py 的偏好層說明。
+prefs.json
+prefs.json.tmp

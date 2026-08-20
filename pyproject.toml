@@ -16,18 +16,30 @@ dependencies = [
     "pydantic>=2.6",
     # 格線縮圖。沒有它，一頁 60 格要傳上百 MB 的原檔。
     "Pillow>=10",
-    # 影片縮圖要抽第一個影格，那需要 ffmpeg —— 一支**原生執行檔**，不是
-    # Python 套件。這個 wheel 自帶一支 static build，所以裝完專案就有，
-    # 使用者不必自己去安裝 ffmpeg。
-    #
-    # ⚠️ 系統 PATH 上的 ffmpeg **優先於**它（見 config.py 的偵測三層）：
-    # 自己裝的通常較新、編解碼覆蓋面較廣。這裡只是保證「至少有一支」。
-    "imageio-ffmpeg>=0.4",
     "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+# 影片縮圖要抽第一個影格，那需要 ffmpeg —— 一支**原生執行檔**，不是
+# Python 套件。這個 wheel 自帶一支 static build，所以裝了這個 extra
+# 就有，使用者不必自己去安裝 ffmpeg。
+#
+# ⚠️ 系統 PATH 上的 ffmpeg **優先於**它（見 config.py 的偵測三層）：
+# 自己裝的通常較新、編解碼覆蓋面較廣。這裡只是保證「至少有一支」。
+#
+# 為什麼是選配而不是必要相依：這個 wheel 內含的 static ffmpeg.exe 約
+# 22–30 MB，是整包最大的一塊，而**沒有它並不會壞掉**——
+# `config.py` 的 `import imageio_ffmpeg` 在 `_bundled_ffmpeg()` 函式內且
+# 已 catch ImportError，`ffmpeg_info()` 會如實回報「未安裝」，格線的影片
+# 格會寫出原因。那是被支援的狀態，不是靜默失敗。
+# 用不到影片縮圖的環境（例如沒有媒體檔的開發機、或頻寬受限的網路）
+# 可以只裝 `.[dev]` 省下這一塊。
+#
+# ⚠️ `scripts/start.ps1` 裝的是 `.[dev,thumbs]` —— README 教的是按
+# `start.bat`，那條路必須照樣自帶 ffmpeg，一般使用者體驗零變化。
+thumbs = ["imageio-ffmpeg>=0.4"]
 
 [tool.setuptools.packages.find]
 include = ["snsmediadl*"]

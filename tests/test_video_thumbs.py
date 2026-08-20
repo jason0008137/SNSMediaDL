@@ -110,7 +110,9 @@ def test_video_without_ffmpeg_returns_503(client, session, cfg, monkeypatch):
     mid = _media(session, cfg, "clip.mp4")
     r = client.get(f"/api/media/{mid}/thumb")
     assert r.status_code == 503
-    assert "ffmpeg" in r.json()["detail"]
+    # ⚠️ 斷言 `code` 不是文案。detail 是給人看的英文，改一個字不該紅一批測試 ——
+    # 那正是「文案不敢改」的成因。
+    assert r.json()["code"] == "thumb.ffmpeg_missing"
 
 
 def test_explicit_ffmpeg_path_that_does_not_exist_is_not_silently_replaced(
@@ -193,7 +195,7 @@ def test_both_seeks_failing_is_a_500(client, session, cfg, monkeypatch, fake_ffm
     mid = _media(session, cfg, "broken.mp4")
     r = client.get(f"/api/media/{mid}/thumb")
     assert r.status_code == 500
-    assert "影格" in r.json()["detail"]
+    assert r.json()["code"] == "thumb.no_frame"
 
 
 def test_ffmpeg_timeout_is_a_500_not_a_hang(client, session, cfg, monkeypatch,
@@ -243,7 +245,7 @@ def test_empty_ugoira_zip_is_a_500(client, session, cfg):
     mid = _media(session, cfg, "empty.zip", content=buf.getvalue())
     r = client.get(f"/api/media/{mid}/thumb")
     assert r.status_code == 500
-    assert "空的" in r.json()["detail"]
+    assert r.json()["code"] == "thumb.ugoira_empty"
 
 
 def test_corrupt_zip_is_a_500(client, session, cfg):

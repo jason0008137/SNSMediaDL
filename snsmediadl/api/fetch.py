@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ from ..services.fetch import fetch_account
 from ..services.fetch_queue import plan_refresh
 from ..urls import Target, parse_lines
 from .app import get_config, get_fetch_queue, get_maker, get_session, get_transport
+from .errors import ApiError
 
 router = APIRouter(prefix="/api", tags=["fetch"])
 log = logging.getLogger("snsmediadl")
@@ -57,14 +58,15 @@ async def post_fetch(
         adapter = get_source_adapter(body.platform)
     except ValueError as exc:
         # X 走到這裡：它只能由 extension 推
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise ApiError("fetch.no_fetcher", str(exc), 400) from exc
 
     # 游標式平台（Fediverse）沒有 host 是問不出東西的；
     # id 清單式平台（pixiv）本來就沒有 host。
     if not isinstance(adapter, IdListSource) and not body.host:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{body.platform} 需要 host（例如 misskey.io）",
+        raise ApiError(
+            "fetch.host_required",
+            f"{body.platform} needs a host (for example misskey.io).",
+            400,
         )
 
     target = Target(
@@ -80,9 +82,11 @@ async def post_fetch(
                 full=body.full, transport=get_transport(),
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise ApiError("fetch.bad_request", str(exc), 400) from exc
         except Exception as exc:  # noqa: BLE001 - 要把原因回給呼叫端，不可以吞掉
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            # ⚠️ 平台那邊出的事，訊息是對方給的（多半是英文，但不保證）。
+            # 這裡**不重寫也不吞掉** —— 原文是使用者唯一的線索。
+            raise ApiError("fetch.upstream_failed", str(exc), 502) from exc
         return {"started": True, "result": result.as_dict()}
 
     job = get_fetch_queue().enqueue(target, full=body.full)

@@ -1,7 +1,6 @@
 """X (Twitter) adapter。
 
 吃 extension 倒出的格式（見 `extension/content.js`）。
-
 欄位對應取自 x.com GraphQL `UserMedia` 回應的實測結果：媒體資訊掛在
 `tweet_results.result.legacy.extended_entities.media[]`，欄位名沿用 API v1.1
 的舊命名（`media_url_https` / `video_info.variants` / `possibly_sensitive`）。

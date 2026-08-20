@@ -7,13 +7,16 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from .. import links
-from ..config import Config, ffmpeg_info, refresh_ffmpeg
+from ..config import (
+    PERSISTABLE, Config, base_config, clear_pref, ffmpeg_info, refresh_ffmpeg,
+    save_pref, setting_source,
+)
 from ..db.enums import ContentType, FetchStatus, MediaKind, MediaStatus, Rating
 from ..db.models import Account, Creator, IdentityHeal, Media, Post
 from ..downloader import runner
@@ -21,6 +24,7 @@ from ..services.fetch_queue import NOT_FOUND_UNTRACK_AT
 from ..services.ingest import last_ingest
 from . import logbuf
 from .app import get_config, get_maker, get_session, get_transport
+from .errors import ApiError
 
 log = logging.getLogger("snsmediadl")
 
@@ -168,8 +172,9 @@ def _filter_unset_or_value(stmt, column, value: str | None,
         return stmt.where(column.is_(None))
     if value not in allowed:
         # 不默默當成「不篩選」—— 那會讓打錯字看起來像「篩選功能壞了」
-        raise HTTPException(
-            422, f"{name} 必須是 {allowed} 之一，或 '{UNSET}'（未設定）")
+        raise ApiError(
+            "query.bad_value",
+            f"{name} must be one of {allowed}, or '{UNSET}' for not-set.")
     return stmt.where(column == value)
 
 
@@ -219,8 +224,10 @@ def _accounts_where(
         wanted = [s.strip() for s in fetch_status.split(",") if s.strip()]
         bad = [s for s in wanted if s not in FetchStatus.values()]
         if bad:
-            raise HTTPException(
-                422, f"fetch_status 含未知的值 {bad}；可用：{FetchStatus.values()}")
+            raise ApiError(
+                "query.bad_fetch_status",
+                f"fetch_status has unknown values {bad}; "
+                f"allowed: {FetchStatus.values()}")
         stmt = stmt.where(Account.last_fetch_status.in_(wanted))
 
     # 帳號預設值篩選。
@@ -367,9 +374,9 @@ def list_accounts(
     }
     if sort not in sorts:
         # 不默默退回預設 —— 那會讓「參數打錯」看起來像「排序功能壞了」。
-        raise HTTPException(422, f"sort 必須是 {sorted(sorts)} 之一")
+        raise ApiError("query.bad_sort", f"sort must be one of {sorted(sorts)}.")
     if order is not None and order not in ("asc", "desc"):
-        raise HTTPException(422, "order 必須是 asc 或 desc")
+        raise ApiError("query.bad_order", "order must be asc or desc.")
 
     # 去正規化之後聚合欄不再有查詢成本（它們就在 accounts 上），所以
     # `with_stats` 現在只影響**回應大小**，不影響速度。參數保留 ——
@@ -555,11 +562,13 @@ def _norm_sort(sort: str, order: str | None) -> tuple[str, str]:
         # 但呼叫端的意圖很清楚（他要 asc），照做比報錯有用。
         return key, (order or alias_order)
     if sort not in MEDIA_SORT_KEYS:
-        raise HTTPException(
-            422, f"sort 必須是 {' / '.join(MEDIA_SORT_KEYS)} 之一"
-                 f"（或舊值 {' / '.join(_SORT_ALIASES)}）")
+        raise ApiError(
+            "query.bad_sort",
+            f"sort must be one of {' / '.join(MEDIA_SORT_KEYS)} "
+            f"(or the legacy {' / '.join(_SORT_ALIASES)}).")
     if order is not None and order not in MEDIA_ORDERS:
-        raise HTTPException(422, f"order 必須是 {' / '.join(MEDIA_ORDERS)} 之一")
+        raise ApiError(
+            "query.bad_order", f"order must be one of {' / '.join(MEDIA_ORDERS)}.")
     return sort, (order or _DEFAULT_ORDER[sort])
 
 
@@ -591,8 +600,9 @@ def _multi(
             if not value:
                 continue
             if allowed is not None and value not in allowed:
-                raise HTTPException(
-                    422, f"{field} 不認得 {value!r}（可用：{sorted(allowed)}）")
+                raise ApiError(
+                    "query.bad_value",
+                    f"{field} does not accept {value!r} (allowed: {sorted(allowed)}).")
             if value not in out:
                 out.append(value)
     return out
@@ -737,13 +747,18 @@ def list_media(
     """
     key, direction = _norm_sort(sort, order)
     if before_id is not None and after_id is not None:
-        raise HTTPException(422, "before_id 與 after_id 不能同時給")
+        raise ApiError(
+            "query.cursor_conflict", "before_id and after_id cannot both be given.")
     if key == "stars" and (before_id is not None or after_id is not None
                            or cursor is not None):
         # 默默改用 offset 會讓呼叫端以為自己在做 keyset，翻頁時靜默跳筆。
-        raise HTTPException(422, "sort=stars 不支援 keyset 分頁，請用 offset")
+        raise ApiError(
+            "query.no_keyset",
+            "sort=stars does not support keyset paging; use offset.")
     if cursor is not None and (before_id is not None or after_id is not None):
-        raise HTTPException(422, "cursor 與 before_id / after_id 不能同時給")
+        raise ApiError(
+            "query.cursor_conflict",
+            "cursor and before_id / after_id cannot both be given.")
 
     stmt = _media_stmt(
         status=_multi(status, "status", allowed=_ENUM_VALUES["status"]),
@@ -805,7 +820,7 @@ def _int_cursor(raw: str) -> int:
     try:
         return int(raw)
     except ValueError as exc:
-        raise HTTPException(422, f"看不懂的游標：{raw!r}") from exc
+        raise ApiError("query.bad_cursor", f"Cursor not understood: {raw!r}") from exc
 
 
 def _parse_posted_cursor(raw: str) -> tuple[str, datetime | None, int]:
@@ -820,12 +835,17 @@ def _parse_posted_cursor(raw: str) -> tuple[str, datetime | None, int]:
     if stage == "p":
         iso, sep, mid = rest.rpartition("|")
         if not sep:
-            raise HTTPException(422, f"看不懂的游標：{raw!r}（p 段要 `p:<iso>|<id>`）")
+            raise ApiError(
+                "query.bad_cursor",
+                f"Cursor not understood: {raw!r} (the p form is `p:<iso>|<id>`)")
         try:
             return "p", datetime.fromisoformat(iso), _int_cursor(mid)
         except ValueError as exc:
-            raise HTTPException(422, f"游標裡的時間看不懂：{iso!r}") from exc
-    raise HTTPException(422, f"看不懂的游標：{raw!r}（要 `p:…` 或 `n:…`）")
+            raise ApiError(
+                "query.bad_cursor",
+                f"The time inside the cursor is not understood: {iso!r}") from exc
+    raise ApiError(
+        "query.bad_cursor", f"Cursor not understood: {raw!r} (needs `p:...` or `n:...`)")
 
 
 def _posted_page(session: Session, base, direction: str,
@@ -1090,7 +1110,7 @@ def get_media_detail(
         .where(Media.id == media_id)
     ).first()
     if row is None:
-        raise HTTPException(status_code=404, detail="media not found")
+        raise ApiError("media.not_found", "No such media.", 404)
 
     m, p, a = row
     # 同一則貼文的其他張。分級掛在**貼文**上，所以詳情面板要讓使用者看得出
@@ -1200,6 +1220,17 @@ def get_settings(cfg: Config = Depends(get_config)) -> dict:
     _ffmpeg, _ffmpeg_source = ffmpeg_info(cfg)
     return {
         "auto_download": cfg.auto_download,
+        "language": cfg.language,
+        # 每個可持久化設定的值是**哪一層**決定的：env / prefs / config / default。
+        # 設定頁靠它回答「我改了 config.toml 為什麼沒生效」——
+        # 與上面 `ffmpeg.source` 是同一套做法（回報命中哪一層）。
+        "sources": {k: setting_source(cfg, k) for k in PERSISTABLE},
+        # config.toml 寫的原值，**只在與現值不同時才給**。沒有衝突時不給，
+        # 前端才不必自己判斷要不要顯示那句話。
+        "config_values": _config_values(cfg),
+        # 偏好檔壞掉時的錯誤。⚠️ 不是靜默忽略 —— 使用者看到的症狀是
+        # 「我的設定不見了」，那句話要出現在他會去看的地方。
+        "prefs_error": cfg.prefs_error,
         "concurrency": cfg.concurrency,
         "download_delay_seconds": cfg.download_delay_seconds,
         "poll_interval_seconds": cfg.poll_interval_seconds,
@@ -1231,21 +1262,81 @@ def get_settings(cfg: Config = Depends(get_config)) -> dict:
     }
 
 
+def _config_values(cfg: Config) -> dict:
+    """`config.toml` **真的寫了**、而且與目前生效值不同的那些。
+
+    這個回應只服務一句話：「我改了 config.toml 為什麼沒生效」。所以兩個條件
+    缺一不可：
+
+    1. 值不一樣
+    2. 那個值**真的來自 config.toml** —— 不是內建預設
+
+    ⚠️ 少了第 2 個條件的後果是畫面說謊。沒有 config.toml 的人把背景下載
+    打開之後會看到「config.toml 寫的是關閉」，而那個檔案根本不存在
+    （實測過，就是這樣才補上這一條）。prefs 蓋掉內建預設不是衝突，
+    那只是「你設了一個值」。
+
+    重新載入一次「不含偏好」的設定來比對 —— 比在記憶體裡另存一份可靠，
+    因為 config.toml 可能在 backend 執行中被編輯過。
+    """
+    base = base_config(cfg)
+    out = {}
+    for key in PERSISTABLE:
+        if base.setting_sources.get(key) != "config":
+            continue
+        if getattr(base, key) != getattr(cfg, key):
+            out[key] = getattr(base, key)
+    return out
+
+
 class SettingsPatch(BaseModel):
     auto_download: bool | None = None
+    language: str | None = None
 
 
 @router.patch("/settings")
 def patch_settings(body: SettingsPatch, cfg: Config = Depends(get_config)) -> dict:
-    """執行期切換。背景迴圈每輪重讀，所以立即生效、不用重啟。
+    """執行期切換，**而且寫進偏好檔**。背景迴圈每輪重讀，立即生效、不用重啟。
 
-    刻意不寫回 config.toml —— 這是「現在要不要跑」的暫時決定，
-    不是「預設應該是什麼」。
+    ⚠️ 這裡原本刻意**不**持久化，理由是「這是『現在要不要跑』的暫時決定，
+    不是『預設應該是什麼』」。那個判斷在 2026-08-20 被使用者的實際用法推翻：
+    他每一次重開服務都要重新打開背景下載，那就不是暫時決定。
+
+    寫的是 `prefs.json`，**不是 config.toml** —— 後者是人寫的，有註解與排版，
+    程式寫回去會把它們吃掉。優先序與衝突處理見 `config.py` 的偏好層說明。
     """
-    if body.auto_download is not None:
-        cfg.auto_download = body.auto_download
-        log.info("背景下載已%s", "開啟" if body.auto_download else "關閉")
-    return {"auto_download": cfg.auto_download}
+    changed = body.model_dump(exclude_none=True)
+    for key, value in changed.items():
+        save_pref(cfg, key, value)
+    if "auto_download" in changed:
+        log.info("背景下載已%s（已寫進偏好檔）",
+                 "開啟" if changed["auto_download"] else "關閉")
+    if "language" in changed:
+        log.info("介面語言已改為 %s", changed["language"])
+    return {
+        **{k: getattr(cfg, k) for k in PERSISTABLE},
+        "sources": {k: setting_source(cfg, k) for k in PERSISTABLE},
+        "config_values": _config_values(cfg),
+    }
+
+
+@router.delete("/settings/{key}")
+def reset_setting(key: str, cfg: Config = Depends(get_config)) -> dict:
+    """把一個設定從偏好檔移除，值回到 config.toml／內建預設的那個。
+
+    這是「我改了 config.toml 卻沒生效」的出口 —— 沒有它，使用者只能自己去
+    找那個 JSON 檔並手動編輯，而他根本不知道有那個檔案。
+    """
+    if key not in PERSISTABLE:
+        # 不默默忽略 —— 打錯字看起來會像「這個設定重設不了」。
+        raise ApiError("prefs.bad_key", f"key must be one of {sorted(PERSISTABLE)}.")
+    clear_pref(cfg, key, base_config(cfg))
+    log.info("%s 已改回 config.toml／預設的值：%r", key, getattr(cfg, key))
+    return {
+        key: getattr(cfg, key),
+        "sources": {k: setting_source(cfg, k) for k in PERSISTABLE},
+        "config_values": _config_values(cfg),
+    }
 
 
 @router.get("/logs")
@@ -1258,7 +1349,7 @@ def retry_media(media_id: int, session: Session = Depends(get_session)) -> dict:
     """把失敗的媒體打回佇列。強制重抓是明確動作，不是預設行為。"""
     media = session.get(Media, media_id)
     if media is None:
-        raise HTTPException(status_code=404, detail="media not found")
+        raise ApiError("media.not_found", "No such media.", 404)
     media.status = MediaStatus.PENDING.value
     media.error = None
     session.commit()

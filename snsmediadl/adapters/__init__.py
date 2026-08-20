@@ -58,9 +58,11 @@ def get_source_adapter(platform: str) -> SourceAdapter | IdListSource:
     """
     adapter = get_adapter(platform)
     if not isinstance(adapter, (SourceAdapter, IdListSource)):
+        # ⚠️ 英文：這句會原樣變成 API 的 `detail`，而 `detail` 會出現在
+        # 使用者的畫面上 —— 而畫面可能是三個語系裡的任何一個。
         raise ValueError(
-            f"{platform!r} 不能由 backend 主動抓取"
-            "（它的資料來源是 extension，請在瀏覽器裡錄製）"
+            f"{platform!r} cannot be fetched by the backend "
+            "(its source is the extension; collect it in the browser)"
         )
     return adapter
 

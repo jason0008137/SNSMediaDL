@@ -7,9 +7,13 @@
 //     `last_fetched_at` 全空），所以卡面改成一行**結論**而不是三行原始資料
 
 import {
-  $, esc, fmtWhen, mountDrops, multiDrop, singleDrop, starsHtml, handleStarClick,
+  $, esc, hint, mountDrops, multiDrop, setDetailsOff, setFieldOff,
+  singleDrop, starsHtml, handleStarClick,
 } from '../dom.js';
-import { api } from '../api.js';
+import { fmt, t, tn } from '../i18n.js';
+import { api, toApiError } from '../api.js';
+import { makeChipBar } from '../chips.js';
+import { makeSortControl } from '../sortctl.js';
 import { state } from '../state.js';
 import { openOverlay, confirmDialog } from '../overlay.js';
 import { jumpToMedia, paintMoreNotes } from './media.js';
@@ -25,14 +29,27 @@ const CHUNK = 50;
 // 非 ok/no_new 就是需要注意的狀態
 const FETCH_BAD = ['not_found', 'rate_limited', 'auth_required', 'failed'];
 
+/** 擷取結果的顯示字。
+ *
+ *  ⚠️ **值是 key 不是文字** —— 這張表在模組載入時就建好，那時 i18n 還沒載完。
+ *  查表拿到 key，要用的時候才 `t()`。存文字會整批變成 `⟦key⟧`。
+ *
+ *  ⚠️ 與 `fetch.js` 的 `cat.*` 是**同一個值域、不同的話**：那邊講的是
+ *  「這一批抓取失敗的分類」，這邊講的是「這個帳號上次檢查的結果」。
+ *  所以這裡的 `not_found` 多一句「可能改名」—— 帳號頁上那正是下一步。 */
 const FETCH_LABEL = {
-  ok: '有新的', no_new: '沒有新的', not_found: '找不到（可能改名）',
-  rate_limited: '被限速', auth_required: '需要憑證', failed: '失敗', skipped: '已跳過',
+  ok: 'accounts.fetch.ok', no_new: 'accounts.fetch.no_new',
+  not_found: 'accounts.fetch.not_found', rate_limited: 'accounts.fetch.rate_limited',
+  auth_required: 'accounts.fetch.auth_required', failed: 'accounts.fetch.failed',
+  skipped: 'accounts.fetch.skipped',
 };
 
 function accountQuery() {
   const p = new URLSearchParams();
-  p.set('sort', aDrops.aSort.get());
+  // ⚠️ `order` 從來沒被送過（後端 query.py 早就收了）—— 排序方向以前是烘在
+  // 選項文字裡的，十個鍵有七個的方向根本改不了。
+  p.set('sort', sortCtl.key());
+  p.set('order', sortCtl.order());
   p.set('limit', ACCT_PAGE);
   p.set('offset', state.acctOffset);
   const q = $('aSearch').value.trim();
@@ -70,35 +87,100 @@ const A_STARS = ['5', '4', '3', '2', '1'];
  *  而聚合選項與具體選項混在同一張清單裡會讓「全選」的語意講不清楚。 */
 const A_FETCH = ['ok', 'no_new', 'not_found', 'rate_limited', 'auth_required', 'failed', 'skipped'];
 
-/** 排序鍵的值域與顯示字。值域**同時是白名單** —— 見 `storedAccountSort()`。 */
-const A_SORT = [
-  { value: 'favorite', text: '我的最愛 → 評分' },
-  { value: 'stars', text: '評分高到低' },
-  { value: 'name', text: '名稱' },
-  { value: 'last_post', text: '最後發文' },
-  { value: 'last_ingest', text: '最後採集' },
-  { value: 'last_fetch', text: '最久沒檢查' },
-  { value: 'media', text: '媒體數' },
-  { value: 'posts', text: '貼文數' },
-  { value: 'created', text: '建檔時間' },
-  { value: 'id', text: '加入順序' },
+/** 排序鍵的值域。**同時是白名單**（見 sortctl.js 的 `restore()`）。
+ *  順序與後端 `query.py` 的 `sorts` 一致。 */
+const A_SORT_KEYS = [
+  'favorite', 'stars', 'name', 'last_post', 'last_ingest',
+  'last_fetch', 'media', 'posts', 'created', 'id',
 ];
 
-/** 記住的排序偏好，**經過白名單**。
+/** 顯示字。⚠️ **不含方向** —— 方向是隔壁那顆獨立的按鈕。
+ *  舊的「評分高到低」「最久沒檢查」「我的最愛 → 評分」把方向烘進文字裡，
+ *  結果是十個鍵有七個的方向改不了，而那三個看起來可改的其實也只有一種。 */
+// ⚠️ 值是 key。makeSortControl 拿到之後才 t()（見它的 `restore()`）。
+const A_SORT_TEXT = {
+  favorite: 'accounts.sort.favorite', stars: 'accounts.sort.stars',
+  name: 'accounts.sort.name', last_post: 'accounts.sort.last_post',
+  last_ingest: 'accounts.sort.last_ingest', last_fetch: 'accounts.sort.last_fetch',
+  media: 'accounts.sort.media', posts: 'accounts.sort.posts',
+  created: 'accounts.sort.created', id: 'accounts.sort.id',
+};
+
+/** 每個鍵的預設方向。與後端 `sorts` 表的 `default_desc` 逐項對齊 ——
+ *  對不齊的症狀是首次選到某個鍵時箭頭與實際順序相反。 */
+const A_DEFAULT_ORDER = {
+  favorite: 'desc', stars: 'desc', name: 'asc', last_post: 'desc',
+  last_ingest: 'desc', last_fetch: 'asc', media: 'desc', posts: 'desc',
+  created: 'desc', id: 'asc',
+};
+
+/** 方向鈕的語彙（句子由 sortctl.js 組）。 */
+const A_DIR_WORDS = {
+  favorite: { desc: 'accounts.dir.favfirst', asc: 'accounts.dir.favlast' },
+  stars: { desc: 'dir.highlow', asc: 'dir.lowhigh' },
+  name: { desc: 'dir.za', asc: 'dir.az' },
+  last_post: { desc: 'dir.newold', asc: 'dir.oldnew' },
+  last_ingest: { desc: 'dir.newold', asc: 'dir.oldnew' },
+  last_fetch: { desc: 'accounts.dir.checkedrecent', asc: 'accounts.dir.checkedstale' },
+  media: { desc: 'dir.manyfew', asc: 'dir.fewmany' },
+  posts: { desc: 'dir.manyfew', asc: 'dir.fewmany' },
+  created: { desc: 'dir.newold', asc: 'dir.oldnew' },
+  id: { desc: 'dir.newold', asc: 'dir.oldnew' },
+};
+
+/** 註記。空字串 = 沒有要講的，但那一行仍然佔位。
  *
- *  ⚠️ 原生 `<select>` 時代這裡是直接 `.value = localStorage.…`：塞一個不存在的
- *  值進去，select 會自己變成空字串，錯誤被吞掉。自製下拉沒有那個保護 ——
- *  認不得的值會原樣送給後端。所以驗證從「順手做」變成「非做不可」。
+ *  ⚠️ `last_fetch` 是唯一**兩個方向要講不同話**的鍵：後端對它刻意反轉
+ *  NULL 規則（`query.py` 的 `if sort == "last_fetch"`）—— 升冪時「從沒檢查過」
+ *  排最前而不是沉底，因為「從沒查過 = 最該查」。方向鈕一按那批就從最上面
+ *  跳到最下面，沒有這句話的話看起來就是 bug。 */
+const A_SORT_NOTE = {
+  favorite: 'accounts.sortnote.favorite',
+  stars: 'accounts.sortnote.stars',
+  last_post: 'accounts.sortnote.norecord',
+  last_ingest: 'accounts.sortnote.norecord',
+  last_fetch: {
+    asc: 'accounts.sortnote.last_fetch.asc',
+    desc: 'accounts.sortnote.last_fetch.desc',
+  },
+};
+
+/** 排序控制。鍵下拉 + 方向鈕 + 註記 + 存檔白名單全在 sortctl.js（媒體頁共用）。
+ *
+ *  ⚠️ localStorage 從**裸鍵**（`favorite`）改成 `key:order`。舊值不必特別處理 ——
+ *  裸鍵會被解析成 key + 該鍵的預設方向，那正是舊行為。認不得的值退回預設，
+ *  **絕不原樣送給後端**（原生 `<select>` 會自己吞掉錯誤，自製下拉不會）。
  *
  *  GUI 預設 favorite，而 API 預設是 id（= 舊行為，extension 靠它）。 */
-function storedAccountSort() {
-  const raw = localStorage.getItem('accountSort') || '';
-  return A_SORT.some((o) => o.value === raw) ? raw : 'favorite';
-}
+const sortCtl = makeSortControl({
+  keyHost: $('aSortKey'),
+  dirBtn: $('aSortDir'),
+  noteEl: $('aSortNote'),
+  keys: A_SORT_KEYS,
+  labels: A_SORT_TEXT,
+  defaultOrder: A_DEFAULT_ORDER,
+  dirWords: A_DIR_WORDS,
+  notes: A_SORT_NOTE,
+  storageKey: 'accountSort',
+  defaultKey: 'favorite',
+  onChange: () => {
+    // 排序不改變「有哪些帳號符合條件」，所以它**不清掉選取**。其餘篩選都要。
+    state.acctOffset = 0;
+    loadAccounts();
+  },
+});
 
-/** 「（未設定）」放在值清單的最前面：「哪些我還沒標」才是主要用例。 */
+/** 「（未設定）」放在值清單的最前面：「哪些我還沒標」才是主要用例。
+ *
+ *  ⚠️ `__unset__` 是**送給後端的 sentinel**，不是給人看的字。顯示字在這裡
+ *  定義一次，下拉與標籤列共用 —— 各寫一份的下場是標籤列上出現
+ *  「預設類型 __unset__」（實測過，看起來像資料壞了）。 */
+/** ⚠️ **是函式不是常數。** 常數會在模組載入時求值，那時 i18n 還沒載完 ——
+ *  下拉與標籤列上會出現 `⟦accounts.unset⟧`。兩個呼叫端（`unsetFirst()` 與
+ *  `acctConditions()`）都是在 i18n 就緒之後才跑。 */
+const unsetText = () => t('accounts.unset');
 const unsetFirst = (values) =>
-  [{ value: '__unset__', text: '（未設定）' }, ...values.map((v) => ({ value: v }))];
+  [{ value: '__unset__', text: unsetText() }, ...values.map((v) => ({ value: v }))];
 
 export function wireAccountFilters() {
   // ── 單選的四個 ──
@@ -111,9 +193,7 @@ export function wireAccountFilters() {
       // 收起時顯示的就是 label，所以「回到不限」那一項用同一句話。
       emptyText: label,
       onChange: () => {
-        // 排序不改變「有哪些帳號符合條件」，所以它不必清掉選取。其餘都要。
-        if (id !== 'aSort') clearAcctSelection('換了篩選 —— 選取已清空');
-        else localStorage.setItem('accountSort', aDrops.aSort.get());
+        clearAcctSelection(t('accounts.sel.cleared.filter'));
         state.acctOffset = 0;
         loadAccounts();
       },
@@ -121,29 +201,103 @@ export function wireAccountFilters() {
     });
   };
   // 平台選項帶筆數，由 `loadPlatforms()` 之後用 setOptions() 補上。
-  single('aPlatform', '全部平台', [], { value: '' });
-  // ⚠️ 排序**不給 emptyText**：它一定有值，「不排序」不是一個選項。
-  // 給了會多出一個選了等於沒選的空項。
-  single('aSort', '排序', A_SORT, { value: storedAccountSort(), emptyText: undefined });
-  single('aDefaultRating', '預設分級：全部', unsetFirst(RATING_VALUES));
-  single('aDefaultContent', '預設類型：全部', unsetFirst(CONTENT_VALUES));
+  single('aPlatform', t('accounts.platform.all'), [], { value: '' });
+  single('aDefaultRating', t('accounts.defrating.all'), unsetFirst(RATING_VALUES));
+  single('aDefaultContent', t('accounts.defcontent.all'), unsetFirst(CONTENT_VALUES));
 
   const mk = (id, label, values, text) => {
     aDrops[id] = multiDrop($(id), {
       label,
       values: values.map((v) => ({ value: v, text: text ? text(v) : undefined })),
       onChange: () => {
-        clearAcctSelection('換了篩選 —— 選取已清空');
+        clearAcctSelection(t('accounts.sel.cleared.filter'));
         state.acctOffset = 0;
         loadAccounts();
       },
     });
   };
-  mk('aStars', '評分', A_STARS, (v) => '★'.repeat(Number(v)));
-  mk('aIgnored', '忽略', ['true', 'false'],
-     (v) => (v === 'true' ? '已忽略' : '沒被忽略'));
-  mk('aFetchStatus', '擷取結果', A_FETCH);
+  mk('aStars', t('filter.stars'), A_STARS, (v) => '★'.repeat(Number(v)));
+  mk('aIgnored', t('accounts.ignored'), ['true', 'false'],
+     (v) => t(v === 'true' ? 'accounts.ignored.yes' : 'accounts.ignored.no'));
+  mk('aFetchStatus', t('accounts.fetchstatus'), A_FETCH, (v) => t(FETCH_LABEL[v]));
+  // 記住的排序偏好要在第一次 loadAccounts() 之前還原（main.js 保證了順序）。
+  sortCtl.restore();
+  // 開頁就跑一次：帳號模式下它什麼都不關，但 dom.js 的互動 guard 會在這時
+  // 掛好，而不是等到第一次切到創作者才掛。
+  applyModeGate();
 }
+
+// ── 生效條件標籤列 ─────────────────────────────────────
+//
+// 現況只有在**篩到 0 筆**時才把條件串成一句話。也就是說篩到 3,000 筆的時候
+// 完全看不見自己選了什麼 —— 而那正是最容易誤判的情況（「怎麼比昨天少」）。
+//
+// ⚠️ 渲染與事件委派在 `chips.js`，與媒體頁**同一份**。上一次兩頁就是各寫
+// 一份控制項才漂移成兩套不同的東西，再寫一份就是下一次漂移的起點。
+
+/** 目前生效的條件。**清單與空狀態共用**（`emptyAccountsHtml()` 也讀它）——
+ *  兩邊各串一次的結果是標籤列說七個條件、空狀態說五個。 */
+function acctConditions() {
+  const out = [];
+  const q = $('aSearch').value.trim();
+  if (q) out.push({ kind: 'search', label: t('chips.search'), value: q });
+  const single = (id, label) => {
+    const v = aDrops[id].get();
+    if (v) out.push({ kind: 'single', id, label, value: v === '__unset__' ? unsetText() : v });
+  };
+  single('aPlatform', t('chips.platform'));
+  single('aDefaultRating', t('chips.defrating'));
+  single('aDefaultContent', t('chips.defcontent'));
+  const stars = aDrops.aStars?.get() ?? [];
+  // 同一組內是 OR。**「或」要看得見** —— 不寫出來的話使用者會以為勾兩個是
+  // 「同時符合」，然後奇怪為什麼筆數變多了。
+  if (stars.length) {
+    out.push({ kind: 'multi', id: 'aStars', label: t('filter.stars'),
+               value: stars.map((v) => '★'.repeat(Number(v))).join(t('chips.or')) });
+  }
+  if ($('aFavOnly').checked) out.push({ kind: 'fav', label: t('chips.only'), value: '♥' });
+  const ig = aDrops.aIgnored?.get() ?? [];
+  if (ig.length) {
+    out.push({ kind: 'multi', id: 'aIgnored', label: t('accounts.ignored'),
+               value: ig.map((v) =>
+                 t(v === 'true' ? 'accounts.ignored.yes' : 'accounts.ignored.no'))
+                 .join(t('chips.or')) });
+  }
+  const fs = aDrops.aFetchStatus?.get() ?? [];
+  if (fs.length) {
+    out.push({ kind: 'multi', id: 'aFetchStatus', label: t('accounts.fetchstatus'),
+               value: fs.map((v) => (FETCH_LABEL[v] ? t(FETCH_LABEL[v]) : v))
+                 .join(t('chips.or')) });
+  }
+  return out;
+}
+
+function clearAcctCondition(what) {
+  if (what === '__all__') {
+    $('aSearch').value = '';
+    $('aFavOnly').checked = false;
+    for (const id of ['aPlatform', 'aDefaultRating', 'aDefaultContent',
+                      'aStars', 'aIgnored', 'aFetchStatus']) aDrops[id]?.clear();
+  } else if (what === 'search') {
+    $('aSearch').value = '';
+  } else if (what === 'fav') {
+    $('aFavOnly').checked = false;
+  } else {
+    // 標籤的 × 一次清掉**整個欄位**（不是其中一個值）——
+    // 一顆 × 只清一個值的話，勾了四個擷取結果就得按四次。
+    aDrops[what]?.clear();
+  }
+  // 排序不是篩選 —— 「全部清除」不該把使用者選的排序也一起打掉。
+  clearAcctSelection(t('accounts.sel.cleared.filter'));
+  state.acctOffset = 0;
+  loadAccounts();
+}
+
+const acctChips = makeChipBar({
+  host: $('aChipBar'),
+  sources: acctConditions,
+  onClear: clearAcctCondition,
+});
 
 const acctName = (a) => a.screen_name || a.platform_user_id;
 
@@ -155,29 +309,35 @@ const acctName = (a) => a.screen_name || a.platform_user_id;
 function verdict(a) {
   const st = a.last_fetch_status;
   if (!st && !a.last_fetched_at) {
-    return { text: '尚未由本工具抓取過', bad: false };
+    return { text: t('accounts.verdict.never'), bad: false };
   }
-  const when = fmtWhen(a.last_fetched_at);
-  const md = when.length >= 10 ? when.slice(5) : when;
+  // ⚠️ 只印月日的舊寫法（`when.slice(5)`）在換 locale 之後就不成立了 ——
+  // 「08-14」在日期順序不同的語系裡讀起來是另一天。整條走 `fmt.date()`。
+  const when = fmt.date(a.last_fetched_at);
   if (FETCH_BAD.includes(st)) {
     // 形狀載體（⚠ 前綴）由 app.css 的 `.bad::before` 統一加 —— 這裡**不要**
     // 自己再寫一個，否則畫面上會出現兩個 ⚠。
-    const why = a.last_fetch_note || FETCH_LABEL[st] || st;
-    return { text: `上次失敗：${why}`, bad: true, full: a.last_fetched_at };
+    // ⚠️ `last_fetch_note` 是後端寫的原文（目前是英文），沒有 key 可查 ——
+    // 顯示原文比顯示 `⟦…⟧` 誠實，而且看得出來它沒被翻譯。
+    const why = a.last_fetch_note || (FETCH_LABEL[st] ? t(FETCH_LABEL[st]) : st);
+    return { text: t('accounts.verdict.lastfail', { why }), bad: true, full: a.last_fetched_at };
   }
   const days = a.last_fetched_at
     ? Math.floor((Date.now() - Date.parse(a.last_fetched_at)) / 86400000)
     : null;
   if (days != null && days > 30) {
-    return { text: `已 ${days} 天沒檢查（上次 ${md}）`, bad: false, full: a.last_fetched_at };
+    return { text: tn('accounts.verdict.stale', days, { when }),
+             bad: false, full: a.last_fetched_at };
   }
   if (st === 'ok' && a.last_fetch_new_posts) {
-    return { text: `上次 ${md} 抓到 ${a.last_fetch_new_posts} 則`, full: a.last_fetched_at };
+    return { text: tn('accounts.verdict.got', a.last_fetch_new_posts, { when }),
+             full: a.last_fetched_at };
   }
   if (st === 'skipped') {
-    return { text: `上次 ${md} 跳過：${a.last_fetch_note || '—'}`, full: a.last_fetched_at };
+    return { text: t('accounts.verdict.skipped', { when, why: a.last_fetch_note || '—' }),
+             full: a.last_fetched_at };
   }
-  return { text: `上次 ${md} 檢查，沒有新的`, full: a.last_fetched_at };
+  return { text: t('accounts.verdict.nonew', { when }), full: a.last_fetched_at };
 }
 
 /** 自動退訂的告示 + 反悔按鈕。
@@ -190,9 +350,11 @@ function verdict(a) {
 function untrackedHtml(a) {
   if (!a.auto_untracked) return '';
   // ⚠ 前綴由 `.bad::before` 加，見 verdict() 的說明。
-  return `<span class="card-verdict bad">已自動移出追蹤（連續 ${
-    a.not_found_streak} 次找不到）—— 既有資料一筆都沒動
-    <button type="button" class="linkish" data-act="retrack">恢復追蹤</button></span>`;
+  return `<span class="card-verdict bad">${
+    esc(t('accounts.untracked.head', { n: fmt.num(a.not_found_streak) }))}<br>${
+    esc(t('accounts.untracked.safe'))}
+    <button type="button" class="linkish" data-act="retrack">${
+      esc(t('accounts.retrack'))}</button></span>`;
 }
 
 /** 使用者標記的「忽略」。
@@ -206,8 +368,10 @@ function untrackedHtml(a) {
  *  0 個被忽略是常態（這是新旗標），所以沒有時整塊不佔高度。 */
 function ignoredHtml(a) {
   if (!a.is_ignored) return '';
-  return `<span class="card-ignored">⊘ 已忽略 —— 一鍵更新會跳過它，資料一筆都沒動
-    <button type="button" class="linkish" data-act="unignore">取消忽略</button></span>`;
+  // ⊘ 留在樣板側 —— 語系檔不准帶標記，符號也不該散進三份翻譯裡各寫一次。
+  return `<span class="card-ignored">⊘ ${esc(t('accounts.ignoredmark'))}
+    <button type="button" class="linkish" data-act="unignore">${
+      esc(t('accounts.unignore'))}</button></span>`;
 }
 
 /** 「↗ 在 … 開啟」。網址與問題說明都由後端的 links.py 給 ——
@@ -219,17 +383,18 @@ function ignoredHtml(a) {
  *  中鍵開新分頁、複製網址那些原生行為就全沒了。 */
 function platformLinkHtml(a) {
   if (a.profile_url) {
+    // 「在 … 開啟」與詳情面板是同一句話，共用 `detail.openon`。
     return `<a class="ext-link" href="${esc(a.profile_url)}" target="_blank"
-              rel="noreferrer">↗ 在 ${esc(a.platform_label || a.platform)} 開啟</a>`;
+              rel="noreferrer">↗ ${esc(t('detail.openon',
+                { platform: a.platform_label || a.platform }))}</a>`;
   }
   // 拼不出來時顯示**原因**而不是一個壞連結。灰階 + ⚠ 字符，不只靠顏色分辨。
   return `<span class="ext-link off" data-tip="${esc(a.link_problem || '')}"
-            tabindex="0">⚠ 無法連結</span>`;
+            tabindex="0">⚠ ${esc(t('detail.nolink'))}</span>`;
 }
 
 function cardHtml(a) {
   const v = verdict(a);
-  const n = (x) => (x || 0).toLocaleString();
   const defaults = [a.default_rating, a.default_content_type].filter(Boolean).join(' · ');
   // ⚠️ 用 `isPicked()` 不是 `acctPicked.has()` —— 範圍是「全部符合篩選的」時，
   // 本頁的卡也該顯示成已選，而那些 id 在 acctAllIdSet 裡不在 acctPicked 裡。
@@ -238,13 +403,15 @@ function cardHtml(a) {
   // 只靠角落一個小方塊掃不出選了哪些（滿載才是分組必須成立的時候）。
   const box = acctSelecting
     ? `<input type="checkbox" class="acct-pick" data-act="pick"
-        ${picked ? 'checked' : ''} aria-label="選取 ${esc(acctName(a))}">`
+        ${picked ? 'checked' : ''} aria-label="${
+          esc(t('accounts.pick.aria', { name: acctName(a) }))}">`
     : '';
   return `<div class="card${picked ? ' picked' : ''}" data-id="${a.id}">
     <div class="card-head">
       ${box}
       <button type="button" class="fav${a.is_favorite ? ' on' : ''}"
-              data-act="fav" data-tip="我的最愛（點了立即生效）">${a.is_favorite ? '♥' : '♡'}</button>
+              data-act="fav" data-tip="${esc(t('accounts.fav.tip'))}">${
+                a.is_favorite ? '♥' : '♡'}</button>
       <h3>${esc(acctName(a))}</h3>
       ${starsHtml(a.stars, 'aStars')}
     </div>
@@ -255,11 +422,11 @@ function cardHtml(a) {
     <div class="card-stats">
       <button type="button" class="linkish" data-act="viewmedia"
               ${a.media_count ? '' : 'disabled'}
-              data-tip="${a.media_count
-                ? '到媒體頁只看這個帳號' : '這個帳號還沒有任何媒體記錄'}"
-              >${n(a.media_count)} 個媒體</button>
-      · <span class="num">${n(a.post_count)}</span> 則貼文<br>
-      最後發文 ${esc(fmtWhen(a.last_post_at))}
+              data-tip="${esc(t(a.media_count
+                ? 'accounts.viewmedia.tip' : 'accounts.viewmedia.none'))}"
+              >${esc(tn('accounts.media', a.media_count || 0))}</button>
+      · <span class="num">${esc(tn('accounts.posts', a.post_count || 0))}</span><br>
+      ${esc(t('accounts.lastpost', { when: fmt.date(a.last_post_at) }))}
       <span class="card-verdict${v.bad ? ' bad' : ''}"${
         v.full ? ` data-tip="${esc(v.full)}"` : ''}>${esc(v.text)}</span>
       ${untrackedHtml(a)}
@@ -267,10 +434,10 @@ function cardHtml(a) {
     </div>
     ${previewHtml(a)}
     <div class="card-foot">
-      <span>預設 ${defaults ? esc(defaults) : '（未設定）'}</span>
+      <span>${esc(t('accounts.defaults', { what: defaults || unsetText() }))}</span>
       <span class="spacer"></span>
       <span class="card-msg"></span>
-      <button type="button" class="ghost" data-act="edit">編輯</button>
+      <button type="button" class="ghost" data-act="edit">${esc(t('accounts.edit'))}</button>
     </div>
   </div>`;
 }
@@ -289,9 +456,8 @@ function previewHtml(a) {
   const ids = a.preview || [];
   if (!ids.length) {
     // 空白格與「縮圖載入失敗」長得一樣 —— 要講出是哪一種
-    return a.media_count
-      ? '<div class="prev-empty">預覽還沒算出來（跑一次 recount-accounts）</div>'
-      : '<div class="prev-empty">這個帳號還沒有媒體</div>';
+    return `<div class="prev-empty">${esc(t(a.media_count
+      ? 'accounts.prev.notcomputed' : 'accounts.prev.nomedia'))}</div>`;
   }
   return `<div class="prev">${ids.map((id) =>
     `<span class="prev-cell"><img alt="" data-src="/api/media/${id}/thumb"></span>`
@@ -365,18 +531,22 @@ function skeletons(k = 8) {
 
 export async function loadAccounts() {
   if (state.acctMode === 'creators') return loadCreators();
+  acctChips.render();
   const seq = ++acctSeq;
   unsetRating = null;          // 條件變了，上一批的數字就不再成立
   $('accountList').innerHTML = skeletons();
-  $('accountCount').textContent = '計算中…';
+  $('accountCount').textContent = t('common.calculating');
 
   let res;
   try {
     res = await fetch(`/api/accounts?${accountQuery()}`);
-    if (!res.ok) throw new Error(`${res.status}`);
+    // ⚠️ 這一支不能走 `api()`：它要讀 `X-Total-Count`，而 `api()` 只回 body。
+    // 但錯誤仍然要走同一條路，否則畫面上會是一句「載入失敗：422」。
+    if (!res.ok) throw await toApiError(res);
   } catch (e) {
     if (seq !== acctSeq) return;
-    $('accountList').innerHTML = `<p class="empty">載入失敗：${esc(e.message)}</p>`;
+    $('accountList').innerHTML = `<p class="empty">${
+      esc(t('media.load.failed', { msg: e.message }))}</p>`;
     $('accountCount').textContent = '';
     return;
   }
@@ -389,7 +559,8 @@ export async function loadAccounts() {
 
   const from = state.acctTotal ? state.acctOffset + 1 : 0;
   $('aPageInfo').textContent = state.acctTotal
-    ? `${from}–${Math.min(state.acctOffset + ACCT_PAGE, state.acctTotal)} / ${state.acctTotal}`
+    ? `${fmt.num(from)}–${fmt.num(Math.min(state.acctOffset + ACCT_PAGE, state.acctTotal))} / ${
+        fmt.num(state.acctTotal)}`
     : '—';
   $('aPrev').disabled = state.acctOffset === 0;
   $('aNext').disabled = state.acctOffset + ACCT_PAGE >= state.acctTotal;
@@ -410,23 +581,21 @@ export async function loadAccounts() {
 function emptyAccountsHtml() {
   const q = $('aSearch').value.trim();
   if (q) {
-    return `<p class="empty">找不到符合「${esc(q)}」的帳號。<br>
-      <button type="button" class="ghost" data-act="clearsearch">清除搜尋</button></p>`;
+    return `<p class="empty">${esc(t('accounts.empty.search', { q }))}<br>
+      <button type="button" class="ghost" data-act="clearsearch">${
+        esc(t('accounts.empty.clearsearch'))}</button></p>`;
   }
-  const conds = [
-    aDrops.aPlatform.get() ? `平台 ${aDrops.aPlatform.get()}` : '',
-    $('aFavOnly').checked ? '只看 ♥' : '',
-    (aDrops.aStars?.get() ?? []).length
-      ? `評分 ${aDrops.aStars.get().map((v) => '★'.repeat(Number(v))).join('、')}` : '',
-    aDrops.aDefaultRating.get() ? `預設分級 ${aDrops.aDefaultRating.get()}` : '',
-    aDrops.aDefaultContent.get() ? `預設類型 ${aDrops.aDefaultContent.get()}` : '',
-    (aDrops.aFetchStatus?.get() ?? []).length
-      ? `擷取結果 ${aDrops.aFetchStatus.get().join('、')}` : '',
-  ].filter(Boolean);
+  // 與標籤列讀同一份值域 —— 兩邊各串一次的結果是這裡少講兩個條件。
+  const conds = acctConditions();
   if (conds.length) {
-    return `<p class="empty">沒有帳號符合目前條件。<br>生效中：${esc(conds.join('、'))}</p>`;
+    // ⚠️ 逗號式的頓號不是全語系共用的：英文是 `, `、中日文是 `、`。
+    // 寫死 `、` 的話英文介面上會冒出一個中文標點。
+    return `<p class="empty">${esc(t('accounts.empty.conds'))}<br>${
+      esc(t('chips.lead'))}${
+      esc(conds.map((c) => `${c.label} ${c.value}`).join(t('common.listsep')))}</p>`;
   }
-  return '<p class="empty">還沒有任何帳號。<br>到「抓取」貼幾個網址，或用 extension 採集。</p>';
+  return `<p class="empty">${esc(t('accounts.empty.none.1'))}<br>${
+    esc(t('accounts.empty.none.2'))}</p>`;
 }
 
 // 「還沒設預設值的有幾個」——一次請求、只要 header 上的總數。
@@ -436,11 +605,17 @@ let unsetRating = null;
 /** 清單層級的第 6 題：不只說有幾個帳號，說**整理工作還剩多少**。 */
 function paintAccountCount() {
   const el = $('accountCount');
-  el.innerHTML = `共 <b class="todo">${state.acctTotal.toLocaleString()}</b> 個帳號`
+  // ⚠️ 數字包在 <b> 裡，所以把整段標記當**參數**傳進去 —— 語系檔不准帶標記
+  // （與媒體頁的 `paintCount()` 同一個做法）。
+  el.innerHTML = tn('accounts.count', state.acctTotal, {
+    n: `<b class="todo">${fmt.num(state.acctTotal)}</b>`,
+  })
     + (unsetRating == null ? '' :
-      unsetRating
-        ? `　<span class="muted">其中 ${unsetRating.toLocaleString()} 個還沒設分級預設值</span>`
-        : '　<span class="muted">全部都設過分級預設值了</span>');
+      // ⚠️ 原本這裡是一個全形空白 `　`。它在英文與日文介面上都是一個
+      // 中文排版習慣的字元，換成 `&ensp;` —— 寬度一樣，但不屬於任何語系。
+      `&ensp;&ensp;<span class="muted">${esc(unsetRating
+        ? tn('accounts.count.unsetrating', unsetRating)
+        : t('accounts.count.allset'))}</span>`);
 }
 
 async function fetchUnsetCount() {
@@ -491,7 +666,7 @@ $('accountList').addEventListener('click', async (ev) => {
       });
       a.stars = stars;
     },
-    (e) => say(card, `評分失敗：${e.message}`, 'err'),
+    (e) => say(card, t('accounts.stars.failed', { msg: e.message }), 'err'),
   );
   if (wasStar) return;
 
@@ -514,7 +689,7 @@ $('accountList').addEventListener('click', async (ev) => {
       for (const x of state.accounts) acctPicked.add(x.id);
       acctAllIds = [];
       acctAllIdSet = new Set();
-      $('aSelBar').dataset.note = '手動改了選取 —— 範圍從「全部符合篩選的」退回「本頁」';
+      $('aSelBar').dataset.note = t('accounts.sel.scope.back');
     }
     if (btn.checked) acctPicked.add(a.id); else acctPicked.delete(a.id);
     card.classList.toggle('picked', btn.checked);
@@ -535,7 +710,7 @@ $('accountList').addEventListener('click', async (ev) => {
       card.outerHTML = cardHtml(a);
     } catch (e) {
       btn.disabled = false;
-      say(card, `取消忽略失敗：${e.message}`, 'err');
+      say(card, t('accounts.unignore.failed', { msg: e.message }), 'err');
     }
     return;
   }
@@ -559,7 +734,7 @@ $('accountList').addEventListener('click', async (ev) => {
       card.outerHTML = cardHtml(a);
     } catch (e) {
       btn.disabled = false;
-      say(card, `恢復追蹤失敗：${e.message}`, 'err');
+      say(card, t('accounts.retrack.failed', { msg: e.message }), 'err');
     }
   } else if (btn.dataset.act === 'edit') {
     openAccountDrawer(a, card);
@@ -580,7 +755,7 @@ $('accountList').addEventListener('click', async (ev) => {
     } catch (e) {
       btn.classList.toggle('on', a.is_favorite);
       btn.textContent = a.is_favorite ? '♥' : '♡';
-      say(card, `失敗：${e.message}`, 'err');
+      say(card, t('common.failed.msg', { msg: e.message }), 'err');
     }
   }
 });
@@ -596,55 +771,69 @@ function openAccountDrawer(a, card) {
     kind: 'drawer',
     title: acctName(a),
     subtitle: `${a.platform} · id ${a.platform_user_id}`,
+    // ⚠️ 有粗體的句子一律**把 `<b>…</b>` 當參數傳進 `t()`**，不把標記寫進
+    //    語系檔（語系檔是最容易被隨手編輯的東西，能塞標記等於開一個注入點）。
+    //    也不拆成 pre/b/post 三個 key —— 強調詞在句中的位置三個語系都不同，
+    //    拆了就等於逼翻譯去遷就中文的語序。
     body: `
       <div class="ovl-section">
-        <h3>新貼文的預設值</h3>
+        <h3>${esc(t('accounts.drawer.defaults.title'))}</h3>
         <div class="row">
           <span id="dfRating" class="ms-host"></span>
           <span id="dfContent" class="ms-host"></span>
           <span class="spacer"></span>
-          <button type="button" id="dfSave">儲存</button>
+          <button type="button" id="dfSave">${esc(t('common.save'))}</button>
         </div>
-        <p class="note">⚠ 只影響之後抓到的<b>新貼文</b>，不會回溯既有的
-          ${(a.post_count || 0).toLocaleString()} 則。</p>
+        <p class="note">⚠ ${t('accounts.drawer.defaults.note', {
+          what: `<b>${esc(t('accounts.drawer.defaults.note.b'))}</b>`,
+          n: fmt.num(a.post_count || 0),
+        })}</p>
         <p class="note" id="dfMsg"></p>
       </div>
 
       <div class="ovl-section">
-        <h3>回溯既有貼文</h3>
+        <h3>${esc(t('accounts.drawer.retag.title'))}</h3>
         <p class="note">${a.post_count
-          ? `把目前的預設值套用到這個帳號的 ${a.post_count.toLocaleString()} 則貼文`
-            + '（不覆蓋人工標記過的）。'
-          : '這個帳號目前<b>沒有任何貼文</b>，沒有東西可以重標。'}</p>
+          ? `${esc(t('accounts.drawer.retag.n', { n: fmt.num(a.post_count) }))}`
+            + `<br><b>${esc(t('accounts.drawer.retag.nomanual'))}</b>`
+          : t('accounts.drawer.retag.noposts', {
+              what: `<b>${esc(t('accounts.drawer.retag.noposts.b'))}</b>`,
+            })}</p>
         <div class="row">
           <span class="spacer"></span>
-          <button type="button" id="dfRetag" ${a.post_count ? '' : 'disabled'}>重標既有</button>
+          <button type="button" id="dfRetag" ${a.post_count ? '' : 'disabled'}>${
+            esc(t('accounts.drawer.retag.btn'))}</button>
         </div>
         <p class="note" id="dfRetagMsg"></p>
       </div>
 
       <div class="ovl-section">
-        <h3>歸屬到創作者</h3>
-        <p class="note">創作者用來把同一位作者的跨平台帳號與小帳串在一起。</p>
+        <h3>${esc(t('accounts.drawer.creator.title'))}${
+          hint(t('accounts.drawer.creator.tip'))}</h3>
         <div class="row">
           <span id="dfCreator" class="ms-host"></span>
           <span id="dfRole" class="ms-host"></span>
-          <button type="button" id="dfLink">套用</button>
+          <button type="button" id="dfLink">${esc(t('bulk.apply'))}</button>
         </div>
         <div class="row">
-          <input id="dfNewCreator" placeholder="新創作者名稱">
-          <button type="button" class="ghost" id="dfAddCreator">+ 新建</button>
-          <span class="muted">目前有 ${state.creators.length} 位創作者</span>
+          <input id="dfNewCreator" placeholder="${
+            esc(t('accounts.drawer.creator.ph'))}">
+          <button type="button" class="ghost" id="dfAddCreator">${
+            esc(t('accounts.drawer.creator.add'))}</button>
+          <span class="muted">${esc(tn('accounts.creators.have',
+            state.creators.length))}</span>
         </div>
         <p class="note" id="dfLinkMsg"></p>
       </div>
 
       <div class="ovl-section danger-zone">
-        <h3>危險區</h3>
-        <p class="note">刪除這個帳號的全部記錄。<b>本機檔案不會被刪除。</b></p>
+        <h3>${esc(t('accounts.drawer.danger.title'))}</h3>
+        <p class="note">${esc(t('accounts.drawer.delete.note'))}<b>${
+          esc(t('accounts.drawer.delete.keep'))}</b></p>
         <div class="row">
           <span class="spacer"></span>
-          <button type="button" class="danger" id="dfDelete">刪除記錄</button>
+          <button type="button" class="danger" id="dfDelete">${
+            esc(t('accounts.drawer.delete.btn'))}</button>
         </div>
         <p class="note" id="dfDelMsg"></p>
       </div>`,
@@ -652,22 +841,28 @@ function openAccountDrawer(a, card) {
       // 抽屜每次打開都是新的一段 HTML —— 下拉要在這裡建，不是開頁時建一次。
       const d = mountDrops(body, {
         dfRating: {
-          label: '分級（未標）', emptyText: '（未標）', ariaLabel: '新貼文的預設分級',
+          label: t('detail.rating.label'), emptyText: t('detail.untagged'),
+          ariaLabel: t('accounts.drawer.rating.aria'),
           values: RATING_VALUES.map((v) => ({ value: v })),
           value: a.default_rating || '', onChange: () => {},
         },
         dfContent: {
-          label: '類型（未標）', emptyText: '（未標）', ariaLabel: '新貼文的預設類型',
+          label: t('detail.content.label'), emptyText: t('detail.untagged'),
+          ariaLabel: t('accounts.drawer.content.aria'),
           values: CONTENT_VALUES.map((v) => ({ value: v })),
           value: a.default_content_type || '', onChange: () => {},
         },
         dfCreator: {
-          label: '（未歸屬）', emptyText: '（未歸屬）', ariaLabel: '歸屬到哪位創作者',
+          label: t('accounts.drawer.creator.none'),
+          emptyText: t('accounts.drawer.creator.none'),
+          ariaLabel: t('accounts.drawer.creator.aria'),
           values: creatorOpts,
           value: a.creator_id ? String(a.creator_id) : '', onChange: () => {},
         },
         dfRole: {
-          label: '（無角色）', emptyText: '（無角色）', ariaLabel: '在該創作者底下的角色',
+          label: t('accounts.drawer.role.none'),
+          emptyText: t('accounts.drawer.role.none'),
+          ariaLabel: t('accounts.drawer.role.aria'),
           values: [{ value: 'main' }, { value: 'alt' }, { value: 'r18_alt' }],
           value: a.role || '', onChange: () => {},
         },
@@ -692,37 +887,39 @@ function openAccountDrawer(a, card) {
           a.default_content_type = d.dfContent.get() || null;
           // 「送出」與「生效」不共用提示：這裡明說沒有回溯，因為那正是
           // 使用者最容易誤會的地方。
-          note('#dfMsg', `已儲存。既有的 ${(a.post_count || 0).toLocaleString()} 則貼文`
-            + '不受影響 —— 要回溯請按下面的「重標既有」。', 'good');
+          note('#dfMsg', t('accounts.drawer.saved', {
+            n: fmt.num(a.post_count || 0),
+            retag: t('accounts.drawer.retag.btn'),
+          }), 'good');
           repaintCard(a, card);
-        } catch (e) { note('#dfMsg', `失敗：${e.message}`, 'bad'); }
+        } catch (e) { note('#dfMsg', t('common.failed.msg', { msg: e.message }), 'bad'); }
       });
 
       body.querySelector('#dfRetag').addEventListener('click', async (ev) => {
         const ok = await confirmDialog({
-          title: '重標既有貼文？',
+          title: t('accounts.retag.confirm.title'),
           lines: [
-            `把「${acctName(a)}」目前的預設值套用到既有貼文。`,
+            t('accounts.retag.confirm.1', { name: acctName(a) }),
             '',
-            `· 會檢查 ${(a.post_count || 0).toLocaleString()} 則貼文`,
-            '· 人工標記過的不會被覆蓋',
+            `· ${tn('accounts.retag.confirm.2', a.post_count || 0)}`,
+            `· ${t('accounts.retag.confirm.3')}`,
             '',
-            '這個動作會改動資料庫，但不影響磁碟上的檔案。',
+            t('accounts.retag.confirm.4'),
           ],
-          confirmText: '重標',
+          confirmText: t('accounts.retag.confirm.btn'),
         });
         if (!ok) return;
         ev.target.disabled = true;
-        note('#dfRetagMsg', '重標中…');
+        note('#dfRetagMsg', t('accounts.retag.running'));
         try {
           const r = await api(`/api/accounts/${a.id}/retag`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ overwrite_manual: false }),
           });
-          note('#dfRetagMsg', `已重標 ${r.updated} 則（人工標記未被覆蓋）`, 'good');
+          note('#dfRetagMsg', t('accounts.retag.done', { n: fmt.num(r.updated) }), 'good');
         } catch (e) {
-          note('#dfRetagMsg', `失敗：${e.message}`, 'bad');
+          note('#dfRetagMsg', t('common.failed.msg', { msg: e.message }), 'bad');
         } finally {
           ev.target.disabled = false;
         }
@@ -730,7 +927,10 @@ function openAccountDrawer(a, card) {
 
       body.querySelector('#dfAddCreator').addEventListener('click', async () => {
         const name = body.querySelector('#dfNewCreator').value.trim();
-        if (!name) { note('#dfLinkMsg', '請先輸入名稱', 'bad'); return; }
+        if (!name) {
+          note('#dfLinkMsg', t('accounts.drawer.creator.needname'), 'bad');
+          return;
+        }
         try {
           const c = await api('/api/creators', {
             method: 'POST',
@@ -743,8 +943,11 @@ function openAccountDrawer(a, card) {
             ({ value: String(x.id), text: x.display_name })));
           d.dfCreator.set(String(c.id));
           body.querySelector('#dfNewCreator').value = '';
-          note('#dfLinkMsg', `已建立「${name}」—— 還要按「套用」才會掛上去`, 'good');
-        } catch (e) { note('#dfLinkMsg', `建立失敗：${e.message}`, 'bad'); }
+          note('#dfLinkMsg', t('accounts.drawer.creator.created',
+                             { name, apply: t('bulk.apply') }), 'good');
+        } catch (e) {
+          note('#dfLinkMsg', t('accounts.drawer.creator.addfailed', { msg: e.message }), 'bad');
+        }
       });
 
       body.querySelector('#dfLink').addEventListener('click', async () => {
@@ -754,7 +957,7 @@ function openAccountDrawer(a, card) {
             await api(`/api/accounts/${a.id}/link`, { method: 'DELETE' });
             a.creator_id = null;
             a.role = null;
-            note('#dfLinkMsg', '已解除歸屬', 'good');
+            note('#dfLinkMsg', t('accounts.drawer.creator.unlinked'), 'good');
           } else {
             await api(`/api/accounts/${a.id}/link`, {
               method: 'POST',
@@ -766,10 +969,12 @@ function openAccountDrawer(a, card) {
             });
             a.creator_id = Number(cid);
             a.role = d.dfRole.get() || null;
-            note('#dfLinkMsg', '已歸屬', 'good');
+            note('#dfLinkMsg', t('accounts.drawer.creator.linked'), 'good');
           }
           await loadCreatorList();
-        } catch (e) { note('#dfLinkMsg', `失敗：${e.message}`, 'bad'); }
+        } catch (e) {
+          note('#dfLinkMsg', t('common.failed.msg', { msg: e.message }), 'bad');
+        }
       });
 
       body.querySelector('#dfDelete').addEventListener('click', async () => {
@@ -778,33 +983,40 @@ function openAccountDrawer(a, card) {
           // 先問「會刪掉什麼」再讓使用者決定 —— 不做「按一下就刪」。
           p = await api(`/api/accounts/${a.id}/deletion-preview`);
         } catch (e) {
-          note('#dfDelMsg', `取不到預演：${e.message}`, 'bad');
+          note('#dfDelMsg', t('accounts.delete.nopreview', { msg: e.message }), 'bad');
           return;
         }
         // ⚠️ 這段文字是**產品層摩擦**，一字不減。2.0 唯一的改動是把
         // window.confirm()（會擋住整個分頁、樣式不一致）換成自製 dialog。
         const ok = await confirmDialog({
-          title: `刪除「${p.screen_name}」（${p.platform}）的全部記錄？`,
+          title: t('accounts.delete.confirm.title',
+                   { name: p.screen_name, platform: p.platform }),
           lines: [
-            `· ${p.posts} 則貼文`,
-            `· ${p.media} 筆媒體記錄`,
+            `· ${tn('accounts.posts', p.posts)}`,
+            `· ${tn('accounts.mediarows', p.media)}`,
             '',
-            '本機的媒體檔案不會被刪除。',
+            t('accounts.delete.confirm.keep'),
+            // ⚠️ `warnings` 是後端寫的原文，沒有 key 可查。顯示原文比顯示
+            // `⟦…⟧` 誠實 —— 而且看得出來它還沒被翻譯。
             ...p.warnings.map((w) => `⚠️ ${w}`),
             '',
-            '這個動作無法復原。',
+            t('accounts.delete.confirm.final'),
           ],
-          confirmText: '確定刪除',
+          confirmText: t('accounts.delete.confirm.btn'),
           danger: true,
         });
         if (!ok) return;
         try {
           const r = await api(`/api/accounts/${a.id}?confirm=true`, { method: 'DELETE' });
           handle.close();
-          say(card, `已刪除 ${r.posts} 則貼文 / ${r.media} 筆媒體記錄，`
-            + `${r.downloaded_files_kept} 個檔案留在磁碟上`, 'ok');
+          // 三個數字各自有單複數，所以三段各自 tn() 之後才組句。
+          say(card, t('accounts.delete.done', {
+            posts: tn('accounts.posts', r.posts),
+            media: tn('accounts.mediarows', r.media),
+            kept: tn('accounts.files', r.downloaded_files_kept),
+          }), 'ok');
           loadAccounts();
-        } catch (e) { note('#dfDelMsg', `失敗：${e.message}`, 'bad'); }
+        } catch (e) { note('#dfDelMsg', t('common.failed.msg', { msg: e.message }), 'bad'); }
       });
     },
   });
@@ -815,7 +1027,7 @@ function openAccountDrawer(a, card) {
 function repaintCard(a, card) {
   const foot = card.querySelector('.card-foot span');
   const defaults = [a.default_rating, a.default_content_type].filter(Boolean).join(' · ');
-  if (foot) foot.textContent = `預設 ${defaults || '（未設定）'}`;
+  if (foot) foot.textContent = t('accounts.defaults', { what: defaults || unsetText() });
 }
 
 // ── 篩選與分頁 ─────────────────────────────────────────
@@ -839,18 +1051,25 @@ $('aSearch').addEventListener('input', () => {
 //   · `<select>` 換成 `<span>` → `$()` 回的是元素**不是 null**，
 //     addEventListener 掛得上、不報錯、**永遠不觸發** —— 換了篩選沒反應
 $('aFavOnly').addEventListener('change', () => {
-  clearAcctSelection('換了篩選 —— 選取已清空');
+  clearAcctSelection(t('accounts.sel.cleared.filter'));
   state.acctOffset = 0;
   loadAccounts();
 });
 
+// ⟳ 與媒體頁的 #refresh 同語意：**保留篩選與頁碼**，只是重新問一次。
+// 它不吃篩選，所以創作者模式下仍然可用（applyModeGate 沒有把它關掉）。
+$('aRefresh').addEventListener('click', () => {
+  if (state.acctMode === 'creators') loadCreators();
+  else loadAccounts();
+});
+
 $('aPrev').addEventListener('click', () => {
-  clearAcctSelection('換頁了 —— 選取已清空（不做跨頁記憶：看不見的選取比清掉更危險）');
+  clearAcctSelection(t('accounts.sel.cleared.page'));
   state.acctOffset = Math.max(0, state.acctOffset - ACCT_PAGE);
   loadAccounts();
 });
 $('aNext').addEventListener('click', () => {
-  clearAcctSelection('換頁了 —— 選取已清空（不做跨頁記憶：看不見的選取比清掉更危險）');
+  clearAcctSelection(t('accounts.sel.cleared.page'));
   state.acctOffset += ACCT_PAGE;
   loadAccounts();
 });
@@ -869,27 +1088,101 @@ $('aMore').addEventListener('toggle', async () => {
     const n = Number(res.headers.get('X-Total-Count') || 0);
     if (!n) {
       $('aFetchStatus').disabled = true;
-      $('aFetchStatus').dataset.tip = '尚未執行過任何抓取';
-      $('aFetchNote').textContent = '尚未執行過任何抓取 —— 這個篩選目前選不出東西';
+      $('aFetchStatus').dataset.tip = t('accounts.fetchnote.never');
+      $('aFetchNote').textContent = t('accounts.fetchnote.never.long');
     } else {
-      $('aFetchNote').textContent = `${n.toLocaleString()} 個帳號有擷取記錄`;
+      $('aFetchNote').textContent = tn('accounts.fetchnote.n', n);
     }
   } catch { /* 補充說明，拿不到就不寫 */ }
 });
 
 // ── 檢視切換：帳號／創作者 ────────────────────────────
 //
-// 兩者是**同一份資料的兩種分組方式**，不是兩個工作面 —— 所以用 radio，
-// 不做成第四個 tab。放成 tab 會讓人以為它們是平行的功能。
+// 兩者是**同一份資料的兩種分組方式**，不是兩個工作面 —— 不做成第四個 tab，
+// 放成 tab 會讓人以為它們是平行的功能。
+//
+// 但它換的是**資料集本身**（不同的表、不同的 API、不同的可用篩選值域），
+// 層級高於篩選與排序：它一變，右邊那些控制項全部失去意義。所以它在
+// filter-bar 的**最左端**，而不是跟排序搶右端。閱讀順序 = 支配順序。
+//
+// 元件是 M3 single-select segmented button：兩個選項互斥且永遠有一個成立。
+// 鍵盤走 roving tabindex（Tab 只進出群組一次，群組內用方向鍵）——
+// 那是 `role="radiogroup"` 該有的行為，一堆 `<button>` 不會自己長出來。
 
-document.querySelectorAll('input[name="aView"]').forEach((r) =>
-  r.addEventListener('change', () => {
-    state.acctMode = r.value;
-    $('accountPane').classList.toggle('hidden', r.value !== 'accounts');
-    $('creatorPane').classList.toggle('hidden', r.value !== 'creators');
-    if (r.value === 'creators') loadCreators();
-    else loadAccounts();
-  }));
+const VIEW_BTNS = () => [...$('aViewMode').querySelectorAll('[role="radio"]')];
+
+function setViewMode(mode, { focus = false } = {}) {
+  if (state.acctMode === mode) return;
+  state.acctMode = mode;
+  for (const b of VIEW_BTNS()) {
+    const on = b.dataset.mode === mode;
+    b.setAttribute('aria-checked', String(on));
+    // roving tabindex：只有選中那格在 Tab 順序裡。
+    if (on) { b.removeAttribute('tabindex'); if (focus) b.focus(); }
+    else b.setAttribute('tabindex', '-1');
+  }
+  $('accountPane').classList.toggle('hidden', mode !== 'accounts');
+  $('creatorPane').classList.toggle('hidden', mode !== 'creators');
+  applyModeGate();
+  if (mode === 'creators') loadCreators();
+  else loadAccounts();
+}
+
+$('aViewMode').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[role="radio"]');
+  if (btn) setViewMode(btn.dataset.mode);
+});
+
+$('aViewMode').addEventListener('keydown', (ev) => {
+  const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1 }[ev.key];
+  if (!step) return;
+  ev.preventDefault();
+  const btns = VIEW_BTNS();
+  const i = btns.findIndex((b) => b.getAttribute('aria-checked') === 'true');
+  // radiogroup 的方向鍵是**繞回**的，不是走到底就停。
+  setViewMode(btns[(i + step + btns.length) % btns.length].dataset.mode, { focus: true });
+});
+
+/** 創作者模式下哪些控制項不適用，以及**為什麼**。
+ *
+ *  ⚠️ 這不是 fallback，是把「後端不支援」誠實顯示出來。現況才是掩蓋：
+ *  `loadCreators()` 一個參數都不傳，但整條 filter-bar 仍然亮著、可點、
+ *  改了什麼都不會發生，畫面上沒有任何說明。日後 `/api/creators` 支援篩選了，
+ *  把這張表刪掉即可，沒有任何機制要拆。
+ *
+ *  ⚠️ **不是隱藏。** 隱藏會讓人以為控制項不見了，而它切回來又會出現 ——
+ *  看起來像閃爍的 bug。disabled + 原因才回答得了「為什麼現在不能用」。
+ *
+ *  ⚠️ **值不清空。** disabled 期間只是不能改，切回帳號要原樣還在。 */
+// ⚠️ 值是 key。這張表在模組載入時建好，那時 i18n 還沒載完 —— `why()` 才 t()。
+const MODE_GATE = {
+  aSearch: 'accounts.gate.search',
+  aPlatform: 'accounts.gate.platform',
+  aDefaultRating: 'accounts.gate.accountlevel',
+  aDefaultContent: 'accounts.gate.accountlevel',
+  aMore: 'accounts.gate.more',
+  aSortKey: 'accounts.gate.sort',
+  aSortDir: 'accounts.gate.sort',
+  aSelectMode: 'accounts.gate.select',
+};
+
+function applyModeGate() {
+  const off = state.acctMode === 'creators';
+  const why = (id) => (off ? t(MODE_GATE[id]) : null);
+  setFieldOff($('aSearch'), why('aSearch'));
+  setFieldOff($('aSortDir'), why('aSortDir'));
+  setFieldOff($('aSelectMode'), why('aSelectMode'));
+  setDetailsOff($('aMore'), why('aMore'));
+  for (const id of ['aPlatform', 'aDefaultRating', 'aDefaultContent']) {
+    aDrops[id].setOff(why(id));
+  }
+  sortCtl.drop.setOff(why('aSortKey'));
+  // ⟳ 是唯一仍然可用的 —— 它不吃篩選，重新載入永遠是合理的。
+  // 標籤列整條隱藏：那些條件當下不生效，顯示它們就是說謊。
+  $('aChipBar').classList.toggle('hidden', off);
+  if (off) $('aSortNote').textContent = t('accounts.gate.sortnote');
+  else sortCtl.paint();
+}
 
 /** 只取資料（媒體頁的 creator 下拉與抽屜都要用），不畫創作者清單。 */
 export async function loadCreatorList() {
@@ -901,7 +1194,9 @@ export async function loadCreatorList() {
 
 export async function loadCreators() {
   const list = await loadCreatorList();
-  $('accountCount').innerHTML = `共 <b class="todo">${list.length}</b> 位創作者`;
+  $('accountCount').innerHTML = tn('accounts.creators.count', list.length, {
+    n: `<b class="todo">${fmt.num(list.length)}</b>`,
+  });
 
   // 正式庫 creators = 0 —— 這是**目前唯一會看到的狀態**，所以它必須解釋
   // 「這東西是幹嘛的、怎麼開始」，而不只是說「沒有資料」。
@@ -909,21 +1204,27 @@ export async function loadCreators() {
     ? list.map((c) => `
       <div class="card">
         <h3>${esc(c.display_name)}</h3>
-        <div class="card-id">${c.accounts.length} 個帳號</div>
+        <div class="card-id">${esc(tn('accounts.creators.accounts', c.accounts.length))}</div>
         <div class="row">
           ${c.accounts.map((a) => `<span class="pill">${esc(a.platform)} @${
             esc(a.screen_name || '?')}${a.role ? ` · ${esc(a.role)}` : ''}</span>`).join('')
-            || '<span class="muted">尚未掛任何帳號</span>'}
+            || `<span class="muted">${esc(t('accounts.creators.noaccounts'))}</span>`}
         </div>
         <div class="row">
           <span class="spacer"></span>
           <button type="button" class="ghost" data-creator="${c.id}"
-                  data-label="${esc(c.display_name)}">看全部作品</button>
+                  data-label="${esc(c.display_name)}">${
+                    esc(t('accounts.creators.viewall'))}</button>
         </div>
       </div>`).join('')
-    : `<p class="empty">還沒有任何創作者。<br>
-        創作者用來把同一位作者的跨平台帳號與小帳串在一起。<br>
-        到任一帳號的 <b>[編輯] → 歸屬到創作者</b>，就會建立第一位。</p>`;
+    : `<p class="empty">${esc(t('accounts.creators.empty'))}<br>
+        ${esc(t('accounts.creators.what'))}<br>
+        ${t('accounts.creators.howto', {
+          where: `<b>${esc(t('accounts.creators.howto.b', {
+            edit: t('accounts.edit'),
+            link: t('accounts.drawer.creator.title'),
+          }))}</b>`,
+        })}</p>`;
 }
 
 $('creatorList').addEventListener('click', (ev) => {
@@ -943,7 +1244,8 @@ async function loadPlatforms() {
     // setOptions() 自己保留目前值（不在新清單裡就退回「全部平台」）。
     aDrops.aPlatform.setOptions(d.items.map((it) => ({
       value: it.platform,
-      text: `${it.platform}（${it.count.toLocaleString()}）`,
+      // 括號也是語系的一部分：中日文用全形（），英文用半形 ( )。
+      text: t('accounts.platform.count', { platform: it.platform, n: fmt.num(it.count) }),
     })));
     platformsLoaded = true;
   } catch { /* 補充選項，拿不到就維持「全部平台」，不必報錯 */ }
@@ -979,20 +1281,30 @@ let acctBulkBusy = false;
 const BULK_ID_LIMIT = 900;   // 與後端 api/prefs.py 的同名常數一致
 
 /** 批次可改的欄位。`clear` 為 true 的那些多一個「（清除）」選項。 */
+// ⚠️ `label` 與 `opts` 的顯示字**都是 key**（`opts` 的第一欄是送給後端的值，
+//    那個不動）。這張表在模組載入時建好，t() 要等到 `renderSelBar()` 才做。
+//    分級（sfw / r18）與類型的值本身是資料不是文案，維持原樣。
 const BULK_FIELDS = [
-  { key: 'is_ignored', label: '忽略', opts: [
-    ['true', '設為忽略'], ['false', '取消忽略']] },
-  { key: 'is_tracked', label: '追蹤', opts: [
-    ['true', '恢復追蹤'], ['false', '停止追蹤']] },
-  { key: 'default_rating', label: '預設分級', clear: true, opts: [
-    ['sfw', 'sfw'], ['r18', 'r18']] },
-  { key: 'default_content_type', label: '預設類型', clear: true,
-    opts: CONTENT_VALUES.map((v) => [v, v]) },
-  { key: 'is_favorite', label: '我的最愛', opts: [
-    ['true', '加入 ♥'], ['false', '移出 ♥']] },
-  { key: 'stars', label: '評分', clear: true, opts: [
-    ['5', '★★★★★'], ['4', '★★★★'], ['3', '★★★'], ['2', '★★'], ['1', '★']] },
+  { key: 'is_ignored', label: 'accounts.ignored', opts: [
+    ['true', 'accounts.bulk.ignore.on'], ['false', 'accounts.bulk.ignore.off']] },
+  { key: 'is_tracked', label: 'accounts.bulk.tracked', opts: [
+    ['true', 'accounts.bulk.track.on'], ['false', 'accounts.bulk.track.off']] },
+  { key: 'default_rating', label: 'chips.defrating', clear: true, opts: [
+    ['sfw', null], ['r18', null]] },
+  { key: 'default_content_type', label: 'chips.defcontent', clear: true,
+    opts: CONTENT_VALUES.map((v) => [v, null]) },
+  { key: 'is_favorite', label: 'accounts.fav', opts: [
+    ['true', 'accounts.bulk.fav.on'], ['false', 'accounts.bulk.fav.off']] },
+  { key: 'stars', label: 'filter.stars', clear: true, opts: [
+    ['5', null], ['4', null], ['3', null], ['2', null], ['1', null]] },
 ];
+
+/** 批次下拉的一個選項要顯示什麼。`null` = 顯示值本身（`sfw` / `r18` /
+ *  類型那些是資料，不翻譯）；`stars` 例外，畫成星星。 */
+function bulkOptText(fieldKey, value, textKey) {
+  if (fieldKey === 'stars') return '★'.repeat(Number(value));
+  return textKey ? t(textKey) : value;
+}
 
 function pickedCount() {
   return acctPickScope === 'all' ? acctAllIds.length : acctPicked.size;
@@ -1030,49 +1342,60 @@ function clearBulkFields() {
 function renderSelBar() {
   const bar = $('aSelBar');
   bar.classList.toggle('hidden', !acctSelecting);
-  $('aSelectMode').textContent = acctSelecting ? '離開選取' : '選取';
+  $('aSelectMode').textContent = t(acctSelecting
+    ? 'accounts.selectmode.exit' : 'accounts.selectmode');
   if (!acctSelecting) return;
 
   const pageN = state.accounts.length;
   const total = state.acctTotal;
   const n = pickedCount();
+  // 粗體當參數傳進去 —— 語系檔不准帶標記，而強調詞在句中的位置各語系不同。
   const scope = acctPickScope === 'all'
-    ? '（<b>全部符合篩選的</b>，不只這一頁）'
-    : '（本頁）';
+    ? t('accounts.sel.scope.all', { what: `<b>${esc(t('accounts.sel.scope.all.b'))}</b>` })
+    : t('accounts.sel.scope.page');
 
   // ⚠️ 兩顆按鈕、兩個數字。第二顆在 total ≤ pageN 時**不出現** ——
   // 那時它與第一顆同義，兩顆一樣的按鈕只會製造疑惑。
   const buttons = acctPickScope === 'all'
-    ? `<button type="button" class="ghost" data-sel="page">改成只選本頁 ${pageN}</button>`
-    : `<button type="button" class="ghost" data-sel="page">全選本頁 ${pageN}</button>`
+    ? `<button type="button" class="ghost" data-sel="page">${
+        esc(t('accounts.sel.onlypage', { n: fmt.num(pageN) }))}</button>`
+    : `<button type="button" class="ghost" data-sel="page">${
+        esc(t('accounts.sel.allpage', { n: fmt.num(pageN) }))}</button>`
       + (total > pageN
-        ? `<button type="button" class="ghost" data-sel="all">選取全部符合篩選的 ${
-            total.toLocaleString()}</button>`
+        ? `<button type="button" class="ghost" data-sel="all">${
+            esc(t('accounts.sel.allmatching', { n: fmt.num(total) }))}</button>`
         : '');
 
   const warn = acctPickScope === 'all' && total > pageN
-    ? `<div class="sel-warn">這超出目前這一頁 —— 套用會改到你現在<b>看不到</b>的 ${
-        (total - pageN).toLocaleString()} 個帳號。</div>`
+    ? `<div class="sel-warn">${esc(t('accounts.sel.warn.1'))}<br>${
+        t('accounts.sel.warn.2', {
+          n: fmt.num(total - pageN),
+          cannot: `<b>${esc(t('accounts.sel.warn.2.b'))}</b>`,
+        })}</div>`
     : '';
 
   const fields = BULK_FIELDS.map((f) =>
-    `<label class="chk">${f.label}<span data-bulk="${f.key}" class="ms-host"></span></label>`
+    `<label class="chk">${esc(t(f.label))}<span data-bulk="${
+      f.key}" class="ms-host"></span></label>`
   ).join('');
 
   bar.innerHTML = `
     <div class="sel-row">
-      <span class="sel-count">已選 <b>${n.toLocaleString()}</b> 個 ${scope}</span>
+      <span class="sel-count">${t('accounts.sel.count', {
+        n: `<b>${fmt.num(n)}</b>`, scope })}</span>
       ${buttons}
-      <button type="button" class="ghost" data-sel="none">清除選取</button>
+      <button type="button" class="ghost" data-sel="none">${
+        esc(t('media.sel.clear'))}</button>
     </div>
     ${warn}
     ${bar.dataset.note ? `<div class="sel-warn">${esc(bar.dataset.note)}</div>` : ''}
     <div class="sel-row">
       ${fields}
       <span class="spacer"></span>
-      <span class="muted">批次一律「選了再按套用」—— 與卡上 ♥★ 的立即生效不同</span>
+      <span class="muted">${esc(t('accounts.sel.applynote'))}</span>
       <button type="button" id="aBulkApply"${n ? '' : ' disabled'}
-        data-tip="${n ? '' : '先選帳號'}">套用</button>
+        data-tip="${n ? '' : esc(t('accounts.sel.pickaccounts'))}">${
+          esc(t('bulk.apply'))}</button>
     </div>`;
 
   // innerHTML 換完才有佔位元素可以掛。值從 bulkValues 回填 —— 重畫不清空。
@@ -1081,9 +1404,9 @@ function renderSelBar() {
     {
       label: '—',
       emptyText: '—',
-      ariaLabel: `批次${f.label}`,
-      values: f.opts.map(([v, t]) => ({ value: v, text: t }))
-        .concat(f.clear ? [{ value: '__clear__', text: '（清除）' }] : []),
+      ariaLabel: t('accounts.bulk.aria', { what: t(f.label) }),
+      values: f.opts.map(([v, key]) => ({ value: v, text: bulkOptText(f.key, v, key) }))
+        .concat(f.clear ? [{ value: '__clear__', text: t('bulk.clear') }] : []),
       value: bulkValues[f.key] || '',
       onChange: (v) => { bulkValues[f.key] = v; },
     },
@@ -1096,33 +1419,44 @@ function renderBulkPreview(fields) {
   const box = $('aBulkBox');
   if (!fields) { box.innerHTML = ''; return; }
   const n = pickedCount();
+  // 與批次列的下拉是**同一組字**（`accounts.bulk.*`）—— 選的時候與確認的時候
+  // 講法不一致，使用者會以為自己按到了別的東西。
   const LABEL = {
-    is_ignored: (v) => (v === 'true' ? '設為「忽略」' : '取消「忽略」'),
-    is_tracked: (v) => (v === 'true' ? '恢復追蹤' : '停止追蹤'),
-    is_favorite: (v) => (v === 'true' ? '加入我的最愛' : '移出我的最愛'),
-    default_rating: (v) => (v === '__clear__' ? '清除預設分級' : `預設分級設為 ${v}`),
-    default_content_type: (v) => (v === '__clear__' ? '清除預設類型' : `預設類型設為 ${v}`),
-    stars: (v) => (v === '__clear__' ? '清除評分' : `評分設為 ${v} 星`),
+    is_ignored: (v) => t(v === 'true' ? 'accounts.bulk.ignore.on' : 'accounts.bulk.ignore.off'),
+    is_tracked: (v) => t(v === 'true' ? 'accounts.bulk.track.on' : 'accounts.bulk.track.off'),
+    is_favorite: (v) => t(v === 'true' ? 'accounts.bulk.fav.on' : 'accounts.bulk.fav.off'),
+    default_rating: (v) => (v === '__clear__'
+      ? t('accounts.bulk.prev.rating.clear')
+      : t('accounts.bulk.prev.rating.set', { v })),
+    default_content_type: (v) => (v === '__clear__'
+      ? t('accounts.bulk.prev.content.clear')
+      : t('accounts.bulk.prev.content.set', { v })),
+    stars: (v) => (v === '__clear__'
+      ? t('accounts.bulk.prev.stars.clear')
+      : t('accounts.bulk.prev.stars.set', { n: fmt.num(Number(v)) })),
   };
   const lines = Object.entries(fields).map((e) => `<li>${esc(LABEL[e[0]](e[1]))}</li>`);
   if (fields.is_ignored === 'true') {
-    lines.push('<li>這些帳號之後<b>不會</b>被一鍵更新抓 ——'
-      + ' 抓取頁的「可抓 N 個」會跟著變少。</li>');
+    lines.push(`<li>${t('accounts.bulk.prev.ignored.note', {
+      not: `<b>${esc(t('accounts.bulk.prev.ignored.note.b'))}</b>`,
+    })}</li>`);
   }
   const batches = Math.ceil(n / BULK_ID_LIMIT);
   if (batches > 1) {
-    lines.push(`<li>會分 <b>${batches}</b> 批寫入 ——`
-      + ` SQLite 一次最多 ${BULK_ID_LIMIT} 個 id。</li>`);
+    lines.push(`<li>${t('accounts.bulk.prev.batches', {
+      n: `<b>${fmt.num(batches)}</b>`, limit: fmt.num(BULK_ID_LIMIT),
+    })}</li>`);
   }
   box.innerHTML = `<div class="bulk-box">
-    <h4>要改 ${n.toLocaleString()} 個帳號</h4>
+    <h4>${esc(tn('accounts.bulk.head', n))}</h4>
     <ul>${lines.join('')}
-      <li class="ok-line"><b>一則貼文、一個媒體都不會被刪或改。</b></li>
-      <li>沒有復原鍵，但可以再批次一次改回來。</li>
+      <li class="ok-line"><b>${esc(t('accounts.bulk.safe'))}</b></li>
+      <li>${esc(t('accounts.bulk.noundo'))}</li>
     </ul>
     <div class="row">
-      <button type="button" id="aBulkYes">確定，改 ${n.toLocaleString()} 個</button>
-      <button type="button" id="aBulkNo" class="ghost">取消</button>
+      <button type="button" id="aBulkYes">${
+        esc(t('accounts.bulk.confirm', { n: fmt.num(n) }))}</button>
+      <button type="button" id="aBulkNo" class="ghost">${esc(t('confirm.no'))}</button>
     </div>
     <div id="aBulkProgress" class="muted"></div>
   </div>`;
@@ -1142,9 +1476,11 @@ async function runBulk(fields) {
 
   for (let b = 0; b < batches.length; b++) {
     // 只有一批時不講「第 1/1 批」—— 那是噪音
-    prog.innerHTML = batches.length > 1
-      ? `寫入中… 第 ${b + 1} / ${batches.length} 批（${batches[b].length} 個）`
-      : '寫入中…';
+    prog.innerHTML = esc(batches.length > 1
+      ? t('accounts.bulk.batch', {
+          i: fmt.num(b + 1), total: fmt.num(batches.length), n: fmt.num(batches[b].length),
+        })
+      : t('accounts.bulk.writing'));
     const body = { ids: batches[b] };
     for (const [k, v] of Object.entries(fields)) {
       if (v === '__clear__') body[k] = '__clear__';
@@ -1163,23 +1499,31 @@ async function runBulk(fields) {
     } catch (e) {
       // ⚠️ **不回滾前面幾批**（跨批交易的代價不值），但一定要說清楚
       // 哪些已經生效 —— 讓使用者以為全部沒改，他會再按一次。
-      prog.innerHTML = `<span class="err">第 ${b + 1} 批失敗：${esc(e.message)}</span><br>`
+      prog.innerHTML = `<span class="err">${esc(t('accounts.bulk.batchfail', {
+        i: fmt.num(b + 1), msg: e.message }))}</span><br>`
         + (b > 0
-          ? `<b>前 ${b} 批（${updated.toLocaleString()} 個）已經生效</b>，沒有回滾。`
-          : '一筆都還沒改。');
+          ? t('accounts.bulk.partial', {
+              done: `<b>${esc(t('accounts.bulk.partial.b', {
+                b: fmt.num(b), n: fmt.num(updated) }))}</b>`,
+            })
+          : esc(t('accounts.bulk.nonechanged')));
       return;
     }
   }
 
   // ③ 結果。`missing` 一定要講 —— 只說「改好 4,650 個」而使用者選了 4,653，
   // 那 3 個去哪了沒人講得出來。
-  prog.innerHTML = `<span class="ok-line">改好 ${updated.toLocaleString()} 個。</span>`
+  prog.innerHTML = `<span class="ok-line">${
+      esc(t('accounts.bulk.done', { n: fmt.num(updated) }))}</span>`
     + (missing.length
-      ? `<br><span class="err">${missing.length} 個沒改到</span>`
-        + ` —— 這幾筆已經不存在了（期間被刪）：${
-          esc(missing.slice(0, 20).join('、'))}${missing.length > 20 ? ' …' : ''}`
+      ? `<br><span class="err">${
+          esc(tn('accounts.bulk.missing', missing.length))}</span>`
+        + esc(t('accounts.bulk.missing.why', {
+            ids: missing.slice(0, 20).join(t('common.listsep'))
+              + (missing.length > 20 ? ' …' : ''),
+          }))
       : '')
-    + (fields.is_ignored ? '<br>抓取頁的「可抓 N 個」已經跟著變了。' : '');
+    + (fields.is_ignored ? `<br>${esc(t('accounts.bulk.fetchable.changed'))}` : '');
 }
 
 function exitSelect() {
@@ -1217,12 +1561,11 @@ function paintPickedCards() {
 }
 
 $('aSelectMode').addEventListener('click', () => {
+  // 創作者檢視沒有帳號 id 可以批次。原因由 applyModeGate() 掛在按鈕上
+  // （data-tip + 常駐的 aria-describedby），這裡只負責不作用 ——
+  // 同一個元素上的 listener 依註冊順序觸發，dom.js 的 guard 比這一個晚掛。
+  if ($('aSelectMode').getAttribute('aria-disabled') === 'true') return;
   if (acctSelecting) { exitSelect(); return; }
-  // 創作者檢視沒有帳號 id 可以批次 —— 進不去，而且要說得出原因
-  if (state.acctMode !== 'accounts') {
-    $('aSelectMode').dataset.tip = '創作者不支援批次，切回「帳號」檢視';
-    return;
-  }
   acctSelecting = true;
   $('aSelBar').dataset.note = '';
   renderSelBar();
@@ -1253,7 +1596,7 @@ $('aSelBar').addEventListener('click', async (ev) => {
         acctAllIdSet = new Set(r.ids);
         acctPickScope = 'all';
       } catch (e) {
-        sel.textContent = `取不到 id：${e.message}`;
+        sel.textContent = t('accounts.sel.idsfailed', { msg: e.message });
         sel.disabled = false;
         return;
       }
@@ -1270,7 +1613,7 @@ $('aSelBar').addEventListener('click', async (ev) => {
     const fields = currentBulkFields();
     if (!Object.keys(fields).length) {
       // disabled 的兩種理由要分開：沒選帳號 vs 沒選欄位
-      $('aSelBar').dataset.note = '先選要改什麼（上面那排下拉還都是「—」）';
+      $('aSelBar').dataset.note = t('accounts.sel.pickfield');
       renderBulkPreview(null);
       renderSelBar();
       return;
@@ -1293,6 +1636,6 @@ $('aBulkBox').addEventListener('click', async (ev) => {
   } finally {
     acctBulkBusy = false;
     const no = $('aBulkNo');
-    if (no) { no.disabled = false; no.textContent = '關閉'; }
+    if (no) { no.disabled = false; no.textContent = t('accounts.bulk.close'); }
   }
 });

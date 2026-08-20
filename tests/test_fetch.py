@@ -178,6 +178,8 @@ def test_fetch_endpoint_rejects_x(cfg):
                         json={"platform": "x", "host": "x.com",
                               "acct": "a", "wait": True})
     assert r.status_code == 400
+    assert r.json()["code"] == "fetch.no_fetcher"
+    # X 只能由 extension 採集 —— 這一句是使用者唯一會看到的解釋。
     assert "extension" in r.json()["detail"]
 
 

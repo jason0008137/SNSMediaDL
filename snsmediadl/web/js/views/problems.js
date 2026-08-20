@@ -8,6 +8,7 @@
 // （「目前沒有失敗項目」），而不是像壞掉的空白。
 
 import { esc, mountDrops } from '../dom.js';
+import { fmt, t } from '../i18n.js';
 
 /** 日誌等級下拉的握把。⚠ 模組層而不是查 DOM：面板每次開都重畫，
  *  而 loadLogs() 也可能在面板還沒建好時被呼叫。 */
@@ -22,27 +23,30 @@ async function loadErrors(body) {
   try {
     errs = await api('/api/errors');
   } catch (e) {
-    box.innerHTML = `<div class="err">讀不到失敗清單：${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="err">${
+      esc(t('problems.errors.load', { msg: e.message }))}</div>`;
     return;
   }
   const n = errs.items.length;
-  body.querySelector('#errCount').textContent = `${n} 筆`;
+  body.querySelector('#errCount').textContent = t('problems.errors.count',
+                                                    { n: fmt.num(n) });
   const retryAll = body.querySelector('#retryAll');
   retryAll.disabled = !n;
   // disabled 一定要說得出原因，不然看起來就只是壞掉的按鈕
-  retryAll.dataset.tip = n ? '把全部失敗的媒體打回佇列' : '沒有失敗項目';
+  retryAll.dataset.tip = t(n ? 'problems.retryall.tip' : 'problems.retryall.none');
 
   box.innerHTML = n
     ? errs.items.map((e) => `
       <div class="err-row">
         <div>
           <b>${esc(e.screen_name || '?')}</b> · ${esc(e.post_id)} · ${esc(e.kind)}
-          <div class="msg">${esc(e.error || '未知錯誤')}（試過 ${e.attempt_count} 次）</div>
+          <div class="msg">${esc(e.error || t('problems.err.unknown'))}${
+            esc(t('problems.err.attempts', { n: fmt.num(e.attempt_count) }))}</div>
         </div>
         <span class="spacer"></span>
-        <button data-retry="${e.media_id}">重試</button>
+        <button data-retry="${e.media_id}">${esc(t('problems.retry'))}</button>
       </div>`).join('')
-    : '<p class="muted">目前沒有失敗項目。</p>';
+    : `<p class="muted">${esc(t('problems.errors.none'))}</p>`;
 }
 
 async function loadLogs(body) {
@@ -54,32 +58,33 @@ async function loadLogs(body) {
       ? data.items.map((r) =>
           `<span class="${esc(r.level)}">${esc(r.ts.slice(11, 19))} [${esc(r.level)}] ${esc(r.message)}</span>`
         ).join('\n')
-      : '（沒有日誌）';
+      : t('problems.logs.none');
   } catch (e) {
-    box.textContent = `讀不到日誌：${e.message}`;
+    box.textContent = t('problems.logs.load', { msg: e.message });
   }
 }
 
 export function openProblems() {
   return openOverlay({
-    title: '問題與日誌',
+    title: t('problems.title'),
     body: `
       <div class="ovl-section">
-        <h3>下載失敗　<span id="errCount" class="muted">—</span></h3>
-        <div id="errorList" class="errors"><p class="muted">載入中…</p></div>
+        <h3>${esc(t('problems.errors.title'))}&ensp;<span id="errCount" class="muted">—</span></h3>
+        <div id="errorList" class="errors"><p class="muted">${
+          esc(t('common.loading'))}</p></div>
         <div class="row">
           <span class="spacer"></span>
-          <button id="retryAll" disabled>重試全部失敗</button>
+          <button id="retryAll" disabled>${esc(t('problems.retryall'))}</button>
         </div>
         <p id="retryMsg" class="note"></p>
       </div>
       <div class="ovl-section">
-        <h3>伺服器日誌</h3>
+        <h3>${esc(t('problems.logs.title'))}</h3>
         <div class="row">
           <span id="logLevel" class="ms-host"></span>
-          <button id="refreshLogs" class="ghost">重新整理</button>
+          <button id="refreshLogs" class="ghost">${esc(t('problems.logs.refresh'))}</button>
         </div>
-        <pre id="logs" class="logs">載入中…</pre>
+        <pre id="logs" class="logs">${esc(t('common.loading'))}</pre>
       </div>`,
     onMount: (body) => {
       // 這個面板每次開都重畫 —— 下拉在這裡建。
@@ -87,7 +92,8 @@ export function openProblems() {
       // 也可能被呼叫到，那時 querySelector 會回 null。
       ({ logLevel } = mountDrops(body, {
         logLevel: {
-          label: '全部等級', emptyText: '全部等級', ariaLabel: '只看哪個等級',
+          label: t('problems.logs.level'), emptyText: t('problems.logs.level'),
+          ariaLabel: t('problems.logs.level.aria'),
           values: [{ value: 'ERROR' }, { value: 'WARNING' }, { value: 'INFO' }],
           onChange: () => loadLogs(body),
         },
@@ -106,7 +112,8 @@ export function openProblems() {
           refreshQueue();
         } catch (e) {
           btn.disabled = false;
-          body.querySelector('#retryMsg').textContent = `重試失敗：${e.message}`;
+          body.querySelector('#retryMsg').textContent =
+            t('problems.retry.failed', { msg: e.message });
         }
       });
 
@@ -114,13 +121,16 @@ export function openProblems() {
         ev.target.disabled = true;
         try {
           const r = await api('/api/media/retry-failed', { method: 'POST' });
-          body.querySelector('#retryMsg').textContent =
-            `已把 ${r.requeued} 個重新排入佇列 —— 它們還沒下載，`
-            + '要等背景下載開著、或按「立即下載」。';
+          // 「送出成功 ≠ 事情成功」的分離提示。⚠️ 兩句都留在畫面上 ——
+          // 收進氣泡的話，使用者會以為按完就在下載了。
+          body.querySelector('#retryMsg').innerHTML =
+            `${esc(t('problems.requeued', { n: fmt.num(r.requeued) }))}<br>`
+            + esc(t('problems.requeued.rest'));
           await loadErrors(body);
           refreshQueue();
         } catch (e) {
-          body.querySelector('#retryMsg').textContent = `失敗：${e.message}`;
+          body.querySelector('#retryMsg').textContent =
+            t('common.failed.msg', { msg: e.message });
           ev.target.disabled = false;
         }
       });

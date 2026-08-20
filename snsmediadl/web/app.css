@@ -464,7 +464,11 @@ button.small { padding: 4px 8px; font: var(--md-sys-typescale-label-small); }
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-corner-medium); padding: 4px 8px;
 }
-.fgroup-who { flex: 1 1 320px; min-width: 260px; }
+/* ⚠️ basis 就是**斷行的依據** —— flex 換行看的是 hypothetical size（basis 被
+   min/max 夾過的值），不是 min-width。basis 留 320 的話，帳號頁在 1440 px
+   基準下右端的 ⟳ 與「選取」會被擠到第二行，排序群組被拆開。
+   grow 仍然是 1，所以寬螢幕上它照樣吃掉剩餘空間，視覺沒有變窄。 */
+.fgroup-who { flex: 1 1 260px; min-width: 260px; }
 .fgroup-who input[type=search] { flex: 1; min-width: 0; }
 
 .fmore { position: relative; }
@@ -670,12 +674,24 @@ button.danger:active:not(:disabled) {
                         var(--md-sys-color-error));
 }
 
-/* (?) 說明鈕。低頻的格式規則進氣泡；**約束不進氣泡**（見 index.html 的註解）。 */
+/* (?) 說明鈕。**全站唯一的獨立說明入口符號** —— 不新增第二套。
+   理由三個：專案裡已經有 ?、語意對（? 是使用者主動問，資訊圖示是系統主動說）、
+   字型保證（資訊圖示那個字元在中文 fallback 下常變襯線體或方框）。
+
+   低頻的格式規則與原理進氣泡；**約束、作用範圍、破壞性後果不進氣泡**。 */
 .hintbtn {
+  position: relative;              /* ::before 的命中區靠它定位 */
   background: none; border: 1px solid var(--md-sys-color-outline);
   color: var(--md-sys-color-on-surface-variant);
   width: 18px; height: 18px; border-radius: var(--md-sys-shape-corner-full); padding: 0;
   font: var(--md-sys-typescale-label-small); line-height: 1; vertical-align: middle;
+}
+/* ⚠️ 視覺 18px、命中區 44px。**不可以直接把 width 改成 44px** ——
+   這顆鈕坐在 <h2> 裡，撐大盒子會把整行的行高推開。
+   疊一層透明的 ::before 才能在不動版面的前提下達到觸控目標下限
+   （M3 是 48dp；44 是 WCAG 2.5.8 的下限，這裡取 44 是因為 48 會蓋到隔壁的字）。 */
+.hintbtn::before {
+  content: ""; position: absolute; inset: -13px;
 }
 .hintbtn:hover {
   color: var(--md-sys-color-on-surface);
@@ -1035,7 +1051,89 @@ body.overlay-open { overflow: hidden; }
   font-weight: 700;
 }
 
-.viewmode { display: flex; align-items: center; gap: 8px; }
+/* ── M3 single-select segmented button ── */
+/* 帳號頁的檢視切換（帳號 / 創作者）。兩個選項互斥且**永遠有一個成立** ——
+   那正是 segmented button 的用途，radio + 文字前綴不是。
+
+   ⚠️ 選中態不能只靠顏色。填底（secondary-container）之外還加一個 ✓ ——
+   與 app.css 既有的 ✓ / ⚠ 形狀載體同一套做法。灰階螢幕、色覺差異、
+   以及把亮度調到最低的深夜，靠的都是那個勾。 */
+.segmented {
+  display: inline-flex; align-items: center; overflow: hidden;
+  height: 40px; box-sizing: border-box;
+  /* ⚠️ 外框走 `outline` 不是 `outline-variant`。實測 outline-variant 在 surface
+     上只有 **1.98:1**，達不到 UI 邊界的 3:1（scripts/contrast-pairs.txt 的規則：
+     互動元件邊界走 outline、純裝飾分隔才走 outline-variant）。
+     這個框是「這兩格是同一個控制項」的唯一載體，不能是裝飾級的。 */
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+}
+.segmented > [role="radio"] {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 100%; padding: 0 16px; border: 0; border-radius: 0;
+  background: none; color: var(--md-sys-color-on-surface-variant);
+  font: var(--md-sys-typescale-label-large); cursor: pointer;
+}
+/* 分隔線只畫在中間，不是每一格都給外框 —— 兩層框線會讓它看起來像兩顆按鈕。
+   這一條**可以**是 outline-variant：兩格永遠有一格是填底的，真正的分界是
+   那個填色邊緣，這條線只是在補足未選那側。 */
+.segmented > [role="radio"] + [role="radio"] {
+  border-left: 1px solid var(--md-sys-color-outline-variant);
+}
+.segmented > [role="radio"][aria-checked="true"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-weight: 600;
+}
+/* ⚠️ ✓ 的位置**每一格都保留**，只是沒選中時不畫。只在選中那格長出來的話，
+   兩格的寬度會隨著切換前後跳動 —— 使用者按下去的瞬間另一格自己位移了，
+   那是最容易誤按的一種抖動。M3 的 segmented button 也是這樣預留的。 */
+.segmented > [role="radio"]::before {
+  content: "✓"; width: 1em; visibility: hidden; flex: none;
+}
+.segmented > [role="radio"][aria-checked="true"]::before { visibility: visible; }
+.segmented > [role="radio"]:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-hover-opacity),
+                        transparent);
+}
+.segmented > [role="radio"][aria-checked="true"]:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-secondary-container)
+                        var(--md-sys-state-hover-opacity),
+                        var(--md-sys-color-secondary-container));
+}
+/* 焦點環畫在格子上而不是整個群組：roving tabindex 之下，使用者要看得出
+   焦點落在哪一格，不是「落在這組控制項上的某處」。 */
+.segmented > [role="radio"]:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px;
+}
+
+/* ── 整組 disabled 的自製下拉與 <details> ── */
+/* 創作者模式下 /api/creators 不吃篩選與排序。**不是隱藏** —— 隱藏會讓人
+   以為控制項不見了（切回來又出現，看起來像閃爍的 bug）。disabled + 原因
+   才回答得了「為什麼現在不能用」。
+
+   ⚠️ 沿用 `button:disabled` 那一套（底 12% / 字 38%），**不是整塊 opacity**：
+   整塊 opacity 會把邊框、文字一起壓掉，結果是「看不出這是什麼」而不是
+   「看得出這個現在不能用」。原生 <details> 沒有 disabled，所以自己畫。 */
+.msdrop.off > summary,
+.fmore.off > summary,
+button[aria-disabled="true"],
+input[aria-disabled="true"] {
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+  border-color: transparent;
+  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+}
+input[aria-disabled="true"]::placeholder {
+  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+}
+/* 沒有 hover 反應本身就是一種回饋：它告訴你這裡按下去不會有事發生。
+   ⚠️ 但**仍然收得到 mouseover** —— 原因就是靠它顯示的，這是不用原生
+   disabled 的整個理由。 */
+.msdrop.off > summary:hover, .fmore.off > summary:hover,
+button[aria-disabled="true"]:hover, input[aria-disabled="true"]:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+}
 
 /* ── 詳情面板 ── */
 .detail {

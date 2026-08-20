@@ -40,10 +40,10 @@
        原本的 Creators（0 筆）與「問題」（失敗 0 筆）已降級 ——
        前者進帳號頁的檢視切換與編輯抽屜，後者進 header 狀態區的 modal。
        兩者都仍在 3 步內到得了（可達性驗算見 UI_導覽結構 第三節）。 -->
-  <nav class="tabs" aria-label="主要導覽">
-    <button class="tab active" data-view="media" aria-current="page">媒體</button>
-    <button class="tab" data-view="accounts">帳號</button>
-    <button class="tab" data-view="fetch">抓取 <span id="fetchBadge" class="badge hidden">0</span></button>
+  <nav class="tabs" data-i18n-aria="nav.main.aria" aria-label="Main navigation">
+    <button class="tab active" data-view="media" aria-current="page" data-i18n="nav.media">Media</button>
+    <button class="tab" data-view="accounts" data-i18n="nav.accounts">Accounts</button>
+    <button class="tab" data-view="fetch"><span data-i18n="nav.fetch">Fetch</span> <span id="fetchBadge" class="badge hidden">0</span></button>
   </nav>
 
   <div class="header-right">
@@ -52,9 +52,10 @@
          像壞掉。 -->
     <button id="activityBtn" class="activity" aria-expanded="false" aria-controls="activityPop">
       <span class="dot" id="activityDot"></span>
-      <span id="activityLabel">背景活動</span>
+      <span id="activityLabel" data-i18n="header.activity">Activity</span>
     </button>
-    <button id="settingsBtn" class="icon-btn" data-tip="設定">⚙<span class="sr-only">設定</span></button>
+    <button id="settingsBtn" class="icon-btn" data-i18n-tip="header.settings" data-tip="Settings">⚙<span
+      class="sr-only" data-i18n="header.settings">Settings</span></button>
     <!-- 產品層摩擦，不准精簡掉。aria-pressed 而不是 checkbox：它的兩個狀態
          在視覺上差很多（關閉時是警示），用按鈕比較好講狀態。 -->
     <button id="safeBtn" class="safe-toggle" aria-pressed="true"></button>
@@ -64,9 +65,9 @@
       <div class="flow" id="flowFetch"></div>
       <div class="flow" id="flowExt"></div>
       <div class="flow-foot">
-        <span id="flowFailed" class="muted">失敗 —</span>
+        <span id="flowFailed" class="muted" data-i18n="header.failed">Failed —</span>
         <span class="spacer"></span>
-        <button id="openProblems" class="ghost small">問題與日誌 ▸</button>
+        <button id="openProblems" class="ghost small" data-i18n="header.problems">Problems & logs ▸</button>
       </div>
     </div>
   </div>
@@ -79,7 +80,8 @@
          只能滾，等於找不到。用原生 datalist —— 鍵盤操作與無障礙由瀏覽器處理。 -->
     <div class="fgroup fgroup-who">
       <input id="fAccountInput" list="fAccountList" type="search"
-             placeholder="🔍 帳號…（打字搜尋）" spellcheck="false" autocomplete="off">
+             data-i18n-ph="media.account.ph" placeholder="🔍 Account… (type to search)"
+             spellcheck="false" autocomplete="off">
       <datalist id="fAccountList"></datalist>
       <span id="fAccountHint" class="muted err"></span>
     </div>
@@ -89,24 +91,24 @@
          內容由 js/views/media.js 用 dom.js 的 multiDrop() 建 —— 值域集中在
          enums.js，寫死在 HTML 裡的話加一個 enum 值要改兩處。 -->
     <div class="fgroup">
-      <span class="ms-label">分級</span><span id="fRating" class="ms-host"></span>
-      <span class="ms-label">類型</span><span id="fContent" class="ms-host"></span>
-      <span class="ms-label">型別</span><span id="fKind" class="ms-host"></span>
+      <span class="ms-label" data-i18n="filter.rating">Rating</span><span id="fRating" class="ms-host"></span>
+      <span class="ms-label" data-i18n="filter.content">Content</span><span id="fContent" class="ms-host"></span>
+      <span class="ms-label" data-i18n="filter.kind">Kind</span><span id="fKind" class="ms-host"></span>
     </div>
 
     <!-- 群 C：在真實資料上鑑別力為零的三個（creator 0 位、狀態全 done、
          評分全 NULL）。**不是藏起來就算了** —— 空的下拉是「假預設用途」，
          看起來可選、點開空無一物。這裡各自寫出為什麼是空的。 -->
     <details class="fmore" id="fMore">
-      <summary>更多篩選</summary>
+      <summary data-i18n="filter.more">More filters</summary>
       <div class="fmore-body">
         <div class="fmore-row">
-          <span>下載狀態</span>
+          <span data-i18n="filter.status">Download status</span>
           <div id="fStatus"></div>
           <em id="fStatusNote" class="muted"></em>
         </div>
         <div class="fmore-row">
-          <span>評分</span>
+          <span data-i18n="filter.stars">Stars</span>
           <div id="fStars"></div>
           <em id="fStarsNote" class="muted"></em>
         </div>
@@ -116,11 +118,12 @@
     <span class="spacer"></span>
     <!-- 排序 = 鍵 + 方向兩個控制項。方向是**獨立、看得見**的按鈕，
          不是「在鍵上再按一次」那種隱藏互動。 -->
-    <span class="ms-label">排序</span>
-    <span id="fSortKey" class="ms-host" data-tip="依什麼排序"></span>
+    <span class="ms-label" data-i18n="sort.label">Sort</span>
+    <span id="fSortKey" class="ms-host" data-i18n-tip="sort.key.tip" data-tip="Sort by"></span>
     <button id="fSortDir" class="dirbtn" aria-live="polite">↓</button>
-    <button id="refresh" class="ghost" data-tip="重新載入目前檢視&#10;（保留篩選與頁碼）">⟳</button>
-    <button id="selectMode" class="ghost">選取模式</button>
+    <button id="refresh" class="ghost" data-i18n-tip="action.refresh.tip"
+            data-tip="Reload this view&#10;(keeps filters and page)">⟳</button>
+    <button id="selectMode" class="ghost" data-i18n="media.selectmode">Select mode</button>
   </div>
 
   <!-- 排序註記。**永遠佔位**，否則切換排序時整個版面會上下跳。
@@ -136,19 +139,20 @@
   <div id="mediaCount" class="count-line muted"></div>
 
   <div id="selBar" class="sel-bar hidden">
-    <span id="selInfo">已選 0 個媒體</span>
-    <button id="selAll" class="ghost">全選本頁</button>
-    <button id="selNone" class="ghost">清除選取</button>
+    <span id="selInfo" data-i18n="media.sel.info">0 media selected</span>
+    <button id="selAll" class="ghost" data-i18n="media.sel.all">Select page</button>
+    <button id="selNone" class="ghost" data-i18n="media.sel.clear">Clear selection</button>
     <span class="spacer"></span>
     <span id="bulkRating" class="ms-host"></span>
     <span id="bulkContent" class="ms-host"></span>
     <span id="bulkStars" class="ms-host"
-          data-tip="五星評分掛在媒體上，選幾個就改幾個&#10;（不像分級會影響整則貼文）"></span>
-    <button id="bulkApply">套用</button>
+          data-i18n-tip="bulk.stars.tip"
+          data-tip="Stars live on the media, so only the ones you picked change.&#10;(Unlike rating, which affects the whole post.)"></span>
+    <button id="bulkApply" data-i18n="bulk.apply">Apply</button>
     <span id="bulkConfirm" class="confirm hidden">
       <b id="bulkConfirmText"></b>
-      <button id="bulkYes">確定</button>
-      <button id="bulkNo" class="ghost">取消</button>
+      <button id="bulkYes" data-i18n="confirm.yes">Confirm</button>
+      <button id="bulkNo" class="ghost" data-i18n="confirm.no">Cancel</button>
     </span>
     <span id="bulkMsg" class="muted"></span>
   </div>
@@ -156,53 +160,67 @@
   <div id="grid" class="grid"></div>
 
   <div class="pager">
-    <button id="prevPage" class="ghost">← 上一頁</button>
+    <button id="prevPage" class="ghost" data-i18n="pager.prev">← Prev</button>
     <span id="pageInfo" class="muted"></span>
-    <button id="nextPage" class="ghost">下一頁 →</button>
+    <button id="nextPage" class="ghost" data-i18n="pager.next">Next →</button>
   </div>
 </section>
 
 <!-- ── 帳號 ── -->
 <section id="view-accounts" class="view hidden">
   <div class="filter-bar">
+    <!-- 檢視切換在**最左端**。它換的是資料集本身（不同的表、不同的 API、
+         不同的可用篩選值域），層級高於篩選與排序 —— 它一變，右邊那些控制項
+         全部失去意義，所以不能擺在被支配者旁邊。閱讀順序 = 支配順序。
+         元件是 M3 single-select segmented button：兩個選項互斥且永遠有一個
+         成立，正是它的用途。「檢視：」前綴刪掉，改掛群組的 aria-label。 -->
+    <div id="aViewMode" class="segmented" role="radiogroup"
+         data-i18n-aria="accounts.view.aria" aria-label="View">
+      <button type="button" role="radio" aria-checked="true" data-mode="accounts" data-i18n="accounts.view.accounts">Accounts</button>
+      <button type="button" role="radio" aria-checked="false" data-mode="creators"
+              tabindex="-1" data-i18n="accounts.view.creators">Creators</button>
+    </div>
+
     <!-- 4,653 筆 —— **搜尋是入口，清單不是**。給它最大寬度。 -->
     <div class="fgroup fgroup-who">
-      <input id="aSearch" type="search" placeholder="🔍 搜尋帳號名稱或 ID…" spellcheck="false">
+      <input id="aSearch" type="search" data-i18n-ph="accounts.search.ph"
+             placeholder="🔍 Search name or ID…" spellcheck="false">
     </div>
 
     <div class="fgroup">
       <!-- 選項帶筆數：選到一個 0 筆的平台會看到空清單，而空清單與「篩選壞了」
            長得一樣。筆數由 /api/accounts/platforms 填。 -->
-      <span id="aPlatform" class="ms-host" data-tip="只看某個平台的帳號"></span>
-      <span id="aSort" class="ms-host" data-tip="排序方式"></span>
+      <span id="aPlatform" class="ms-host" data-i18n-tip="accounts.platform.tip"
+            data-tip="Only accounts on one platform"></span>
       <!-- 「（未設定）」放在值清單的最前面：「哪些我還沒標」才是主要用例。
            選項在 js/views/accounts.js 的 wireAccountFilters()。 -->
       <span id="aDefaultRating" class="ms-host"
-            data-tip="帳號預設分級。會繼承給之後 ingest 的新貼文"></span>
+            data-i18n-tip="accounts.defrating.tip" data-tip="Account default rating. Inherited by newly ingested posts."></span>
       <span id="aDefaultContent" class="ms-host"
-            data-tip="帳號預設類型。會繼承給之後 ingest 的新貼文"></span>
+            data-i18n-tip="accounts.defcontent.tip" data-tip="Account default content type. Inherited by newly ingested posts."></span>
     </div>
 
     <details class="fmore" id="aMore">
-      <summary>更多篩選</summary>
+      <summary data-i18n="filter.more">More filters</summary>
       <div class="fmore-body">
         <div class="fmore-row">
-          <span>我的最愛</span>
-          <label class="chk"><input type="checkbox" id="aFavOnly"> 只看 ♥</label>
+          <span data-i18n="accounts.fav">Favorites</span>
+          <label class="chk"><input type="checkbox" id="aFavOnly"> <span data-i18n="accounts.favonly">Only ♥</span></label>
         </div>
         <div class="fmore-row">
-          <span>評分</span>
+          <span data-i18n="filter.stars">Stars</span>
           <div id="aStars"></div>
         </div>
         <!-- 「只看被忽略的」。放在收納區而不是主篩選列：常態是 0 筆
              （這是新旗標），主列上多一個永遠篩不到東西的下拉是雜訊。 -->
         <div class="fmore-row">
-          <span>忽略</span>
-          <div id="aIgnored" data-tip="被忽略的帳號不列入一鍵更新"></div>
+          <span data-i18n="accounts.ignored">Ignored</span>
+          <div id="aIgnored" data-i18n-tip="accounts.ignored.tip"
+               data-tip="Ignored accounts are skipped by Refresh all"></div>
           <em id="aIgnoredNote" class="muted"></em>
         </div>
         <div class="fmore-row">
-          <span>擷取結果</span>
+          <span data-i18n="accounts.fetchstatus">Fetch result</span>
           <div id="aFetchStatus"></div>
           <em id="aFetchNote" class="muted"></em>
         </div>
@@ -210,23 +228,35 @@
     </details>
 
     <span class="spacer"></span>
-
-    <!-- 帳號與創作者是**同一份資料的兩種分組方式**，不是兩個工作面 ——
-         所以用 radio，不做成第四個 tab。 -->
-    <div class="viewmode" role="radiogroup" aria-label="檢視">
-      <span class="muted">檢視：</span>
-      <label class="chk"><input type="radio" name="aView" value="accounts" checked> 帳號</label>
-      <label class="chk"><input type="radio" name="aView" value="creators"> 創作者</label>
-    </div>
+    <!-- 右端與媒體頁**逐節點相同**：排序鍵 + 方向鈕 + ⟳ + 選取。
+         同一個手勢在兩頁要有同一個意思，否則每次切頁都要重新學一次。 -->
+    <span class="ms-label" data-i18n="sort.label">Sort</span>
+    <span id="aSortKey" class="ms-host" data-i18n-tip="sort.key.tip" data-tip="Sort by"></span>
+    <button id="aSortDir" class="dirbtn" aria-live="polite">↓</button>
+    <button id="aRefresh" class="ghost" data-i18n-tip="action.refresh.tip"
+            data-tip="Reload this view&#10;(keeps filters and page)">⟳</button>
+    <button id="aSelectMode" class="ghost" data-i18n="accounts.selectmode">Select</button>
   </div>
+
+  <!-- 排序註記。**永遠佔位**，否則切換排序時整個版面會上下跳。
+       `last_fetch` 是唯一非講不可的：後端對它刻意反轉 NULL 規則（升冪時
+       「從沒檢查過」排最前，因為那些最該查）。方向鈕一按就翻，沒有註記的話
+       這看起來像 bug。 -->
+  <div id="aSortNote" class="sort-note"></div>
+
+  <!-- 生效條件。現況只有在**篩到 0 筆**時才把條件串成一句話 —— 也就是說
+       篩到 3,000 筆時完全看不見自己選了什麼，而那正是最容易誤判的情況。 -->
+  <div id="aChipBar" class="chip-bar hidden"></div>
 
   <div class="count-line muted">
     <span id="accountCount"></span>
     <span class="spacer"></span>
     <!-- 同一個畫面上混用兩種儲存模型（♥★ 立即生效 vs 抽屜裡按儲存）
-         一定要宣告，否則使用者會不知道自己剛才那一下有沒有存進去。 -->
-    <span>♥ 與 ★ 點了<b>立即生效</b>；其餘設定在 [編輯] 裡按儲存</span>
-    <button id="aSelectMode" class="ghost">選取</button>
+         一定要宣告，否則使用者會不知道自己剛才那一下有沒有存進去。
+         ⚠ 宣告本身是 A 桶，**只有細節進氣泡** —— 整句收起來就等於沒宣告。 -->
+    <span><span data-i18n="accounts.savemodel">♥★ save instantly, the rest need Save</span><button type="button" class="hintbtn"
+      data-i18n-aria="help.aria" aria-label="Help"
+      data-i18n-tip="accounts.savemodel.tip" data-tip="♥ and ★ on a card are written to the database immediately — there is no Save button.&#10;Rating, content type and creator are edited in the [Edit] drawer and need Save.&#10;Bulk edits are the same: pick first, then Apply.">?</button></span>
   </div>
 
   <!-- 選取與批次。整塊共域 —— 它是一組相關的控制項，而且會整塊出現／消失。
@@ -242,9 +272,9 @@
     <div id="accountList" class="cards"></div>
     <div id="acctSentinel"></div>
     <div class="pager">
-      <button id="aPrev" class="ghost">← 上一頁</button>
+      <button id="aPrev" class="ghost" data-i18n="pager.prev">← Prev</button>
       <span id="aPageInfo" class="muted"></span>
-      <button id="aNext" class="ghost">下一頁 →</button>
+      <button id="aNext" class="ghost" data-i18n="pager.next">Next →</button>
     </div>
   </div>
 
@@ -257,45 +287,52 @@
 <section id="view-fetch" class="view hidden">
   <div class="fetch-grid">
     <div class="fetch-box">
-      <h2>貼網址批次抓
-        <button class="hintbtn" data-tip="一行一個帳號網址（misskey.io / baraag.net / pixiv）。&#10;空白行與 # 開頭會略過。&#10;其他 Fediverse 站台可用 misskey|https://站台/@someone 指定平台。">?</button>
+      <h2><span data-i18n="fetch.paste.title">Batch fetch by URL</span>
+        <button type="button" class="hintbtn" data-i18n-aria="help.aria" aria-label="Help"
+          data-i18n-tip="fetch.paste.tip" data-tip="One account URL per line (misskey.io / baraag.net / pixiv).&#10;Blank lines and lines starting with # are skipped.&#10;For other Fediverse sites use misskey|https://site/@someone.">?</button>
       </h2>
       <textarea id="fetchUrls" rows="7" spellcheck="false"
         placeholder="https://misskey.io/@someone&#10;https://baraag.net/@artist/media&#10;https://www.pixiv.net/users/12345"></textarea>
       <div class="fetch-actions">
-        <label class="chk"><input type="checkbox" id="fetchDownload" checked> 抓完就下載</label>
-        <label class="chk" data-tip="不因碰到已抓過的貼文就停。&#10;用於補抓中間漏掉的">
-          <input type="checkbox" id="fetchFull"> 完整重掃
+        <label class="chk"><input type="checkbox" id="fetchDownload" checked> <span data-i18n="fetch.download">Download after fetch</span></label>
+        <label class="chk" data-i18n-tip="fetch.full.tip" data-tip="Do not stop at posts already fetched.&#10;Use this to fill gaps in the middle.">
+          <input type="checkbox" id="fetchFull"> <span data-i18n="fetch.full">Full rescan</span>
         </label>
         <span class="spacer"></span>
         <!-- 「解析不寫入任何東西」貼著按鈕，**不進氣泡** ——
              它是使用者敢不敢按下去的關鍵。 -->
-        <span class="muted">解析只是預覽，不寫入任何東西</span>
-        <button id="parseUrls">解析</button>
-        <button id="submitUrls" class="primary" disabled>送出</button>
+        <span class="muted" data-i18n="fetch.parse.note">Parsing is a preview. Nothing is written.</span>
+        <button id="parseUrls" data-i18n="fetch.parse">Parse</button>
+        <button id="submitUrls" class="primary" disabled data-i18n="fetch.submit">Submit</button>
       </div>
       <div id="parseResult" class="parse-result"></div>
     </div>
 
     <div class="fetch-box">
-      <h2>一鍵更新</h2>
-      <p class="muted">把資料庫裡<b>追蹤中</b>的帳號各跑一次增量 —— 只抓還沒抓過的。</p>
+      <h2 data-i18n="fetch.refreshall.title">Refresh all</h2>
+      <!-- ⚠️ 強調的詞拆成獨立的 key：三個語系都剛好是「追蹤中」在句首，
+           所以 <b> 留在樣板側、翻譯檔只放純文字（語系檔不准帶標記）。 -->
+      <p class="muted"><b data-i18n="fetch.refreshall.who">Tracked</b><span
+        data-i18n="fetch.refreshall.rest"> accounts, one incremental run each</span><button type="button"
+        class="hintbtn" data-i18n-aria="help.aria" aria-label="Help"
+        data-i18n-tip="fetch.refreshall.tip" data-tip="Incremental: stops at the first known post, nothing is re-fetched.&#10;Ignored and untracked accounts are skipped; each reason is listed when the run finishes.">?</button></p>
       <!-- D2：**90.5% 的帳號 backend 抓不動**。這不是邊緣情況，是多數情況，
            所以在按下去之前就要看得見，不能等送出後逐筆報「跳過」。 -->
-      <div id="refreshScope" class="scope-box">計算中…</div>
+      <div id="refreshScope" class="scope-box" data-i18n="fetch.scope.calc">Calculating…</div>
       <div class="fetch-actions">
-        <label class="chk" data-tip="pixiv 節流很慢（1.8 秒一個請求、併發 1）&#10;一個帳號可能跑很久">
-          <input type="checkbox" id="includePixiv"> 包含 pixiv
+        <label class="chk" data-i18n-tip="fetch.pixiv.tip" data-tip="pixiv is throttled hard (1.8 s per request, concurrency 1).&#10;One account can take a long time.">
+          <input type="checkbox" id="includePixiv"> <span data-i18n="fetch.pixiv">Include pixiv</span>
         </label>
         <span class="spacer"></span>
-        <button id="refreshAll" class="primary">開始更新</button>
+        <button id="refreshAll" class="primary" data-i18n="fetch.start">Start</button>
       </div>
       <div id="refreshResult" class="parse-result"></div>
     </div>
   </div>
 
-  <h2>抓取佇列
-    <button class="hintbtn" data-tip="佇列只在記憶體裡 —— backend 重啟就沒了。&#10;重跑的成本很低（增量），需要時再貼一次即可。">?</button>
+  <h2><span data-i18n="fetch.queue.title">Fetch queue</span>
+    <button type="button" class="hintbtn" data-i18n-aria="help.aria" aria-label="Help"
+      data-i18n-tip="fetch.queue.tip" data-tip="The queue lives in memory only — restarting the backend clears it.&#10;Re-running is cheap (incremental); just paste again when needed.">?</button>
   </h2>
 
   <!-- ③ 結果 + 評價。「跑完了算好還是壞」是這一頁最重要的一題，
@@ -309,18 +346,18 @@
 
   <div class="queue-summary">
     <span id="fetchQueueSummary" class="muted">—</span>
-    <span id="fetchVolatile" class="muted hidden">· 重啟後會清空</span>
+    <span id="fetchVolatile" class="muted hidden" data-i18n="fetch.queue.volatile">· Cleared on restart</span>
     <span class="spacer"></span>
-    <button id="clearFetchQueue" class="ghost">清空未開始的</button>
-    <button id="clearRateLimit" class="ghost hidden">解除限速標記</button>
+    <button id="clearFetchQueue" class="ghost" data-i18n="fetch.queue.clear">Clear pending</button>
+    <button id="clearRateLimit" class="ghost hidden" data-i18n="fetch.ratelimit.clear">Clear rate-limit flags</button>
   </div>
   <div id="fetchProgress" class="progress hidden"><span></span></div>
   <div id="fetchQueue" class="fetch-jobs"></div>
 </section>
 
 <!-- ── 媒體詳情面板 ── -->
-<aside id="detail" class="detail hidden" aria-label="媒體詳情">
-  <button id="closeDetail" class="close" data-tip="關閉（Esc）">×</button>
+<aside id="detail" class="detail hidden" data-i18n-aria="detail.aria" aria-label="Media details">
+  <button id="closeDetail" class="close" data-i18n-tip="detail.close.tip" data-tip="Close (Esc)">×</button>
   <div id="detailBody"></div>
 </aside>
 

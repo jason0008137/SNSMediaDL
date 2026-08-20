@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..db.enums import AccountRole
 from ..db.models import Account, Creator, Media, Post
 from .app import get_session
+from .errors import ApiError
 
 router = APIRouter(prefix="/api", tags=["creators"])
 
@@ -63,7 +64,7 @@ def create_creator(body: CreatorIn, session: Session = Depends(get_session)) -> 
 def get_creator(creator_id: int, session: Session = Depends(get_session)) -> dict:
     creator = session.get(Creator, creator_id)
     if creator is None:
-        raise HTTPException(status_code=404, detail="creator not found")
+        raise ApiError("creator.not_found", "No such creator.", 404)
     return _creator_dict(creator)
 
 
@@ -73,7 +74,7 @@ def patch_creator(
 ) -> dict:
     creator = session.get(Creator, creator_id)
     if creator is None:
-        raise HTTPException(status_code=404, detail="creator not found")
+        raise ApiError("creator.not_found", "No such creator.", 404)
     if body.display_name is not None:
         creator.display_name = body.display_name
     if body.note is not None:
@@ -93,13 +94,12 @@ def link_account(
     """
     account = session.get(Account, account_id)
     if account is None:
-        raise HTTPException(status_code=404, detail="account not found")
+        raise ApiError("account.not_found", "No such account.", 404)
     if session.get(Creator, body.creator_id) is None:
-        raise HTTPException(status_code=404, detail="creator not found")
+        raise ApiError("creator.not_found", "No such creator.", 404)
     if body.role is not None and body.role not in AccountRole.values():
-        raise HTTPException(
-            status_code=422, detail=f"role 必須是 {AccountRole.values()} 之一"
-        )
+        raise ApiError(
+            "link.bad_role", f"role must be one of {AccountRole.values()}.")
 
     account.creator_id = body.creator_id
     account.role = body.role
@@ -111,7 +111,7 @@ def link_account(
 def unlink_account(account_id: int, session: Session = Depends(get_session)) -> dict:
     account = session.get(Account, account_id)
     if account is None:
-        raise HTTPException(status_code=404, detail="account not found")
+        raise ApiError("account.not_found", "No such account.", 404)
     account.creator_id = None
     account.role = None
     session.commit()
@@ -122,7 +122,7 @@ def unlink_account(account_id: int, session: Session = Depends(get_session)) -> 
 def creator_media(creator_id: int, session: Session = Depends(get_session)) -> list[dict]:
     """該作者跨所有平台、所有帳號的媒體。"""
     if session.get(Creator, creator_id) is None:
-        raise HTTPException(status_code=404, detail="creator not found")
+        raise ApiError("creator.not_found", "No such creator.", 404)
 
     stmt = (
         select(Media)

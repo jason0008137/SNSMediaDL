@@ -218,6 +218,8 @@ def test_delete_endpoint_flow(cfg, sample_account):
         # 沒帶 confirm：擋下來，而且要把數字講出來
         blocked = client.delete(f"/api/accounts/{account_id}")
         assert blocked.status_code == 400
+        assert blocked.json()["code"] == "delete.confirm_required"
+        # 數字仍然要講出來：使用者要在按下去之前知道會刪掉多少。
         assert str(preview["posts"]) in blocked.json()["detail"]
 
         ok = client.delete(f"/api/accounts/{account_id}?confirm=true")

@@ -1,6 +1,7 @@
 // 啟動、輪詢節奏、view 註冊。**這是唯一的進入點**（index.html 只載這一支）。
 
 import { $ } from './dom.js';
+import { applyI18n, initI18n } from './i18n.js';
 import { state } from './state.js';
 import { registerView, wireTabs } from './nav.js';
 import { refreshQueue, loadSettings, onQueueChange } from './queue.js';
@@ -57,6 +58,20 @@ document.addEventListener('visibilitychange', () => {
 
 // ── 啟動 ───────────────────────────────────────────────
 async function init() {
+  // ⚠️ **語言要在任何 view 渲染之前決定並載入完成**，否則第一屏會閃一次
+  // 空字串或 key 名。localhost 一次往返可以忽略，而「首屏閃一下」是那種
+  // 每次開頁都會看到、又不值得回報的爛體驗。
+  //
+  // 語言存在後端偏好（`prefs.json`，與 `config.toml` 分開：一份是人寫的、
+  // 一份是程式寫的），不是 localStorage —— 兩個真實來源必然漂移，
+  // 症狀是「換了語言，重開又變回去」。
+  //
+  // ⚠️ backend 掛掉時用 'en'：那是 Config.language 的預設值，不是猜的。
+  // 而且「backend 沒回應」已經由佇列列與設定頁各講一次，這裡不必再報一次。
+  const boot = await loadSettings();
+  await initI18n(boot?.language);
+  applyI18n();
+
   initTooltips();
 
   // 各 view 的載入函式註冊給 nav（見 nav.js 的循環相依與快取說明）。
@@ -89,7 +104,7 @@ async function init() {
   // 舊版序列 await 六個請求，最慢的那個決定了「開頁到看見東西」的時間。
   wireAccountPicker();
   const rest = Promise.all([
-    loadSettings(),
+    // ⚠️ `loadSettings()` 已經在最上面 await 過（語言要它）—— 這裡不再問一次。
     // creator 清單很小，但媒體頁的下拉與帳號抽屜都要用它
     loadCreatorList().catch(() => {}),
     pollOnce({ force: true }),
@@ -103,8 +118,11 @@ async function init() {
 // rejection —— 畫面停在空白，console 也可能沒有紅字（實測遇過）。
 // 使用者看到的是「打開就是空的」，而那跟「資料庫是空的」長得一模一樣。
 init().catch((err) => {
-  console.error('SNSMediaDL 啟動失敗', err);
+  console.error('SNSMediaDL failed to start', err);
   document.body.insertAdjacentHTML('afterbegin',
-    `<div class="boot-error">GUI 啟動失敗：${err.message}
-     <br><small>詳情看瀏覽器主控台。這通常代表前端有 bug，不是資料的問題。</small></div>`);
+    // ⚠️ 這裡**不能**用 t()：啟動失敗的原因很可能就是 i18n 自己沒載成功。
+    //    英文寫死 —— 這是全站唯一一處刻意不走語系檔的使用者可見字串。
+    `<div class="boot-error">GUI failed to start: ${err.message}
+     <br><small>See the browser console. This usually means a frontend bug,
+     not a data problem.</small></div>`);
 });

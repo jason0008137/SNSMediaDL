@@ -9,6 +9,9 @@ import {
   starsHtml, wireStars,
 } from '../dom.js';
 import { api } from '../api.js';
+import { fmt, t } from '../i18n.js';
+import { makeChipBar } from '../chips.js';
+import { makeSortControl } from '../sortctl.js';
 import { PAGE, state, safeMode, onSafeModeChange } from '../state.js';
 import { showView, invalidateView } from '../nav.js';
 import {
@@ -39,15 +42,16 @@ onSafeModeChange(() => {
  *  留著還有害：那些 id 現在是 `<span>`，`.value` 回 undefined ——
  *  條件會靜默消失，不報錯、標籤列也不顯示。 */
 const FILTERS = [
-  { id: 'fRating', param: 'rating', label: '分級' },
-  { id: 'fContent', param: 'content_type', label: '類型' },
-  { id: 'fKind', param: 'kind', label: '型別' },
-  { id: 'fStatus', param: 'status', label: '下載狀態' },
+  // ⚠️ `label` 是 **key 不是文字**（模組載入時 i18n 還沒載完）。
+  { id: 'fRating', param: 'rating', label: 'filter.rating' },
+  { id: 'fContent', param: 'content_type', label: 'filter.content' },
+  { id: 'fKind', param: 'kind', label: 'filter.kind' },
+  { id: 'fStatus', param: 'status', label: 'filter.status' },
   // ⚠️ 評分是**篩特定星數**（`stars=3,5`），不是「幾星以上」。
   // 舊版是 min_stars（`>=`），2026-08-19 使用者裁示改掉：
   // 「不要用幾星以上，直接篩那個星數，讓我多選就可以了」。
   // 後端也一起換了，**沒有留 min_stars** —— 兩套語意並存遲早會用錯。
-  { id: 'fStars', param: 'stars', label: '評分' },
+  { id: 'fStars', param: 'stars', label: 'filter.stars' },
 ];
 
 /** 評分下拉的選項。值是數字字串（後端的 `stars` 吃 1–5），顯示是星星。
@@ -91,7 +95,8 @@ export function mediaFilters() {
 function activeConditions() {
   const out = [];
   if (state.accountFilter) {
-    out.push({ kind: 'account', label: '帳號', value: state.accountLabel || state.accountFilter });
+    out.push({ kind: 'account', label: t('chips.account'),
+               value: state.accountLabel || state.accountFilter });
   }
   if (state.creatorFilter) {
     out.push({ kind: 'creator', label: 'creator', value: state.creatorLabel || state.creatorFilter });
@@ -101,7 +106,8 @@ function activeConditions() {
     if (!vals.length) continue;
     // 同一組內是 OR。**「或」要看得見** —— 不寫出來的話，
     // 使用者會以為勾兩個是「同時符合」，然後奇怪為什麼筆數變多了。
-    out.push({ kind: 'multi', id: f.id, label: f.label, value: vals.join(' 或 ') });
+    out.push({ kind: 'multi', id: f.id, label: t(f.label),
+               value: vals.join(t('chips.or')) });
   }
   return out;
 }
@@ -111,19 +117,14 @@ function fullySelected(id, all) {
   return drops[id] && drops[id].get().length === all.length;
 }
 
-function renderChips() {
-  const bar = $('chipBar');
-  const conds = activeConditions();
-  bar.classList.toggle('hidden', conds.length === 0);
-  if (!conds.length) { bar.innerHTML = ''; return; }
-  bar.innerHTML = '<span class="lead">生效中：</span>'
-    + conds.map((c) => `<span class="chip">${esc(c.label)}
-        <b>${esc(c.value)}</b>
-        <button type="button" data-clear="${esc(c.kind === 'account' || c.kind === 'creator' ? c.kind : c.id)}"
-                aria-label="移除這個條件">×</button></span>`).join('')
-    + '<span class="spacer"></span>'
-    + '<button type="button" class="ghost small" data-clear="__all__">全部清除</button>';
-}
+/** 標籤列。渲染與事件委派在 `chips.js`（帳號頁共用同一份）——
+ *  這裡只提供值域與「清掉某一組」該做什麼。 */
+const chipBar = makeChipBar({
+  host: $('chipBar'),
+  sources: activeConditions,
+  onClear: clearCondition,
+});
+const renderChips = () => chipBar.render();
 
 function clearCondition(what) {
   const clearOne = (f) => drops[f.id].clear();
@@ -146,59 +147,68 @@ function clearCondition(what) {
   loadMedia();
 }
 
-$('chipBar').addEventListener('click', (ev) => {
-  const btn = ev.target.closest('[data-clear]');
-  if (btn) clearCondition(btn.dataset.clear);
-});
-
 // ── 排序：鍵 + 方向兩個獨立控制項 ──────────────────────
 //
 // 方向是**看得見的獨立按鈕**，不是「在鍵上再按一次」。後者的指意只寫得進
 // hover 提示，鍵盤與觸控使用者永遠看不到。
 
 const SORT_KEYS = ['added', 'posted', 'stars'];
-const SORT_ORDERS = ['desc', 'asc'];
 
 /** 排序鍵下拉的顯示字。值域就是 `SORT_KEYS`，不另立一份。 */
-const SORT_KEY_TEXT = { added: '加入順序', posted: '推文時間', stars: '評分' };
+// ⚠️ 值是 key。makeSortControl 拿到之後才 t()。
+const SORT_KEY_TEXT = {
+  added: 'media.sort.added', posted: 'media.sort.posted', stars: 'media.sort.stars',
+};
 
 /** 每個鍵的預設方向。換鍵時套用它，而不是沿用上一個鍵的方向 ——
  *  「評分 · 低→高」不是任何人想要的第一眼。 */
 const DEFAULT_ORDER = { added: 'desc', posted: 'desc', stars: 'desc' };
 
-/** 方向鈕的完整語意。按鈕上只有箭頭（使用者裁示：文字太長），
- *  所以兩可的地方靠 aria-label 與提示補：說的是**目前**的順序。 */
-const DIR_TEXT = {
-  added: { desc: '目前：新→舊。按一下改成舊→新', asc: '目前：舊→新。按一下改成新→舊' },
-  posted: { desc: '目前：新→舊。按一下改成舊→新', asc: '目前：舊→新。按一下改成新→舊' },
-  stars: { desc: '目前：高→低。按一下改成低→高', asc: '目前：低→高。按一下改成高→低' },
+/** 方向鈕的語彙。按鈕上只有箭頭（使用者裁示：文字太長），所以兩可的地方
+ *  靠 aria-label 與提示補：說的是**目前**的順序。整句由 `sortctl.js` 組。 */
+const DIR_WORDS = {
+  added: { desc: 'dir.newold', asc: 'dir.oldnew' },
+  posted: { desc: 'dir.newold', asc: 'dir.oldnew' },
+  stars: { desc: 'dir.highlow', asc: 'dir.lowhigh' },
 };
 
 /** 選到某個鍵時要講的話。空字串 = 沒有要講的，但那一列仍然佔位。 */
 const SORT_NOTE = {
   added: '',
-  posted: '時間未知的媒體固定排在最後（升冪、降冪都一樣）',
-  stars: '目前全庫幾乎都還沒評分，這個順序的鑑別力很低',
+  posted: 'media.sortnote.posted',
+  stars: 'media.sortnote.stars',
 };
 
-/** ⚠️ `drops.fSortKey` 由 `wireFilters()` 建立 —— 這個函式在那之前不能呼叫。
- *  `main.js` 的順序（wireFilters → restoreSort → loadMedia）已經保證了。 */
-const sortKey = () => drops.fSortKey.get();
-const sortOrder = () => ($('fSortDir').dataset.order === 'asc' ? 'asc' : 'desc');
+/** 鍵下拉 + 方向鈕 + 註記 + 存檔白名單，全部在 `sortctl.js`（帳號頁共用）。
+ *  ⚠️ 它會**立刻**建出下拉，所以這一行必須在 `$('fSortKey')` 存在之後跑 ——
+ *  模組頂層即可（HTML 是靜態的）。 */
+const sortCtl = makeSortControl({
+  keyHost: $('fSortKey'),
+  dirBtn: $('fSortDir'),
+  noteEl: $('sortNote'),
+  keys: SORT_KEYS,
+  labels: SORT_KEY_TEXT,
+  defaultOrder: DEFAULT_ORDER,
+  dirWords: DIR_WORDS,
+  notes: SORT_NOTE,
+  storageKey: 'mediaSort',
+  // 分段控制之前那一版存的是這三個裸字串。`stars` 是裸鍵，會被自動解析，
+  // 不必列。
+  legacy: { newest: 'added:desc', oldest: 'added:asc' },
+  onChange: () => {
+    // ⚠️ 游標堆疊一定要清空：換了排序之後，舊游標指的是另一種順序裡的位置，
+    // 拿去翻頁會拿到一頁莫名其妙的東西（而且看起來像資料壞了）。
+    resetMediaPaging();
+    // 排序不改變筆數 —— **不重算總數**，省掉一次 1.3 秒的 COUNT。
+    loadMedia({ withCount: false });
+  },
+});
+
+const sortKey = () => sortCtl.key();
+const sortOrder = () => sortCtl.order();
 
 /** `sort=stars` 的排序鍵是 (stars, id) 複合又含 NULL，後端不支援 keyset。 */
 const usesKeyset = () => sortKey() !== 'stars';
-
-function paintSortControls() {
-  const key = sortKey();
-  const order = sortOrder();
-  const btn = $('fSortDir');
-  btn.textContent = order === 'desc' ? '↓' : '↑';
-  const why = DIR_TEXT[key][order];
-  btn.setAttribute('aria-label', `排序方向。${why}`);
-  btn.dataset.tip = why;
-  $('sortNote').textContent = SORT_NOTE[key];
-}
 
 function mediaQuery() {
   const p = mediaFilters();
@@ -237,29 +247,36 @@ let countAbort = null;
 function paintCount() {
   const el = $('mediaCount');
   if (state.total == null) return;
-  const parts = [`共 <b class="todo">${state.total.toLocaleString()}</b> 個媒體`];
+  // ⚠️ 數字包在 <b> 裡，所以拆成 pre/post 兩半 —— 語系檔不准帶標記。
+  const parts = [t('media.count.total',
+    { n: `<b class="todo">${fmt.num(state.total)}</b>` })];
   const filtered = activeConditions().length > 0;
   // 0 筆時不講百分比 —— 「全庫的 0.00%」是噪音，那時該講的是**為什麼是 0**
   // （下面那句「另有 N 筆因安全模式隱藏」與空狀態）。
   if (filtered && state.total && state.libTotal) {
     const pct = (state.total / state.libTotal) * 100;
-    parts.push(`<span class="muted">（目前條件下的全庫 ${state.libTotal.toLocaleString()} 的 ${
-      pct >= 1 ? pct.toFixed(0) : pct.toFixed(2)}%）</span>`);
+    parts.push(`<span class="muted">${esc(t('media.count.pct', {
+      total: fmt.num(state.libTotal),
+      pct: pct >= 1 ? pct.toFixed(0) : pct.toFixed(2) }))}</span>`);
   }
   if (state.hiddenBySafe) {
-    parts.push(`<span class="hidden-note">另有 ${state.hiddenBySafe.toLocaleString()}`
-      + ' 筆因安全模式隱藏</span>');
+    parts.push(`<span class="hidden-note">${
+      esc(t('media.count.hidden', { n: fmt.num(state.hiddenBySafe) }))}</span>`);
   }
   // ⚠️ **勾滿 ≠ 不勾。** `rating IN ('sfw','r18')` 會濾掉 rating 是 NULL 的那些，
   // 不勾才是全都要。不做「勾滿自動視為不勾」的貼心處理 —— 那會讓未標記的
   // 筆數靜默消失，正是根因原則禁止的兜底。改成把差異講出來。
   const full = [];
-  if (fullySelected('fRating', RATING_VALUES)) full.push('分級');
-  if (fullySelected('fContent', CONTENT_VALUES)) full.push('類型');
-  if (fullySelected('fKind', KINDS)) full.push('型別');
+  if (fullySelected('fRating', RATING_VALUES)) full.push(t('filter.rating'));
+  if (fullySelected('fContent', CONTENT_VALUES)) full.push(t('filter.content'));
+  if (fullySelected('fKind', KINDS)) full.push(t('filter.kind'));
   if (full.length) {
-    parts.push(`<span class="hidden-note">${esc(full.join('、'))}已勾滿 ——`
-      + ' 但「未標記」的不在任何一格，全部取消勾選才是全都要</span>');
+    // ⚠️ 兩句都留在畫面上 —— 這解釋的是一個會**靜默漏資料**的陷阱
+    // （勾滿 ≠ 不勾：未標記的不在任何一格），收進氣泡等於沒有。
+    // 拆成兩句是為了單句進得了 24 全形字，不是為了少講。
+    parts.push(`<span class="hidden-note">${
+      esc(t('media.count.full', { fields: full.join(t('common.listsep')) }))}<br>`
+      + esc(t('media.count.full.2')) + '</span>');
   }
   el.innerHTML = parts.join(' ');
   el.className = 'count-line muted';
@@ -271,7 +288,7 @@ async function refreshMediaCount() {
   countAbort = new AbortController();
   const signal = countAbort.signal;
 
-  $('mediaCount').textContent = '計算總數…';
+  $('mediaCount').textContent = t('media.count.calc');
   $('mediaCount').className = 'count-line muted';
   state.hiddenBySafe = 0;
   try {
@@ -290,7 +307,7 @@ async function refreshMediaCount() {
   } catch (e) {
     if (e.name === 'AbortError') return;
     state.total = null;
-    $('mediaCount').textContent = `總數算不出來：${e.message}`;
+    $('mediaCount').textContent = t('media.count.failed', { msg: e.message });
     $('mediaCount').className = 'count-line muted err';
   }
 }
@@ -315,7 +332,8 @@ function cellHtml(m) {
   const missing = m.status !== 'done';
   let body;
   if (missing) {
-    body = `<div class="missing">${m.status === 'failed' ? '下載失敗' : '尚未下載'}</div>`;
+    body = `<div class="missing">${esc(t(m.status === 'failed'
+      ? 'media.cell.failed' : 'media.cell.notyet'))}</div>`;
   } else if (PLAYABLE.has(m.kind)) {
     // ⚠️ **仍然刻意不建立 `<video>` 元素。**
     // 舊版每格掛一個 `preload="metadata"`，一頁 60 格 = 60 次跨磁碟開檔讀
@@ -367,7 +385,7 @@ function wireGridImages() {
         // 對照表在 dom.js 的 `fileErrorText()`，三個呼叫端共用同一份文案。
         // 「被刪了還是碟沒插」是系統模型那五題裡目前答不出來的第 4 題。
         const box = Object.assign(document.createElement('div'), {
-          className: 'missing', textContent: '縮圖失敗',
+          className: 'missing', textContent: t('media.cell.thumbfail'),
         });
         // 影片格的 ▶ 角標是絕對定位在正中央的 —— 留著會蓋住錯誤說明，
         // 而錯誤說明才是這一格現在唯一要傳達的事。
@@ -424,7 +442,7 @@ function patchCellsForPost(postId, { rating }) {
   if (!$('grid').querySelector('.cell')) {
     // 整頁都被濾掉了。空白畫面看起來像壞掉，要講出發生了什麼。
     $('grid').innerHTML =
-      '<p class="empty">本頁的媒體都被標記後隱藏了。按「⟳」載入下一批。</p>';
+      `<p class="empty">${esc(t('media.grid.allhidden'))}</p>`;
   }
 }
 
@@ -442,20 +460,22 @@ export function resetMediaPaging() {
 function emptyGridHtml() {
   const conds = activeConditions();
   if (safeMode() && state.hiddenBySafe) {
-    return `<p class="empty">沒有符合條件的媒體。<br>
-      <b>工作安全模式開著</b> —— 符合條件的
-      <b>${state.hiddenBySafe.toLocaleString()}</b> 筆 r18 不會顯示在這裡。<br>
-      關掉右上角的開關就看得到。</p>`;
+    return `<p class="empty">${esc(t('media.empty.safe.1'))}<br>
+      <b>${esc(t('media.empty.safe.2'))}</b>${
+      esc(t('media.empty.safe.3', { n: fmt.num(state.hiddenBySafe) }))}<br>
+      ${esc(t('media.empty.safe.4'))}</p>`;
   }
   if (safeMode() && state.hiddenBySafe === 0 && conds.length) {
-    return `<p class="empty">沒有符合條件的媒體，安全模式也沒有擋掉任何一筆。<br>
-      試著移除一些條件：${esc(conds.map((c) => `${c.label} ${c.value}`).join('、'))}</p>`;
+    return `<p class="empty">${esc(t('media.empty.nosafe'))}<br>
+      ${esc(t('media.empty.trydrop',
+        { conds: conds.map((c) => `${c.label} ${c.value}`).join(t('common.listsep')) }))}</p>`;
   }
   if (conds.length) {
-    return `<p class="empty">沒有符合條件的媒體。試著移除一些條件：<br>
-      ${esc(conds.map((c) => `${c.label} ${c.value}`).join('、'))}</p>`;
+    return `<p class="empty">${esc(t('media.empty.safe.1'))}<br>
+      ${esc(t('media.empty.trydrop',
+        { conds: conds.map((c) => `${c.label} ${c.value}`).join(t('common.listsep')) }))}</p>`;
   }
-  return '<p class="empty">還沒有任何媒體。到「抓取」分頁貼幾個帳號網址開始。</p>';
+  return `<p class="empty">${esc(t('media.empty.none'))}</p>`;
 }
 
 // 請求序號。**慢的那個後到會蓋掉正確結果** —— 這不是理論問題：
@@ -498,8 +518,8 @@ export async function loadMedia({ withCount = true } = {}) {
     // 而總數是另一個請求、可能還沒到。
     const page = usesKeyset() ? state.cursors.length : Math.floor(state.offset / PAGE) + 1;
     $('pageInfo').textContent = data.items.length
-      ? `第 ${page} 頁　本頁 ${data.items.length} 個`
-      : '沒有資料';
+      ? t('media.page.info', { page: fmt.num(page), n: fmt.num(data.items.length) })
+      : t('media.page.none');
     $('prevPage').disabled = usesKeyset() ? state.cursors.length <= 1 : state.offset === 0;
     $('nextPage').disabled = !data.has_more;
 
@@ -510,7 +530,8 @@ export async function loadMedia({ withCount = true } = {}) {
     updateSelInfo();
   } catch (e) {
     if (seq === mediaReqSeq) {
-      $('grid').innerHTML = `<p class="empty">載入失敗：${esc(e.message)}</p>`;
+      $('grid').innerHTML = `<p class="empty">${
+        esc(t('media.load.failed', { msg: e.message }))}</p>`;
       // 失敗也要把翻頁放開 —— 否則使用者被卡在一個壞掉的畫面上，
       // 連退回上一頁都做不到
       $('prevPage').disabled = usesKeyset() ? state.cursors.length <= 1 : !state.offset;
@@ -566,17 +587,18 @@ function updateSelInfo() {
   const n = state.picked.size;
   const posts = pickedPostIds().length;
   $('selInfo').textContent = n
-    ? `已選 ${n} 個媒體（${posts} 則貼文）`
-    : '已選 0 個媒體';
+    ? t('media.sel.n', { n: fmt.num(n), posts: fmt.num(posts) })
+    : t('media.sel.info');
   $('bulkApply').disabled = !n;
-  $('bulkApply').dataset.tip = n ? '' : '請先選取媒體';
+  $('bulkApply').dataset.tip = n ? '' : t('media.bulk.pickfirst');
 }
 
 $('selectMode').addEventListener('click', () => {
   state.selecting = !state.selecting;
   document.body.classList.toggle('selecting', state.selecting);
   $('selBar').classList.toggle('hidden', !state.selecting);
-  $('selectMode').textContent = state.selecting ? '離開選取' : '選取模式';
+  $('selectMode').textContent = t(state.selecting
+    ? 'media.selectmode.exit' : 'media.selectmode');
   if (!state.selecting) {
     state.picked.clear();
     state.lastPickIndex = null;
@@ -631,15 +653,16 @@ $('bulkApply').addEventListener('click', () => {
   if (!state.picked.size) return;
   const hasTags = 'rating' in body || 'content_type' in body;
   if (!hasTags && !starsBody) {
-    bulkMsg('請先選擇要套用的分級、類型或評分。', 'err');
+    bulkMsg(t('media.bulk.nothing'), 'err');
     return;
   }
   // 行內確認，不用 confirm()。兩種作用範圍不同，必須分開講 —— 使用者只選了
   // 3 張圖卻改到 1 則貼文的分級，那是他該事先知道的事。
   const parts = [];
-  if (hasTags) parts.push(`分級／類型 → ${body.post_ids.length} 則貼文（含沒選到的張數）`);
-  if (starsBody) parts.push(`評分 → ${state.picked.size} 個媒體`);
-  $('bulkConfirmText').textContent = `${parts.join('；')}？`;
+  if (hasTags) parts.push(t('media.bulk.tags', { n: fmt.num(body.post_ids.length) }));
+  if (starsBody) parts.push(t('media.bulk.stars', { n: fmt.num(state.picked.size) }));
+  $('bulkConfirmText').textContent =
+    t('common.question', { s: parts.join(t('common.semisep')) });
   $('bulkConfirm').classList.remove('hidden');
   $('bulkApply').disabled = true;
   bulkMsg('');
@@ -655,7 +678,7 @@ $('bulkYes').addEventListener('click', async () => {
   const starsBody = buildBulkStarsBody();
   const hasTags = 'rating' in body || 'content_type' in body;
   $('bulkConfirm').classList.add('hidden');
-  bulkMsg('套用中…');
+  bulkMsg(t('media.bulk.applying'));
   try {
     const done = [];
     if (hasTags) {
@@ -664,7 +687,7 @@ $('bulkYes').addEventListener('click', async () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
-      done.push(`${res.updated} 則貼文的分級`);
+      done.push(t('media.bulk.done.posts', { n: fmt.num(res.updated) }));
     }
     if (starsBody) {
       const res = await api('/api/media/bulk-stars', {
@@ -672,7 +695,7 @@ $('bulkYes').addEventListener('click', async () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(starsBody),
       });
-      done.push(`${res.updated} 個媒體的評分`);
+      done.push(t('media.bulk.done.stars', { n: fmt.num(res.updated) }));
     }
     state.picked.clear();
     state.lastPickIndex = null;
@@ -680,10 +703,10 @@ $('bulkYes').addEventListener('click', async () => {
     drops.bulkContent.clear();
     drops.bulkStars.clear();
     await loadMedia();
-    bulkMsg(`已更新 ${done.join(' 與 ')}`, 'ok');
+    bulkMsg(t('media.bulk.done', { what: done.join(t('media.bulk.and')) }), 'ok');
   } catch (e) {
     // 兩個請求是分開送的，前一個可能已經成功了 —— 不要回報成整批失敗
-    bulkMsg(`批次套用失敗：${e.message}（部分變更可能已生效，請重新整理確認）`, 'err');
+    bulkMsg(t('media.bulk.failed', { msg: e.message }), 'err');
     await loadMedia();
   } finally {
     $('bulkApply').disabled = false;
@@ -716,26 +739,8 @@ function buildDrop(id, label, values, text) {
  *  「為什麼我看不到 r18」。disabled + 面板裡寫出原因。 */
 function applySafeModeGate() {
   drops.fRating.setDisabled(
-    'r18', safeMode() ? '安全模式開著，r18 不可選（開關在右上角）' : null,
+    'r18', safeMode() ? t('media.safe.r18off') : null,
   );
-}
-
-/** 排序鍵換了要做的事。原本掛在 `<select>` 的 change 上；改成自製下拉之後
- *  必須改走 `onChange`。
- *
- *  ⚠️ 這裡是這一輪最容易靜默失敗的地方：`$('fSortKey')` 現在回傳的是一個
- *  `<span>`，**不是 null** —— 舊的 `addEventListener('change', …)` 掛得上去、
- *  不會報錯，只是永遠不會觸發。症狀是「換排序沒反應」，console 全白。 */
-function onSortKeyChanged() {
-  // 換鍵時套用**該鍵的預設方向**，不沿用上一個鍵的。
-  $('fSortDir').dataset.order = DEFAULT_ORDER[sortKey()] || 'desc';
-  saveSort();
-  paintSortControls();
-  // ⚠️ 游標堆疊一定要清空：換了排序鍵之後，舊游標指的是另一種順序裡的位置，
-  // 拿去翻頁會拿到一頁莫名其妙的東西（而且看起來像資料壞了）。
-  resetMediaPaging();
-  // 排序不改變筆數 —— **不重算總數**，省掉一次 1.3 秒的 COUNT。
-  loadMedia({ withCount: false });
 }
 
 /** 批次列的三個。**單選是對的** —— 批次是「把選中的媒體改成這個值」，
@@ -749,34 +754,28 @@ function wireBulkDrops() {
       label, ariaLabel, values, onChange: () => {},
       // 「不變」= 這一批不動這個欄位。原生 select 的 `<option value="">`
       // 就是幹這個的；沒有它，選錯了就再也回不到「不套用」。
-      emptyText: '不變',
+      emptyText: t('bulk.unchanged'),
     });
   };
   const clear = (text) => ({ value: '__clear__', text });
-  mk('bulkRating', '分級…', '批次分級',
-     [...RATING_VALUES.map((v) => ({ value: v })), clear('（清除）')]);
-  mk('bulkContent', '類型…', '批次類型',
+  mk('bulkRating', t('bulk.rating'), t('bulk.rating.aria'),
+     [...RATING_VALUES.map((v) => ({ value: v })), clear(t('bulk.clear'))]);
+  mk('bulkContent', t('bulk.content'), t('bulk.content.aria'),
      CONTENT_VALUES.map((v) => ({ value: v })));
-  mk('bulkStars', '評分…', '批次評分',
+  mk('bulkStars', t('bulk.stars'), t('bulk.stars.aria'),
      [...STAR_VALUES.map((v) => ({ value: v, text: STAR_TEXT(v) })),
-      clear('（清除評分）')]);
+      clear(t('bulk.clear.stars'))]);
 }
 
 export function wireFilters() {
-  // 排序鍵。值域是 SORT_KEYS，顯示字由 SORT_KEY_TEXT 給。
-  drops.fSortKey = singleDrop($('fSortKey'), {
-    label: '排序',
-    values: SORT_KEYS.map((v) => ({ value: v, text: SORT_KEY_TEXT[v] })),
-    value: 'added',
-    onChange: onSortKeyChanged,
-  });
+  // 排序鍵已由模組頂層的 `sortCtl` 建好（sortctl.js）——這裡不再重建。
   wireBulkDrops();
-  buildDrop('fRating', '分級', RATING_VALUES);
-  buildDrop('fContent', '類型', CONTENT_VALUES);
-  buildDrop('fKind', '型別', KINDS);
+  buildDrop('fRating', t('filter.rating'), RATING_VALUES);
+  buildDrop('fContent', t('filter.content'), CONTENT_VALUES);
+  buildDrop('fKind', t('filter.kind'), KINDS);
   // 「更多篩選」裡的三個 —— 與主篩選列同一種形態。
-  buildDrop('fStatus', '下載狀態', ['done', 'pending', 'failed']);
-  buildDrop('fStars', '評分', STAR_VALUES, STAR_TEXT);
+  buildDrop('fStatus', t('filter.status'), ['done', 'pending', 'failed']);
+  buildDrop('fStars', t('filter.stars'), STAR_VALUES, STAR_TEXT);
   // 「更多篩選」是靜態寫在 HTML 裡的 <details> —— 原生 <details> 沒有
   // 「點外面收起」，要自己接上（症狀是拉開之後按別的地方它一直開著）。
   // 兩個分頁各有一個，一起接。
@@ -790,33 +789,10 @@ export function wireFilters() {
 // 為零，升級是為零筆結果付複雜度」。那個判斷是拿 dev 的空資料做的；
 // 正式庫有 4,653 個帳號，creator 與評分都是真的有東西可篩。
 
-$('fSortDir').addEventListener('click', () => {
-  $('fSortDir').dataset.order = sortOrder() === 'desc' ? 'asc' : 'desc';
-  saveSort();
-  paintSortControls();
-  resetMediaPaging();
-  loadMedia({ withCount: false });
-});
-
-function saveSort() {
-  localStorage.setItem('mediaSort', `${sortKey()}:${sortOrder()}`);
-}
-
-/** 還原偏好。**白名單驗證** —— 認不得就用預設。
- *
- *  這裡有前科：分段控制那版存的是 `added:desc`，回朔後的舊 `<select>` 吃到
- *  會變成空值，然後送出 `sort=`（一個靜默的空條件，不會報錯也不會生效）。
- *  所以絕不直接把 localStorage 的字串塞進控制項。 */
+/** 還原排序偏好（白名單在 sortctl.js）。`main.js` 在 `wireFilters()` 之後、
+ *  `loadMedia()` 之前呼叫。 */
 export function restoreSort() {
-  const raw = localStorage.getItem('mediaSort') || '';
-  // 舊值相容：`newest` / `oldest` / `stars` 是分段控制之前那一版存的
-  const legacy = { newest: 'added:desc', oldest: 'added:asc', stars: 'stars:desc' };
-  const [key, order] = (legacy[raw] || raw).split(':');
-  const okKey = SORT_KEYS.includes(key) ? key : 'added';
-  const okOrder = SORT_ORDERS.includes(order) ? order : DEFAULT_ORDER[okKey];
-  drops.fSortKey.set(okKey);
-  $('fSortDir').dataset.order = okOrder;
-  paintSortControls();
+  sortCtl.restore();
 }
 
 // ── 「更多篩選」裡那三個在真實資料上鑑別力為零的下拉 ──
@@ -834,8 +810,8 @@ $('fMore').addEventListener('toggle', () => {
   api('/api/media/count?min_stars=1')
     .then((d) => {
       $('fStarsNote').textContent = d.total
-        ? `目前有 ${d.total.toLocaleString()} 個已評分`
-        : '尚未評分任何項目 —— 選了會是 0 筆';
+        ? t('media.more.stars.n', { n: fmt.num(d.total) })
+        : t('media.more.stars.none');
     })
     .catch(() => { $('fStarsNote').textContent = ''; });
 });
@@ -846,8 +822,9 @@ export function paintMoreNotes() {
   if (!q) { $('fStatusNote').textContent = ''; return; }
   const active = (q.pending || 0) + (q.downloading || 0) + (q.failed || 0);
   $('fStatusNote').textContent = active
-    ? `待下載 ${q.pending || 0}／失敗 ${q.failed || 0}`
-    : '目前沒有待下載或失敗的項目';
+    ? t('media.more.queue', { pending: fmt.num(q.pending || 0),
+                              failed: fmt.num(q.failed || 0) })
+    : t('media.more.queue.none');
 }
 
 // 翻頁不重算總數 —— 條件沒變，總數就沒變，而它要 1.3 秒。
@@ -888,10 +865,10 @@ $('nextPage').addEventListener('click', () => pageTurn(() => {
  *  真正的修法是匯入器改寫一個 `import` 值（那是資料層改動，見
  *  那是資料層改動，尚未做），這裡先用不會騙人的文案。 */
 function sourceText(src) {
-  if (!src) return '尚未標記';
-  if (src === 'manual') return 'manual（人工或匯入時分類 —— 目前分不出來）';
-  if (src === 'auto') return 'auto（機器猜測，尚未人工確認）';
-  if (src === 'account_default') return 'account_default（套用帳號預設值）';
+  if (!src) return t('src.unset');
+  if (src === 'manual') return t('src.manual');
+  if (src === 'auto') return t('src.auto');
+  if (src === 'account_default') return t('src.account_default');
   return src;
 }
 
@@ -921,7 +898,8 @@ function videoHtml(m) {
     tooBig ? 'preload="metadata"' : 'autoplay',
   ].filter(Boolean).join(' ');
   const note = tooBig
-    ? `<p class="note muted">檔案 ${fmtBytes(m.bytes)}，按播放才會開始載入。</p>`
+    ? `<p class="note muted">${esc(t('detail.video.note',
+        { size: fmtBytes(m.bytes) }))}</p>`
     : '';
   return `<video ${attrs}></video>${note}`;
 }
@@ -935,13 +913,14 @@ let detailDismiss = null;
 export async function showDetail(mediaId) {
   $('detail').classList.remove('hidden');
   detailDismiss = detailDismiss || pushDismissable({ close: closeDetail });
-  $('detailBody').innerHTML = '<p class="muted">載入中…</p>';
+  $('detailBody').innerHTML = `<p class="muted">${esc(t('common.loading'))}</p>`;
 
   let detail;
   try {
     detail = await api(`/api/media/${mediaId}`);
   } catch (e) {
-    $('detailBody').innerHTML = `<p class="muted">載入失敗：${esc(e.message)}</p>`;
+    $('detailBody').innerHTML = `<p class="muted">${
+      esc(t('media.load.failed', { msg: e.message }))}</p>`;
     return;
   }
   const m = detail.media;
@@ -956,67 +935,72 @@ export async function showDetail(mediaId) {
         // tabindex + role：`<img>` 預設不可聚焦，於是「點圖放大」就只有滑鼠
         // 能用，而且關閉檢視器後焦點無處可回。兩件事同一個修法。
         ? `<img src="/api/media/${m.id}/file" alt="" id="dPreview" class="zoomable"
-                tabindex="0" role="button" aria-label="放大檢視">`
+                tabindex="0" role="button" aria-label="${esc(t('detail.zoom.aria'))}">`
         : videoHtml(m))
-    : `<p class="muted">狀態：${esc(m.status)}${m.error ? `　${esc(m.error)}` : ''}</p>`;
+    : `<p class="muted">${esc(t('detail.status', { status: m.status }))}${
+      m.error ? `&ensp;${esc(m.error)}` : ''}</p>`;
 
   // 網址由後端的 links.py 產生。**前端不拼平台網址** —— 這裡原本寫死
   // `https://x.com/...`，於是 misskey / pixiv 的貼文會連到 x.com 上不存在的
   // 位址：不是報錯，是連到錯的地方，比 404 更難發現。
   const link = p.post_url
-    ? `<a href="${esc(p.post_url)}" target="_blank" rel="noreferrer">在 ${
-        esc(p.platform_label || p.platform)} 開啟</a>`
-    : `<span class="muted">${esc(p.link_problem || '無法連結')}</span>`;
+    ? `<a href="${esc(p.post_url)}" target="_blank" rel="noreferrer">${
+        esc(t('detail.openon', { platform: p.platform_label || p.platform }))}</a>`
+    : `<span class="muted">${esc(p.link_problem || t('detail.nolink'))}</span>`;
 
   $('detailBody').innerHTML = `
     ${preview}
 
     <!-- 評分掛媒體、分級掛貼文 —— 作用範圍不同，所以是兩個容器，不是兩行。 -->
     <div class="scope-card">
-      <h4>這一張</h4>
+      <h4>${esc(t('detail.thisone'))}</h4>
       <div class="row">
         ${starsHtml(m.stars, 'dStars')}
         <span id="dStarSaved" class="saved"></span>
       </div>
-      <p class="note muted">評分只影響這一個媒體。</p>
+      <p class="note muted">${esc(t('detail.stars.scope'))}</p>
     </div>
 
     <div class="scope-card">
-      <h4>整則貼文${sibs.length > 1 ? `（${sibs.length} 張）` : ''}</h4>
+      <h4>${esc(t('detail.wholepost'))}${sibs.length > 1
+        ? esc(t('detail.wholepost.n', { n: fmt.num(sibs.length) })) : ''}</h4>
       <div class="row">
         <span id="dRating" class="ms-host"></span>
         <span id="dContent" class="ms-host"></span>
         <span id="dSaved" class="saved"></span>
       </div>
       ${sibs.length > 1
-        ? `<p class="note muted">⚠ 改這裡會套用到全部 ${sibs.length} 張。</p>` : ''}
-      <div class="src-note" id="dSource">來源：${esc(sourceText(p.rating_source))}</div>
+        ? `<p class="note muted">${esc(t('detail.wholepost.warn',
+          { n: fmt.num(sibs.length) }))}</p>` : ''}
+      <div class="src-note" id="dSource">${
+        esc(t('detail.source', { src: sourceText(p.rating_source) }))}</div>
       ${sibs.length > 1 ? `<div class="siblings">${sibs.map((s, i) =>
         `<button type="button" data-sib="${s.id}"
                  class="${s.id === m.id ? 'cur' : ''}">${i + 1}</button>`).join('')}</div>` : ''}
     </div>
 
     <dl class="kv">
-      <dt>貼文</dt><dd>${esc(p.platform_post_id)}</dd>
-      <dt>帳號</dt><dd>${esc(acct?.screen_name || p.account_id)}</dd>
-      <dt>時間</dt><dd>${esc(p.posted_at || '—')}</dd>
-      <dt>型別</dt><dd>${esc(m.kind)}</dd>
-      <dt>大小</dt><dd>${fmtBytes(m.bytes)}</dd>
-      <dt>狀態</dt><dd>${esc(m.status)}</dd>
-      <dt>本機路徑</dt>
+      <dt>${esc(t('detail.kv.post'))}</dt><dd>${esc(p.platform_post_id)}</dd>
+      <dt>${esc(t('detail.kv.account'))}</dt><dd>${esc(acct?.screen_name || p.account_id)}</dd>
+      <dt>${esc(t('detail.kv.time'))}</dt><dd>${esc(p.posted_at || '—')}</dd>
+      <dt>${esc(t('detail.kv.kind'))}</dt><dd>${esc(m.kind)}</dd>
+      <dt>${esc(t('detail.kv.size'))}</dt><dd>${fmtBytes(m.bytes)}</dd>
+      <dt>${esc(t('detail.kv.status'))}</dt><dd>${esc(m.status)}</dd>
+      <dt>${esc(t('detail.kv.path'))}</dt>
       <dd class="path-line">
         <span class="val" id="dPath">${esc(m.local_path || '—')}</span>
-        ${m.local_path ? '<button type="button" class="ghost" id="dPathToggle">展開</button>' : ''}
+        ${m.local_path ? `<button type="button" class="ghost" id="dPathToggle">${
+          esc(t('common.expand'))}</button>` : ''}
       </dd>
       <dt>SHA-256</dt><dd>${esc((m.file_hash || '—').slice(0, 24))}…</dd>
-      <dt>來源</dt><dd>${esc(m.source_url)}</dd>
-      <dt>原貼文</dt><dd>${link}</dd>
+      <dt>${esc(t('detail.kv.srcurl'))}</dt><dd>${esc(m.source_url)}</dd>
+      <dt>${esc(t('detail.kv.origpost'))}</dt><dd>${link}</dd>
     </dl>`;
 
   $('dPreview')?.addEventListener('error', async () => {
     const box = document.createElement('p');
     box.className = 'missing-preview';
-    box.textContent = '讀不到原檔。';
+    box.textContent = t('viewer.missing');
     $('dPreview').replaceWith(box);
     // 問不出原因就維持第一句 —— 不編一個聽起來很具體的理由。
     const why = await fileErrorText(m.id);
@@ -1044,7 +1028,7 @@ export async function showDetail(mediaId) {
   // 正式庫最長路徑 282 字元，含中文與深層巢狀 —— 預設一行截斷，要看才展開。
   $('dPathToggle')?.addEventListener('click', (ev) => {
     const open = $('dPath').classList.toggle('open');
-    ev.target.textContent = open ? '收起' : '展開';
+    ev.target.textContent = t(open ? 'common.collapse' : 'common.expand');
   });
 
   // 同貼文其他張。**194 張是實際存在的最大值**，所以是橫向捲動的一排小按鈕。
@@ -1061,7 +1045,7 @@ export async function showDetail(mediaId) {
     const value = drop.get();
     if (value === previous) return;
     const flash = $('dSaved');
-    flash.textContent = '儲存中…';
+    flash.textContent = t('common.saving');
     flash.className = 'saved';
     try {
       const r = await api(`/api/posts/${p.id}/tags`, {
@@ -1071,15 +1055,16 @@ export async function showDetail(mediaId) {
       });
       p[field] = r[field];
       p.rating_source = r.rating_source;
-      $('dSource').textContent = `來源：${sourceText(r.rating_source)}`;
-      flash.textContent = '已儲存';
+      $('dSource').textContent = t('detail.source',
+                                     { src: sourceText(r.rating_source) });
+      flash.textContent = t('common.saved');
       flash.className = 'saved ok';
       setTimeout(() => { flash.textContent = ''; }, 1600);
       // 只更新受影響的格子，**不重載整頁**。
       patchCellsForPost(p.id, { rating: r.rating });
     } catch (e) {
       drop.set(previous);    // 還原，不要讓畫面顯示一個沒存進去的值
-      flash.textContent = `儲存失敗：${e.message}`;
+      flash.textContent = t('common.save.failed', { msg: e.message });
       flash.className = 'saved err';
     }
   };
@@ -1088,7 +1073,7 @@ export async function showDetail(mediaId) {
     $('detailBody').querySelector('.dStars'),
     async (stars) => {
       const flash = $('dStarSaved');
-      flash.textContent = '儲存中…';
+      flash.textContent = t('common.saving');
       flash.className = 'saved';
       await api(`/api/media/${m.id}/stars`, {
         method: 'PATCH',
@@ -1096,7 +1081,7 @@ export async function showDetail(mediaId) {
         body: JSON.stringify({ stars }),
       });
       m.stars = stars;
-      flash.textContent = '已儲存';
+      flash.textContent = t('common.saved');
       flash.className = 'saved ok';
       setTimeout(() => { flash.textContent = ''; }, 1600);
       // ⚠️ 依評分排序時，改了評分之後**順序其實已經不對了**。不自動重排是
@@ -1104,7 +1089,7 @@ export async function showDetail(mediaId) {
       patchCellStars(m.id, stars);
     },
     (e) => {
-      $('dStarSaved').textContent = `儲存失敗：${e.message}`;
+      $('dStarSaved').textContent = t('common.save.failed', { msg: e.message });
       $('dStarSaved').className = 'saved err';
     },
   );
@@ -1115,7 +1100,8 @@ export async function showDetail(mediaId) {
   let lastContent = p.content_type || '';
   const d = mountDrops($('detailBody'), {
     dRating: {
-      label: '分級（未標）', emptyText: '（未標）', ariaLabel: '整則貼文的分級',
+      label: t('detail.rating.label'), emptyText: t('detail.untagged'),
+      ariaLabel: t('detail.rating.aria'),
       values: RATING_VALUES.map((v) => ({ value: v })),
       value: lastRating,
       onChange: async () => {
@@ -1125,7 +1111,8 @@ export async function showDetail(mediaId) {
       },
     },
     dContent: {
-      label: '類型（未標）', emptyText: '（未標）', ariaLabel: '整則貼文的類型',
+      label: t('detail.content.label'), emptyText: t('detail.untagged'),
+      ariaLabel: t('detail.content.aria'),
       values: CONTENT_VALUES.map((v) => ({ value: v })),
       value: lastContent,
       onChange: async () => {
@@ -1205,7 +1192,7 @@ export function wireAccountPicker() {
     const id = selectedAccountId();
     if (input.value.trim() && !id) {
       // 打了字但沒對到任何帳號 —— 講出來，不要默默當成「全部帳號」
-      $('fAccountHint').textContent = '找不到這個帳號';
+      $('fAccountHint').textContent = t('media.account.notfound');
       return;
     }
     $('fAccountHint').textContent = '';

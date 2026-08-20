@@ -11,7 +11,8 @@
 // 要①下載 worker 或明確觸發才會落地。這個專案有前科：`/api/queue/run`
 // 這個端點存在的理由就是曾經「回報成功但什麼都沒下載」。
 
-import { $, esc } from '../dom.js';
+import { $, esc, hint } from '../dom.js';
+import { fmt, t } from '../i18n.js';
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { refreshQueue } from '../queue.js';
@@ -28,7 +29,7 @@ async function parseUrls() {
   const text = $('fetchUrls').value;
   $('submitUrls').disabled = true;
   if (!text.trim()) {
-    $('parseResult').innerHTML = '<div class="muted">先貼一些網址</div>';
+    $('parseResult').innerHTML = `<div class="muted">${esc(t('fetch.parse.empty'))}</div>`;
     return;
   }
   $('parseUrls').disabled = true;
@@ -40,7 +41,8 @@ async function parseUrls() {
       body: JSON.stringify({ text }),
     });
   } catch (err) {
-    $('parseResult').innerHTML = `<div class="bad">解析失敗：${esc(err.message)}</div>`;
+    $('parseResult').innerHTML = `<div class="bad">${
+      esc(t('fetch.parse.failed', { msg: err.message }))}</div>`;
     return;
   } finally {
     $('parseUrls').disabled = false;
@@ -61,18 +63,18 @@ async function parseUrls() {
     }
     if (ln.duplicate) {
       return `<tr class="muted"><td>${esc(ln.raw)}</td>
-              <td>${esc(ln.target.label)}</td><td>這批裡重複</td></tr>`;
+              <td>${esc(ln.target.label)}</td><td>${esc(t('fetch.parse.dup'))}</td></tr>`;
     }
     // 看得懂、也抓得動，但憑證沒設 —— 現在送出一定失敗。
     // 與「看不懂」分成兩種結論：這一行本身是對的。
     if (ln.needs_credential) {
       return `<tr class="wrongtool"><td>${esc(ln.raw)}</td>
               <td>${esc(ln.target.label)}</td>
-              <td>⚠ 會失敗 —— 尚未設定 ${esc(ln.needs_credential)} 憑證
-                  （設定頁有填法）</td></tr>`;
+              <td>${esc(t('fetch.parse.nocred',
+                { platform: ln.needs_credential }))}</td></tr>`;
     }
     return `<tr><td>${esc(ln.raw)}</td><td>${esc(ln.target.label)}</td>
-            <td>${ln.in_db ? '已在資料庫（會做增量）' : '新帳號'}</td></tr>`;
+            <td>${esc(t(ln.in_db ? 'fetch.parse.indb' : 'fetch.parse.new'))}</td></tr>`;
   });
 
   const ok = body.lines.filter((l) => !l.error && !l.duplicate).length;
@@ -82,17 +84,19 @@ async function parseUrls() {
 
   // 結論先講，逐行在後面。
   const summary = [
-    `可抓 ${ok} 個`,
-    noCred ? `${noCred} 行缺憑證會失敗` : '',
-    wrongTool ? `${wrongTool} 行只能用 extension` : '',
-    bad ? `${bad} 行看不懂` : '',
+    t('fetch.parse.ok.n', { n: fmt.num(ok) }),
+    noCred ? t('fetch.parse.nocred.n', { n: fmt.num(noCred) }) : '',
+    wrongTool ? t('fetch.parse.wrongtool.n', { n: fmt.num(wrongTool) }) : '',
+    bad ? t('fetch.parse.bad.n', { n: fmt.num(bad) }) : '',
   ].filter(Boolean).join(' · ');
 
   $('parseResult').innerHTML = `<div class="${ok ? 'good' : 'bad'}">${esc(summary)}</div>`
     + `<table class="parse-table"><tbody>${rows.join('')}</tbody></table>`;
   // disabled 的**理由寫在按鈕上**，不進氣泡（PLAN 3-4(c)：不能做的原因要可見）
   $('submitUrls').disabled = ok === 0;
-  $('submitUrls').textContent = ok ? `送出 ${ok} 個` : '送出（這批沒有可抓的）';
+  $('submitUrls').textContent = ok
+    ? t('fetch.submit.n', { n: fmt.num(ok) })
+    : t('fetch.submit.none');
 }
 
 async function submitUrls() {
@@ -110,15 +114,18 @@ async function submitUrls() {
     // ① 送出當下。文案一律用「已排入」，而且立刻把視線帶到佇列區 ——
     // 停在一句話上的話，使用者不知道東西在哪裡跑。
     $('parseResult').innerHTML =
-      `<div class="good">已排入 ${body.queued} 個帳號 —— 結果會出現在下面的佇列</div>`
+      `<div class="good">${esc(t('fetch.queued.n', { n: fmt.num(body.queued) }))}</div>`
       + (body.rejected.length
-        ? `<div class="bad">${body.rejected.length} 行沒有排入</div>` : '')
+        ? `<div class="bad">${esc(t('fetch.rejected.n',
+          { n: fmt.num(body.rejected.length) }))}</div>` : '')
       + (body.already_queued.length
-        ? `<div class="muted">${esc(body.already_queued.join('、'))} 已經在佇列裡</div>` : '');
+        ? `<div class="muted">${esc(t('fetch.alreadyqueued',
+          { names: body.already_queued.join(t('common.listsep')) }))}</div>` : '');
     await refreshFetchQueue();
     $('fetchQueue').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (err) {
-    $('parseResult').innerHTML = `<div class="bad">送出失敗：${esc(err.message)}</div>`;
+    $('parseResult').innerHTML = `<div class="bad">${
+      esc(t('fetch.submit.failed', { msg: err.message }))}</div>`;
     $('submitUrls').disabled = false;
   }
 }
@@ -130,18 +137,28 @@ const SKIP_REASONS = {
   // 實作」，X 只是其中最大的一群。實測有過一次：12 個 baraag 帳號因為平台名
   // 對不上註冊表而被歸到這裡，畫面卻告訴使用者「只能由 extension 採集（X）」
   // —— 那句話讓真正的原因完全查不到。
-  cannot_fetch: 'backend 沒有這個平台的抓取實作（X 只能用 extension 採集）',
+  cannot_fetch: ['skip.cannot_fetch.1', 'skip.cannot_fetch.2'],
   // ⚠️ **不可與 untracked 合併。** 這一個是使用者自己標的、他自己改得回來；
   // untracked 可能是系統連續找不到兩次自動退訂的，下一步是去查改名。
   // 合成一行「不可抓 N 個」使用者就分不出來了。
-  ignored: '你標記為忽略 —— 帳號頁可以取消（只影響一鍵更新，資料沒動）',
-  untracked: '已取消追蹤',
-  pixiv_excluded: '這次沒有包含 pixiv',
-  no_credentials: '缺憑證（config.toml 的 platform_credentials）',
-  already_queued: '已經在佇列裡',
+  ignored: ['skip.ignored.1', 'skip.ignored.2'],
+  untracked: ['skip.untracked'],
+  pixiv_excluded: ['skip.pixiv_excluded'],
+  no_credentials: ['skip.no_credentials'],
+  already_queued: ['skip.already_queued'],
 };
 
-const mins = (sec) => (sec < 60 ? `${Math.round(sec)} 秒` : `${Math.round(sec / 60)} 分鐘`);
+/** 原因的每一句各佔一行。
+ *
+ *  ⚠️ 值是**句子陣列**不是字串，而且逐句 esc() 之後才用 <br> 接起來 ——
+ *  把 <br> 寫進資料裡的話，那串就得整個跳過跳脫，等於為了換行開一個
+ *  注入缺口。這幾句都是 A 桶（約束與可逆性宣告），一句都不能收進氣泡，
+ *  但單句要進得了 24 全形字，所以只能拆行。 */
+const skipReason = (k) => (SKIP_REASONS[k] || [k]).map((x) => esc(t(x))).join('<br>');
+
+const mins = (sec) => (sec < 60
+  ? t('common.seconds', { n: fmt.num(Math.round(sec)) })
+  : t('common.minutes', { n: fmt.num(Math.round(sec / 60)) }));
 
 /** 按下去**之前**就要看得見「可抓幾個、抓不動幾個」。
  *  正式庫 4,211 個帳號（90.5%）backend 抓不動 —— 那是多數情況，
@@ -160,10 +177,10 @@ function applyPixivCredentialGate() {
   const label = box.closest('label');
   if (!has) {
     box.checked = false;
-    label.dataset.tip = '尚未設定 pixiv 憑證（PHPSESSID），抓了一定會失敗';
+    label.dataset.tip = t('fetch.pixiv.nocred.tip');
     if (!label.querySelector('.credwhy')) {
       label.insertAdjacentHTML('beforeend',
-        '<span class="credwhy muted"> —— 未設定憑證，見設定頁</span>');
+        `<span class="credwhy muted">${esc(t('fetch.pixiv.nocred.note'))}</span>`);
     }
   } else {
     label.querySelector('.credwhy')?.remove();
@@ -179,19 +196,22 @@ export async function refreshScope() {
       .map(([p, n]) => `${p} ${n}`).join(' / ') || '—';
     const skipped = Object.entries(s.skipped)
       .filter(([, n]) => n)
-      .map(([k, n]) => `<div class="cant">不可抓 <span class="num">${n}</span> 個 —— ${
-        esc(SKIP_REASONS[k] || k)}</div>`).join('');
-    box.innerHTML = `<div>可抓 <span class="num">${s.fetchable}</span> 個（${esc(by)}）</div>`
+      .map(([k, n]) => `<div class="cant">${esc(t('fetch.scope.cannot'))} <span
+        class="num">${fmt.num(n)}</span> —— ${skipReason(k)}</div>`).join('');
+    box.innerHTML = `<div>${esc(t('fetch.scope.can'))} <span class="num">${
+      fmt.num(s.fetchable)}</span>${esc(t('common.paren', { x: by }))}</div>`
       + skipped
       + (s.fetchable
         // 「至少」是真的下限（每個帳號至少一個請求、pixiv 每請求 1.8 秒），
         // 不是預估完成時間 —— 有新東西時每一頁／每一件都要再一個請求。
-        ? `<div class="muted">至少要跑 ${mins(s.min_seconds)}；實際有新東西時會更久</div>`
+        ? `<div class="muted">${esc(t('fetch.scope.mintime',
+          { time: mins(s.min_seconds) }))}</div>`
         : '');
     $('refreshAll').disabled = !s.fetchable;
-    $('refreshAll').dataset.tip = s.fetchable ? '' : '目前沒有 backend 抓得動的帳號';
+    $('refreshAll').dataset.tip = s.fetchable ? '' : t('fetch.scope.nothing');
   } catch (e) {
-    box.innerHTML = `<div class="bad">問不到可抓的帳號：${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="bad">${
+      esc(t('fetch.scope.failed', { msg: e.message }))}</div>`;
   }
 }
 
@@ -209,14 +229,17 @@ async function refreshAll() {
     // ⚠️ 跳過的一定要列出來。只說「已排入 N 個」的話，
     // 使用者會以為 X 的帳號也更新過了。
     const skips = Object.entries(body.skipped || {}).map(([k, names]) =>
-      `<div class="muted">跳過 ${names.length} 個 —— ${esc(SKIP_REASONS[k] || k)}</div>`);
+      // skipReason() 每一句自己 esc 過（它要保留 <br>），所以這裡不再包一層。
+      `<div class="muted">${t('fetch.skipped.n',
+        { n: fmt.num(names.length), why: skipReason(k) })}</div>`);
     $('refreshResult').innerHTML =
-      `<div class="good">已排入 ${body.queued} 個帳號 —— 結果會出現在下面的佇列</div>`
+      `<div class="good">${esc(t('fetch.queued.n', { n: fmt.num(body.queued) }))}</div>`
       + skips.join('');
     await refreshFetchQueue();
     $('fetchQueue').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (err) {
-    $('refreshResult').innerHTML = `<div class="bad">失敗：${esc(err.message)}</div>`;
+    $('refreshResult').innerHTML = `<div class="bad">${
+      esc(t('common.failed.short', { msg: err.message }))}</div>`;
   } finally {
     $('refreshAll').disabled = false;
   }
@@ -228,18 +251,20 @@ const capped = (job) => job.resumable === true;
 
 /** 失敗分類的顯示名。**一律讀 `fetch_status`，不解析 error 字串** ——
  *  比對錯誤訊息裡有沒有「429」是平台文案一改就失效的耦合。 */
+// ⚠️ 值是 key 不是文字（模組載入時 i18n 還沒載完）。
 const CATEGORY = {
-  rate_limited: '限速 429',
-  not_found: '找不到',
-  auth_required: '缺憑證',
-  failed: '其他錯誤',
-  skipped: '限速跳過',
+  rate_limited: 'cat.rate_limited',
+  not_found: 'cat.not_found',
+  auth_required: 'cat.auth_required',
+  failed: 'cat.failed',
+  skipped: 'cat.skipped',
 };
+const catText = (k) => (CATEGORY[k] ? t(CATEGORY[k]) : k);
 
 /** 這一類重試多半不會過，要先修原因。單筆仍可「仍要重試」（使用者覆寫）。 */
 const FIX_FIRST = {
-  auth_required: { text: '去設定頁', view: 'settings' },
-  not_found: { text: '帳號頁', view: 'accounts' },
+  auth_required: { key: 'fix.settings', view: 'settings' },
+  not_found: { key: 'fix.accounts', view: 'accounts' },
 };
 
 /** 同一個帳號的多次嘗試**摺疊成一列**（使用者裁示 2026-08-19）。
@@ -281,13 +306,15 @@ function attemptBadge(row) {
   // 第 1 次不顯示 —— 「第 1 次」沒有任何資訊量
   if (n < 2) return '';
   return `<button type="button" class="attempt" data-expand="${row.job.id}"
-    data-tip="展開歷次的失敗原因">第 ${n} 次</button>`;
+    data-tip="${esc(t('job.attempt.tip'))}">${esc(t('job.attempt.n',
+      { n: fmt.num(n) }))}</button>`;
 }
 
 function historyHtml(row) {
   if (!expandedJobs.has(row.job.id) || !row.history.length) return '';
   return `<div class="job-history">${row.history.map((h) =>
-    `<div>第 ${h.attempt || 1} 次 · ${esc(CATEGORY[h.fetch_status] || h.fetch_status || '—')}
+    `<div>${esc(t('job.attempt.n', { n: fmt.num(h.attempt || 1) }))} · ${
+      esc(h.fetch_status ? catText(h.fetch_status) : '—')}
       · ${esc(h.error || h.reason || '')}</div>`).join('')}</div>`;
 }
 
@@ -305,22 +332,25 @@ function jobHtml(row) {
     // 而且兩者不會同時出現在同一列。
     const btn = hitCap
       ? `<button type="button" class="rowbtn" data-resume="${job.id}"
-           data-tip="從上次停下來的游標接下去，不是從第 1 頁重來">繼續抓</button>`
+           data-tip="${esc(t('job.resume.tip'))}">${esc(t('job.resume'))}</button>`
       : '';
     return `<div class="job done"><span class="sym">${hitCap ? '⚠' : '✓'}</span>
       <b>${esc(job.label)}</b>
-      <span>新增 ${r.posts_new ?? 0} 則 / ${r.media_new ?? 0} 個媒體</span>
+      <span>${esc(t('job.added', { posts: fmt.num(r.posts_new ?? 0),
+                                   media: fmt.num(r.media_new ?? 0) }))}</span>
       <span class="${hitCap ? 'capped' : 'muted'}">${esc(r.stopped_because || '')}</span>
       <span class="spacer"></span>${badge}${btn}${hist}</div>`;
   }
   if (job.state === 'running') {
     return `<div class="job running"><span class="sym">⟳</span><b>${esc(job.label)}</b>
-      <span>抓取中…${r.pages ? `第 ${r.pages} 頁` : ''}</span>
+      <span>${esc(t('job.running'))}${r.pages
+        ? esc(t('job.running.page', { n: fmt.num(r.pages) })) : ''}</span>
       <span class="spacer"></span>${badge}</div>`;
   }
   if (job.state === 'queued') {
     return `<div class="job"><span class="sym">⋯</span><b>${esc(job.label)}</b>
-      <span class="muted">排隊中</span><span class="spacer"></span>${badge}</div>`;
+      <span class="muted">${esc(t('job.queued'))}</span><span
+        class="spacer"></span>${badge}</div>`;
   }
 
   // failed / skipped —— 這兩種才有重試
@@ -331,9 +361,10 @@ function jobHtml(row) {
     // 不可重試的類別**不做成 disabled** —— 使用者剛填完憑證、剛確認過改名時
     // 他知道的比系統多，disabled 會擋掉唯一合理的使用情境。文案不同就好。
     ? `<button type="button" class="rowbtn override" data-retry="${job.id}"
-         data-tip="這個原因重試多半不會過；修好原因再按">仍要重試</button>`
+         data-tip="${esc(t('job.retry.anyway.tip'))}">${
+             esc(t('job.retry.anyway'))}</button>`
     : `<button type="button" class="rowbtn" data-retry="${job.id}"
-         data-tip="重新排進佇列尾端，不會插隊">重試</button>`;
+         data-tip="${esc(t('job.retry.tip'))}">${esc(t('job.retry'))}</button>`;
   const fixBtn = fix
     ? `<button type="button" class="rowbtn" data-goto="${fix.view}">${fix.text}</button>`
     : '';
@@ -366,17 +397,18 @@ function breakdownHtml(rows, st) {
     byCat.set(k, (byCat.get(k) || 0) + 1);
   }
   const ACT = {
-    skipped: { can: true, text: '可重試 —— 它們根本沒跑過' },
-    rate_limited: { can: true, text: '可重試（建議先等一陣子）' },
-    failed: { can: true, text: '可重試' },
-    auth_required: { can: false, text: '先去設定頁填憑證' },
-    not_found: { can: false, text: '帳號頁確認後再單筆重試' },
+    skipped: { can: true, key: 'act.skipped' },
+    rate_limited: { can: true, key: 'act.rate_limited' },
+    failed: { can: true, key: 'act.failed' },
+    auth_required: { can: false, key: 'act.auth_required' },
+    not_found: { can: false, key: 'act.not_found' },
   };
   const detail = [...byCat.entries()].map(([k, n]) => {
-    const a = ACT[k] || { can: true, text: '可重試' };
-    return `<div class="bdrow"><span class="bdn">${n} 個</span>
-      <span class="bdcat">${esc(CATEGORY[k] || k)}</span>
-      <span class="${a.can ? 'good' : 'warn'}">${esc(a.text)}</span></div>`;
+    const a = ACT[k] || { can: true, key: 'act.failed' };
+    return `<div class="bdrow"><span class="bdn">${
+      esc(t('breakdown.n', { n: fmt.num(n) }))}</span>
+      <span class="bdcat">${esc(catText(k))}</span>
+      <span class="${a.can ? 'good' : 'warn'}">${esc(t(a.key))}</span></div>`;
   }).join('');
 
   const retryN = bad.filter((r) => r.job.retryable).length;
@@ -385,23 +417,26 @@ function breakdownHtml(rows, st) {
 
   const actions = [];
   if (retryN) {
-    actions.push(`<button type="button" id="retryFailed">重試可重試的 ${retryN} 個</button>`);
+    actions.push(`<button type="button" id="retryFailed">${
+      esc(t('fetch.retry.n', { n: fmt.num(retryN) }))}</button>`);
     if (limited.length) {
       // **預設不勾。** 自動解除等於用 fallback 掩蓋「對方在擋我們」，
       // 而且解除窗口我們不知道，猜錯就是再撞一次。
-      actions.push(`<label class="chk" data-tip="解除後這些會真的跑，但可能再次被限速">
-        <input type="checkbox" id="retryClearRate"> 一併解除限速標記（${
-          esc(limited.join('、'))}）</label>`);
+      actions.push(`<label class="chk" data-tip="${esc(t('fetch.clearrate.tip'))}">
+        <input type="checkbox" id="retryClearRate"> ${
+          esc(t('fetch.clearrate', { sites: limited.join(t('common.listsep')) }))}</label>`);
     }
   }
   if (capN) {
-    actions.push(`<button type="button" id="resumeCapped" class="ghost">繼續抓 ${capN} 個沒抓完的</button>`);
+    actions.push(`<button type="button" id="resumeCapped" class="ghost">${
+      esc(t('fetch.resume.n', { n: fmt.num(capN) }))}</button>`);
   }
 
   return `<div class="breakdown">${detail}</div>`
     + (actions.length ? `<div class="row retry-row">${actions.join('')}</div>` : '')
     + (retryN && capN
-      ? '<div class="muted">「重試」與「繼續抓」是兩件事：撞頁數上限不是失敗。</div>'
+      ? `<div class="muted">${esc(t('fetch.retryvsresume.1'))}<br>${
+        esc(t('fetch.retryvsresume.2'))}</div>`
       : '');
 }
 
@@ -432,42 +467,50 @@ function renderVerdict(st, rows) {
   if (retried.length) {
     const fixed = retried.filter((r) => r.job.state === 'done').length;
     const still = retried.length - fixed;
-    lines.push(`<div class="${still ? 'warn' : 'good'}">重試的 ${retried.length} 個裡，
-      <b>修好了 ${fixed} 個</b>${still ? `，還有 ${still} 個仍然失敗` : ''}。</div>`);
+    lines.push(`<div class="${still ? 'warn' : 'good'}">${
+      esc(t('verdict.retried', { n: fmt.num(retried.length), fixed: fmt.num(fixed) }))}${
+      still ? esc(t('verdict.retried.still', { n: fmt.num(still) })) : ''}</div>`);
     if (still) {
       // 沒有這句，重試按鈕會變成使用者的無限迴圈 —— 而每一圈都是真的
       // 打到平台的請求。
-      lines.push(`<div class="warn">同一個原因連續兩次失敗，多半不是暫時性的：
-        <b>再按重試不會變好</b>，先去排除原因。</div>`);
+      lines.push(`<div class="warn">${esc(t('verdict.samecause'))}<br>${
+        esc(t('verdict.samecause.2'))}</div>`);
     }
   }
   if (st.history_full) {
-    lines.push(`<div class="warn">佇列只留得到最後 ${st.history_limit} 筆 ——
-      更早的結果已經沒了，「全部重試」涵蓋不到它們。</div>`);
+    lines.push(`<div class="warn">${
+      esc(t('verdict.historyfull', { n: fmt.num(st.history_limit) }))}<br>${
+      esc(t('verdict.historyfull.2'))}</div>`);
   }
   if (cappedJobs.length) {
-    lines.push(`<div class="warn">有 ${cappedJobs.length} 個帳號<b>沒有抓完</b> ——
-      撞到頁數上限。用下面的「繼續抓」從上次停下來的地方接下去
-      （<b>再跑一次是沒用的</b>：增量會在第 1 頁碰到已知貼文就停）。</div>`);
+    lines.push(`<div class="warn">${
+      esc(t('verdict.capped', { n: fmt.num(cappedJobs.length) }))}<br>${
+      esc(t('verdict.capped.2'))}${hint(t('verdict.capped.tip'))}</div>`);
   }
   if (failed.length) {
-    lines.push(`<div class="warn">${failed.length} 個失敗 —— 分類與處置見下。</div>`);
+    lines.push(`<div class="warn">${
+      esc(t('verdict.failed.n', { n: fmt.num(failed.length) }))}</div>`);
   }
   if (skipped.length) {
-    lines.push(`<div class="muted">⊘ ${skipped.length} 個跳過（多半是只能用 extension 採集的 X 帳號，或站台被限速）。</div>`);
+    // 逐項的**真**原因就在下面的分類列裡；這裡那句括號只是推測，進氣泡。
+    lines.push(`<div class="muted">${
+      esc(t('verdict.skipped.n', { n: fmt.num(skipped.length) }))}${
+      hint(t('verdict.skipped.tip'))}</div>`);
   }
   lines.push(breakdownHtml(rows, st));
   // 自動退訂一定要講。靜默退訂就算技術上正確，使用者也只會覺得
   // 帳號自己不見了 —— 然後在帳號頁上找半天。
   const untracked = st.auto_untracked || [];
   if (untracked.length) {
-    lines.push(`<div class="warn">本輪自動退訂 ${untracked.length} 個帳號
-      （連續找不到）：${esc(untracked.join('、'))}。<br>
-      資料一筆都沒動，只是不再自動抓；帳號頁上可以「恢復追蹤」。</div>`);
+    lines.push(`<div class="warn">${esc(t('verdict.untracked', {
+      n: fmt.num(untracked.length),
+      names: untracked.join(t('common.listsep')) }))}<br>${
+      esc(t('verdict.untracked.2'))}</div>`);
   }
   if (!cappedJobs.length && !failed.length && done.length) {
     // **沒有壞消息本身就是一則消息** —— 不說的話使用者得自己逐行檢查。
-    lines.push(`<div class="good">${done.length} 個全部抓完，沒有撞上限。</div>`);
+    lines.push(`<div class="good">${
+      esc(t('verdict.allclear', { n: fmt.num(done.length) }))}</div>`);
   }
 
   // 「新增 N 個媒體」一定要接「還沒下載」，否則使用者會以為檔案已經在磁碟上。
@@ -475,29 +518,32 @@ function renderVerdict(st, rows) {
   if (media) {
     const auto = state.settings?.auto_download;
     lines.push(`<div class="${pending ? 'warn' : 'muted'}">
-      ${pending
-        ? `⚠ 還有 ${pending} 個媒體<b>還沒下載</b>。背景下載目前是${auto ? '開的，會自己撿' : '關的'}。`
-        : '抓到的媒體都已經下載完了。'}</div>`
+      ${esc(pending
+        ? t('verdict.pending', { n: fmt.num(pending),
+            state: t(auto ? 'verdict.pending.auto.on' : 'verdict.pending.auto.off') })
+        : t('verdict.pending.none'))}</div>`
       + (pending && !auto
-        ? '<div class="row"><button type="button" id="runQueueNow">立即下載</button></div>'
+        ? `<div class="row"><button type="button" id="runQueueNow">${
+            esc(t('verdict.downloadnow'))}</button></div>`
         : ''));
   }
 
   box.classList.remove('hidden');
-  box.innerHTML = `<h3>跑完 ${finished.length} 個帳號 · 新增 ${posts} 則貼文 / ${media} 個媒體</h3>`
+  box.innerHTML = `<h3>${esc(t('verdict.head', { n: fmt.num(finished.length),
+    posts: fmt.num(posts), media: fmt.num(media) }))}</h3>`
     + lines.join('');
 }
 
 $('batchVerdict').addEventListener('click', async (ev) => {
   if (!ev.target.closest('#runQueueNow')) return;
   ev.target.disabled = true;
-  ev.target.textContent = '已開始下載…';
+  ev.target.textContent = t('verdict.downloading');
   try {
     await api('/api/queue/run', { method: 'POST' });
     // ①「已開始」與③「下載完了」不共用提示：進度在 header 的背景活動區
     refreshQueue();
   } catch (e) {
-    ev.target.textContent = `失敗：${e.message}`;
+    ev.target.textContent = t('common.failed.short', { msg: e.message });
     ev.target.disabled = false;
   }
 });
@@ -527,8 +573,13 @@ export async function refreshFetchQueue() {
   const total = active + tally.done + tally.failed + tally.skipped;
   const finishedN = tally.done + tally.failed + tally.skipped;
   $('fetchQueueSummary').textContent = active
-    ? `第 ${finishedN + 1} / ${total}　完成 ${tally.done}　失敗 ${tally.failed}　跳過 ${tally.skipped}`
-    : (total ? `完成 ${tally.done}　失敗 ${tally.failed}　跳過 ${tally.skipped}` : '佇列是空的');
+    ? t('queue.progress', { i: fmt.num(finishedN + 1), total: fmt.num(total),
+        done: fmt.num(tally.done), failed: fmt.num(tally.failed),
+        skipped: fmt.num(tally.skipped) })
+    : (total
+      ? t('queue.tally', { done: fmt.num(tally.done), failed: fmt.num(tally.failed),
+          skipped: fmt.num(tally.skipped) })
+      : t('queue.empty.short'));
   // 佇列非空時才提醒它不持久 —— 空的時候講這件事沒有意義。
   $('fetchVolatile').classList.toggle('hidden', !active);
 
@@ -537,21 +588,22 @@ export async function refreshFetchQueue() {
   if (total) bar.firstElementChild.style.width = `${(finishedN / total) * 100}%`;
 
   $('clearFetchQueue').disabled = !c.queued;
-  $('clearFetchQueue').dataset.tip = c.queued ? '' : '沒有還沒開始的工作';
+  $('clearFetchQueue').dataset.tip = c.queued ? '' : t('queue.clear.none');
 
   const limited = Object.entries(st.rate_limited || {});
   $('clearRateLimit').classList.toggle('hidden', limited.length === 0);
 
   const parts = [];
   if (limited.length) {
-    parts.push(`<div class="bad">⚠ 被限速：${limited
-      .map(([k, why]) => `${esc(k)}（${esc(why)}）`).join('、')}
-      —— 解除後會再試，可能再次被限速。</div>`);
+    parts.push(`<div class="bad">${esc(t('queue.ratelimited', {
+      sites: limited.map(([k, why]) => k + t('common.paren', { x: why }))
+        .join(t('common.listsep')) }))}
+      ${esc(t('queue.ratelimited.2'))}</div>`);
   }
   parts.push(...rows.map(jobHtml));
   $('fetchQueue').innerHTML = parts.join('')
-    || `<div class="empty">佇列是空的 —— 還沒抓過任何東西。<br>
-        貼幾個網址，或按「開始更新」讓追蹤中的帳號各跑一次增量。</div>`;
+    || `<div class="empty">${esc(t('queue.empty.1'))}<br>
+        ${esc(t('queue.empty.2'))}</div>`;
 
   renderVerdict(st, rows);
 }
@@ -591,28 +643,35 @@ $('batchVerdict').addEventListener('click', async (ev) => {
       const r = await postRetry('/api/fetch/queue/retry-failed', {
         clear_rate_limit: clear,
       });
-      const bits = [`<div class="good">已重新排入 ${r.requeued} 個 ——
-        <b>排在佇列尾端</b>，會照序列慢慢跑。</div>`];
+      const bits = [`<div class="good">${
+        esc(t('retry.requeued', { n: fmt.num(r.requeued) }))} ——
+        ${esc(t('retry.requeued.2'))}</div>`];
       if (r.will_be_skipped) {
-        bits.push(`<div class="warn">⚠ 其中 ${r.will_be_skipped} 個屬於<b>仍被限速</b>的站台，
-          會直接被跳過。要它們真的跑，先勾「一併解除限速標記」再重試一次。</div>`);
+        bits.push(`<div class="warn">${
+          esc(t('retry.willskip', { n: fmt.num(r.will_be_skipped) }))}<br>${
+          esc(t('retry.willskip.2'))}</div>`);
       }
       if (r.refused?.length) {
         // 靜默少排幾個就是這個專案禁止的靜默漏抓 —— 逐筆講。
-        bits.push(`<div class="muted">${r.refused.length} 個沒有排入：${
-          esc(r.refused.map((x) => `${x.label}（${x.reason}）`).join('、'))}</div>`);
+        bits.push(`<div class="muted">${esc(t('retry.refused.n', {
+          n: fmt.num(r.refused.length),
+          why: r.refused.map((x) => x.label + t('common.paren', { x: x.reason }))
+            .join(t('common.listsep')) }))}</div>`);
       }
       submitNote(bits.join(''));
     } else {
       const r = await postRetry('/api/fetch/queue/resume-capped');
-      submitNote(`<div class="good">已排入 ${r.requeued} 個續抓 ——
-        從上次停下來的<b>游標</b>接下去，不是從第 1 頁重來。</div>`
+      submitNote(`<div class="good">${
+        esc(t('resume.queued', { n: fmt.num(r.requeued) }))} ——
+        ${esc(t('resume.queued.2'))}</div>`
         + (r.refused?.length
-          ? `<div class="muted">${r.refused.length} 個沒有排入（已經在佇列裡）</div>` : ''));
+          ? `<div class="muted">${esc(t('retry.refused.queued',
+            { n: fmt.num(r.refused.length) }))}</div>` : ''));
     }
     await refreshFetchQueue();
   } catch (e) {
-    submitNote(`<div class="bad">送出失敗：${esc(e.message)}</div>`);
+    submitNote(`<div class="bad">${
+      esc(t('fetch.submit.failed', { msg: e.message }))}</div>`);
     btn.disabled = false;
   }
 });
@@ -643,13 +702,13 @@ $('fetchQueue').addEventListener('click', async (ev) => {
     );
     if (!r.requeued) {
       // 拒絕的理由要寫出來。按了沒反應是最糟的失敗。
-      btn.textContent = r.refused_reason || '排不進去';
+      btn.textContent = r.refused_reason || t('retry.refused.btn');
       return;
     }
-    btn.textContent = isResume ? '已排入續抓' : '已重新排入';
+    btn.textContent = t(isResume ? 'retry.done.resume' : 'retry.done.retry');
     await refreshFetchQueue();
   } catch (e) {
-    btn.textContent = `失敗：${e.message}`;
+    btn.textContent = t('common.failed.short', { msg: e.message });
     btn.disabled = false;
   }
 });
@@ -670,12 +729,12 @@ $('includePixiv').addEventListener('change', refreshScope);
 // 但畫面上留著舊結果會讓人以為送的是那份
 $('fetchUrls').addEventListener('input', () => {
   $('submitUrls').disabled = true;
-  $('submitUrls').textContent = '送出（請先按解析）';
+  $('submitUrls').textContent = t('fetch.submit.needparse');
 });
 
 $('clearFetchQueue').addEventListener('click', async () => {
   const r = await api('/api/fetch/queue', { method: 'DELETE' });
-  $('fetchQueueSummary').textContent = `已清掉 ${r.cleared} 個還沒開始的`;
+  $('fetchQueueSummary').textContent = t('queue.cleared', { n: fmt.num(r.cleared) });
   refreshFetchQueue();
 });
 

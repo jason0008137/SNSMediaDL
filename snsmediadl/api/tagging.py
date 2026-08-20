@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..db.enums import ContentType, Rating, RatingSource
 from ..db.models import Account, Post
 from .app import get_session
+from .errors import ApiError
 
 router = APIRouter(prefix="/api", tags=["tagging"])
 
@@ -41,9 +42,11 @@ class RetagIn(BaseModel):
 
 def _validate(rating: str | None, content_type: str | None) -> None:
     if rating is not None and rating not in Rating.values():
-        raise HTTPException(422, f"rating 必須是 {Rating.values()} 之一")
+        raise ApiError("tag.bad_rating", f"rating must be one of {Rating.values()}.")
     if content_type is not None and content_type not in ContentType.values():
-        raise HTTPException(422, f"content_type 必須是 {ContentType.values()} 之一")
+        raise ApiError(
+            "tag.bad_content_type",
+            f"content_type must be one of {ContentType.values()}.")
 
 
 @router.patch("/posts/{post_id}/tags")
@@ -52,7 +55,7 @@ def set_post_tags(
 ) -> dict:
     post = session.get(Post, post_id)
     if post is None:
-        raise HTTPException(404, "post not found")
+        raise ApiError("post.not_found", "No such post.", 404)
     _validate(body.rating, body.content_type)
 
     # 用 model_fields_set 區分「沒帶這個欄位」與「明確帶 null」——
@@ -106,7 +109,7 @@ def set_account_defaults(
 ) -> dict:
     account = session.get(Account, account_id)
     if account is None:
-        raise HTTPException(404, "account not found")
+        raise ApiError("account.not_found", "No such account.", 404)
     _validate(body.default_rating, body.default_content_type)
 
     if body.default_rating is not None:
@@ -237,9 +240,11 @@ def retag_account_posts(
     """用帳號預設值批次重標該帳號的貼文。"""
     account = session.get(Account, account_id)
     if account is None:
-        raise HTTPException(404, "account not found")
+        raise ApiError("account.not_found", "No such account.", 404)
     if not account.default_rating and not account.default_content_type:
-        raise HTTPException(422, "帳號沒有設定預設值，無從重標")
+        raise ApiError(
+            "retag.no_defaults",
+            "This account has no defaults set, so there is nothing to apply.")
 
     stmt = select(Post).where(Post.account_id == account_id)
     if not body.overwrite_manual:

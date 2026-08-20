@@ -33,7 +33,7 @@ Write-Host "[1/3] Python $version (.venv)" -NoNewline
 # --- 相依套件（缺了才裝，不要每次啟動都跑 pip）---
 if (-not (Test-VenvDeps $py)) {
     Write-Host " — 安裝相依套件中（第一次會花一點時間）..."
-    & $py -m pip install -e ".[dev]"
+    & $py -m pip install -e ".[dev,thumbs]"
     if ($LASTEXITCODE -ne 0) { Fail "套件安裝失敗。" }
 } else {
     Write-Host " — 套件已就緒"

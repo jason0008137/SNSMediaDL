@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -82,6 +83,29 @@ class Config:
     # 執行期可透過 PATCH /api/settings 或 GUI 的開關切換，不需重啟。
     auto_download: bool = False
     poll_interval_seconds: float = 5.0
+
+    # 每個可持久化設定的值是**哪一層**決定的：env / prefs / config / default。
+    # 不是設定本身，是設定的來源 —— 設定頁要靠它回答「我改了 config.toml
+    # 為什麼沒生效」。沿用 ffmpeg 三層偵測回報 source 的既有做法。
+    setting_sources: dict[str, str] = field(default_factory=dict)
+
+    # 偏好檔壞掉時的錯誤訊息，`None` 代表沒事。**不是靜默忽略** ——
+    # 使用者看到的症狀是「我的設定不見了」，那句話要出現在設定頁上。
+    prefs_error: str | None = None
+
+    # 這份設定是從哪個 config.toml 載入的。`None` = 直接建構的
+    # （測試會這樣做，或呼叫端自己組了一份）。
+    #
+    # ⚠️ 需要它的原因很具體：「改用 config.toml 的值」要重新讀一次**同一個**
+    # 檔案。少了這個欄位，那個功能會去讀專案根目錄的真實 config.toml ——
+    # 在測試裡就是讀到開發者自己的設定，行為隨環境而變。
+    config_file: Path | None = None
+
+    # GUI 的介面語言。**預設英文**，而且刻意**不猜瀏覽器語系** ——
+    # 猜錯的話使用者看到的是他沒選過的語言，而「為什麼是這個語言」答不出來。
+    # 值域由前端的 locale 檔決定（en / zh-Hant / ja）；這裡不驗證，
+    # 因為新增語系不該還要改後端。
+    language: str = "en"
 
     # ── Fediverse 抓取（Misskey / Mastodon）──────────────
     # 列舉的節流與下載分開：列舉打 API host，下載打媒體 CDN，限制不同。
@@ -198,6 +222,145 @@ def ensure_output_root(root: Path) -> Path:
 # 拼路徑時才炸（或更糟：`str + str` 拼出一個看起來對的錯路徑）。
 # 新增 `X | None` 的路徑設定時**必須**加進這裡。
 _OPTIONAL_PATH_FIELDS = frozenset({"thumb_root"})
+
+
+# ── 使用者偏好（prefs.json）──────────────────────────────
+#
+# **`config.toml` 是人寫的，這個檔案是程式寫的。** 兩者不可以混在一起：
+# 程式要寫回 TOML 只有兩條路，重新序列化（註解與排版全毀）或自己寫一個
+# TOML 編輯器 —— 而 config.toml 是使用者唯一能控制 backend 的地方，
+# 把他寫的註解吃掉是不可接受的。
+#
+# 優先序：**內建預設 < config.toml < prefs.json < 環境變數**
+#
+# `prefs.json` 大於 `config.toml`，因為 GUI 上按下去是使用者**最近一次的
+# 明確意圖**。環境變數仍然最大 —— 那是部署層的覆寫，改它的人知道自己在
+# 做什麼。
+#
+# ⚠️ 這條規則有一個經典陷阱：「我改了 config.toml，重啟卻沒生效」。
+# 處置**不是**改優先序，而是把來源講出來 —— `setting_source()` 回報命中
+# 哪一層，設定頁顯示它，衝突時明講兩邊各是什麼。
+# 這與上面 ffmpeg 三層偵測回報 `source` 是同一套做法。
+
+# 可以寫進 prefs.json 的鍵。**白名單，不是「所有 Config 欄位」。**
+#
+# ⚠️⚠️ **憑證與路徑永遠不准加進來。**
+#   · `platform_credentials` / `instance_tokens` —— 憑證絕不由程式寫進任何
+#     檔案，那是多開一個外洩點。它們只從 config.toml 或環境變數進來。
+#   · `output_root` / `thumb_root` / `extra_media_roots` / `db_path` ——
+#     它們決定檔案落在哪裡，執行到一半換掉會讓同一批媒體散在兩個地方。
+#   · `host` / `port` —— 改了要重啟才有意義，而重啟就會重讀 config.toml。
+# 加鍵要動這一行，這個摩擦是刻意的。
+PERSISTABLE: tuple[str, ...] = ("auto_download", "language")
+
+PREFS_FILENAME = "prefs.json"
+
+
+def prefs_path(cfg: "Config") -> Path:
+    """偏好檔的位置：DB 旁邊。
+
+    不另立設定項 —— 「一個資料夾就是一整套」是這個工具的形態，
+    設定散到別的地方只會讓備份變難。
+    """
+    return cfg.db_path.parent / PREFS_FILENAME
+
+
+def load_prefs(path: Path) -> tuple[dict, str | None]:
+    """讀偏好檔。回 `(值, 錯誤訊息)`。
+
+    ⚠️ **壞掉的檔案不吞。** 靜默當作「沒有偏好」的症狀是「我的設定又不見了」
+    —— 那正是這整套機制要修的東西，不能自己再製造一次。
+    讀不到就回一段錯誤訊息，讓 `/api/settings` 與設定頁講得出來。
+    """
+    if not path.exists():
+        return {}, None                      # 沒有偏好是正常情況，不是錯誤
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        log.warning("偏好檔讀不到，已改用預設值：%s（%s）", path, e)
+        return {}, f"{type(e).__name__}: {e}"
+    if not isinstance(data, dict):
+        log.warning("偏好檔的內容不是物件，已忽略：%s", path)
+        return {}, "檔案內容不是 JSON 物件"
+    out = {}
+    for key, value in data.items():
+        if key not in PERSISTABLE:
+            # 手動塞進去的東西不生效，但也不能安靜地消失。
+            log.warning("偏好檔有不可持久化的鍵，已忽略：%s", key)
+            continue
+        out[key] = value
+    return out, None
+
+
+def _write_prefs(path: Path, data: dict) -> None:
+    """原子寫入。
+
+    ⚠️ 直接 `open(w)` 寫到一半被砍，檔案會變成半截 JSON，下次啟動讀不到
+    任何偏好 —— 使用者看到的又是「設定不見了」。
+    寫到同目錄的暫存檔再 `os.replace()`，同一個檔案系統上是原子的。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def save_pref(cfg: "Config", key: str, value: object) -> None:
+    """寫一個偏好並套進 `cfg`。白名單外丟 `ValueError`。"""
+    if key not in PERSISTABLE:
+        raise ValueError(f"{key!r} 不可持久化（見 config.PERSISTABLE）")
+    path = prefs_path(cfg)
+    data, _err = load_prefs(path)
+    data[key] = value
+    _write_prefs(path, data)
+    setattr(cfg, key, value)
+    # 環境變數仍然贏 —— 寫得進檔案但這一輪不生效，那要講出來，
+    # 否則使用者會以為開關壞了。
+    if _env_key(key) in os.environ:
+        log.warning("%s 已寫進偏好檔，但環境變數 %s 仍然覆寫它",
+                    key, _env_key(key))
+    else:
+        cfg.setting_sources[key] = "prefs"
+
+
+def clear_pref(cfg: "Config", key: str, base: "Config") -> None:
+    """把一個鍵從偏好檔移除，值回到 config.toml／預設的那個。
+
+    `base` 是**沒有套用偏好**的那份設定 —— 呼叫端要自己重新載入一次，
+    這裡不猜。
+    """
+    if key not in PERSISTABLE:
+        raise ValueError(f"{key!r} 不可持久化（見 config.PERSISTABLE）")
+    path = prefs_path(cfg)
+    data, _err = load_prefs(path)
+    data.pop(key, None)
+    _write_prefs(path, data)
+    setattr(cfg, key, getattr(base, key))
+    cfg.setting_sources[key] = base.setting_sources.get(key, "default")
+
+
+def _env_key(key: str) -> str:
+    return f"{ENV_PREFIX}{key.upper()}"
+
+
+def base_config(cfg: "Config") -> "Config":
+    """「沒有偏好的那份設定」—— 也就是 config.toml／內建預設說了算的版本。
+
+    給兩個地方用：比對「config.toml 寫的跟現在生效的是不是同一個」，
+    以及 `DELETE /api/settings/{key}` 之後值要回到哪裡。
+
+    ⚠️ 直接建構出來的 `Config`（測試、或呼叫端自己組的）沒有 `config_file`，
+    那時基準就是**內建預設**，不可以去讀專案根目錄的那個檔案 ——
+    否則測試結果會隨開發者自己的 config.toml 而變。
+    """
+    if cfg.config_file is None:
+        return Config()
+    return load_config(cfg.config_file, with_prefs=False)
+
+
+def setting_source(cfg: "Config", key: str) -> str:
+    """`env` / `prefs` / `config` / `default`。設定頁靠它講出「這個值是誰決定的」。"""
+    return cfg.setting_sources.get(key, "default")
 
 
 # ── ffmpeg 偵測 ─────────────────────────────────────────
@@ -317,11 +480,19 @@ def _parse_path_list(values: object) -> list[Path]:
     return out
 
 
-def load_config(config_file: Path | None = None) -> Config:
-    """載入設定。config.toml 缺席是正常情況，不是錯誤。"""
+def load_config(config_file: Path | None = None, *, with_prefs: bool = True) -> Config:
+    """載入設定。config.toml 缺席是正常情況，不是錯誤。
+
+    優先序：**內建預設 < config.toml < prefs.json < 環境變數**。
+    每一層都會更新 `cfg.setting_sources`，設定頁才講得出來源。
+
+    `with_prefs=False` 用來取得「沒有偏好的那份設定」——
+    `DELETE /api/settings/{key}` 要靠它知道值該回到什麼。
+    """
     cfg = Config()
 
     path = config_file if config_file is not None else CONFIG_FILE
+    cfg.config_file = path
     if path.exists():
         with path.open("rb") as fh:
             data = tomllib.load(fh)
@@ -334,6 +505,19 @@ def load_config(config_file: Path | None = None) -> Config:
             elif isinstance(current, list):
                 value = _parse_path_list(value)
             setattr(cfg, key, value)
+            cfg.setting_sources[key] = "config"
+
+    # ⚠️ 偏好層在 config.toml **之後**、環境變數**之前**。
+    # 它是使用者最近一次在 GUI 上的明確意圖，該贏過幾個月前寫在設定檔裡的
+    # 預設值；但贏不過部署層的環境變數。
+    #
+    # ⚠️ db_path 可能被 config.toml 改過，所以偏好檔的位置要在這裡才算得出來。
+    if with_prefs:
+        prefs, err = load_prefs(prefs_path(cfg))
+        cfg.prefs_error = err
+        for key, value in prefs.items():
+            setattr(cfg, key, value)
+            cfg.setting_sources[key] = "prefs"
 
     for key in vars(cfg):
         env_key = f"{ENV_PREFIX}{key.upper()}"
@@ -347,6 +531,7 @@ def load_config(config_file: Path | None = None) -> Config:
             setattr(cfg, key, _parse_pairs(os.environ[env_key]))
         else:
             setattr(cfg, key, _coerce(os.environ[env_key], current))
+        cfg.setting_sources[key] = "env"
 
     return cfg
 

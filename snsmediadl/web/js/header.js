@@ -7,6 +7,7 @@
 // 三條都閒著時要**明說閒置**，不能整區變空白：空白看起來跟壞掉一樣。
 
 import { $, esc } from './dom.js';
+import { fmt, t } from './i18n.js';
 import { state, safeMode, setSafeMode, onSafeModeChange } from './state.js';
 import { onQueueChange } from './queue.js';
 import { openProblems } from './views/problems.js';
@@ -22,12 +23,8 @@ export function renderSafeToggle() {
   const btn = $('safeBtn');
   btn.setAttribute('aria-pressed', String(on));
   // 關閉時三重載體：圖示 + 文字 + 加粗的邊框。灰階列印仍可辨識。
-  btn.innerHTML = on
-    ? '👁 安全模式'
-    : '⚠ 安全模式關閉 — 顯示 R18';
-  btn.dataset.tip = on
-    ? '開著：媒體頁不顯示標為 r18 的貼文。\n這只影響媒體查詢，帳號頁與抓取頁不受影響。'
-    : '關閉中：媒體頁會顯示 r18 內容。\n點一下改回安全模式。';
+  btn.innerHTML = t(on ? 'safe.on' : 'safe.off');
+  btn.dataset.tip = t(on ? 'safe.on.tip' : 'safe.off.tip');
   document.body.classList.toggle('safe', on);
 }
 
@@ -45,12 +42,14 @@ function renderActivity() {
     // backend 無回應要講出來，而且要能與「閒置」分辨 ——
     // 兩者都是「沒有東西在跑」，但一個是正常、一個是完全不能用。
     btn.classList.add('bad');
-    label.textContent = 'backend 無回應';
-    $('flowDownload').innerHTML = '<b>① 下載</b><span class="err">問不到狀態</span>';
-    $('flowFetch').innerHTML = '<b>② 抓取佇列</b><span class="err">問不到狀態</span>';
-    $('flowExt').innerHTML = '<b>③ Extension</b><span class="err">問不到狀態</span>';
-    $('flowFailed').textContent = '失敗 —';
-    btn.dataset.tip = 'backend 沒有回應。\n它沒在跑的話，extension 送出的東西也不會進來。';
+    label.textContent = t('activity.backend.down');
+    const dead = (k) => `<b>${esc(t(k))}</b><span class="err">${
+      esc(t('activity.nostatus'))}</span>`;
+    $('flowDownload').innerHTML = dead('activity.down');
+    $('flowFetch').innerHTML = dead('activity.fetch');
+    $('flowExt').innerHTML = dead('activity.ext');
+    $('flowFailed').textContent = t('header.failed');
+    btn.dataset.tip = t('activity.backend.tip');
     return;
   }
 
@@ -59,41 +58,46 @@ function renderActivity() {
   const failed = q.failed || 0;
 
   // ① 下載 worker
-  $('flowDownload').innerHTML = `<b>① 下載</b><span>${
-    auto === undefined ? '設定未知'
-      : auto ? '開 —— 每幾秒自己撿 pending 來抓' : '關（不會自己抓）'
-  }${pending ? `　待下載 <b class="num">${pending}</b> 筆` : ''}${
-    q.running ? '　<b>正在下載</b>' : ''}</span>`;
+  $('flowDownload').innerHTML = `<b>${esc(t('activity.down'))}</b><span>${
+    esc(t(auto === undefined ? 'activity.auto.unknown'
+      : auto ? 'activity.auto.on' : 'activity.auto.off'))
+  }${pending ? `&ensp;${esc(t('activity.pending'))} <b class="num">${fmt.num(pending)}</b>` : ''}${
+    q.running ? `&ensp;<b>${esc(t('activity.downloading.now'))}</b>` : ''}</span>`;
 
   // ② 抓取佇列
-  $('flowFetch').innerHTML = `<b>② 抓取佇列</b><span>${
-    state.fetchActive ? '執行中' : '空'}</span>`;
+  $('flowFetch').innerHTML = `<b>${esc(t('activity.fetch'))}</b><span>${
+    esc(t(state.fetchActive ? 'activity.running' : 'activity.empty'))}</span>`;
 
   // ③ extension 採集。**只在記憶體裡** —— 重啟後歸零，所以文案要講清楚
   // 「自 backend 啟動以來」，不可以講成「從來沒有」。
   const ing = q.last_ingest;
-  $('flowExt').innerHTML = `<b>③ Extension</b><span>${
-    ing
-      ? `上次 ${time(ing.at)} 送入 ${ing.posts_new} 則 / ${ing.media_new} 個媒體`
-      : '自 backend 啟動以來沒有收到'}</span>`;
+  $('flowExt').innerHTML = `<b>${esc(t('activity.ext'))}</b><span>${
+    esc(ing
+      ? t('activity.ext.last', { time: time(ing.at),
+                                 posts: fmt.num(ing.posts_new),
+                                 media: fmt.num(ing.media_new) })
+      : t('activity.ext.none'))}</span>`;
 
   $('flowFailed').innerHTML = failed
-    ? `<span class="err">⚠ 失敗 ${failed} 筆</span>`
-    : '失敗 0 筆';
+    ? `<span class="err">${esc(t('activity.failed.n', { n: fmt.num(failed) }))}</span>`
+    : esc(t('activity.failed.none'));
 
   // 摘要一句。優先序：壞消息 > 在跑 > 閒置。
   if (failed) {
     btn.classList.add('bad');
-    label.textContent = `⚠ 失敗 ${failed}`;
+    label.textContent = t('activity.summary.failed', { n: fmt.num(failed) });
   } else if (q.running || q.downloading || state.fetchActive) {
     btn.classList.add('busy');
-    label.textContent = state.fetchActive && !q.running ? '抓取中' : `下載中 ${q.downloading || ''}`.trim();
+    label.textContent = state.fetchActive && !q.running
+      ? t('activity.summary.fetching')
+      : t('activity.summary.downloading',
+          { n: q.downloading ? fmt.num(q.downloading) : '' }).trim();
   } else if (pending) {
-    label.textContent = `待下載 ${pending}`;
+    label.textContent = t('activity.summary.pending', { n: fmt.num(pending) });
   } else {
-    label.textContent = '閒置';
+    label.textContent = t('activity.summary.idle');
   }
-  btn.dataset.tip = '三條背景流程各自獨立。點開看各自的狀態。';
+  btn.dataset.tip = t('activity.tip');
 }
 
 function togglePop(open) {

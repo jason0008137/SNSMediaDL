@@ -53,15 +53,28 @@ function show(target) {
   el.textContent = text;
   el.classList.remove('hidden');
   if (!el.id) el.id = `tip-${++seq}`;
-  // 螢幕閱讀器要唸得到。原生 title 至少有這個，自製的不能倒退。
-  target.setAttribute('aria-describedby', el.id);
+  // ⚠️ 有些元素**本來就有** aria-describedby（dom.js 的 setDetailsOff /
+  // setFieldOff 會掛一個常駐的「為什麼不能用」）。直接覆蓋再 remove 掉，
+  // 等於滑鼠掃過一次就把那段說明永久弄丟 —— 而且畫面上完全看不出來。
+  // 記住原本的值，串在氣泡後面，關閉時還原。
+  const was = target.getAttribute('aria-describedby');
+  if (was && was !== el.id) target.dataset.tipDescWas = was;
+  target.setAttribute('aria-describedby', was && was !== el.id ? `${was} ${el.id}` : el.id);
   current = target;
   place(target);
 }
 
 export function hideTip() {
   clearTimeout(timer);
-  if (current) current.removeAttribute('aria-describedby');
+  if (current) {
+    const was = current.dataset.tipDescWas;
+    if (was) {
+      current.setAttribute('aria-describedby', was);
+      delete current.dataset.tipDescWas;
+    } else {
+      current.removeAttribute('aria-describedby');
+    }
+  }
   current = null;
   if (tipEl) tipEl.classList.add('hidden');
 }

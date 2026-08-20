@@ -15,6 +15,7 @@
 //      焦點會掉回 <body>，等於從頭再 Tab 一次
 
 import { esc } from './dom.js';
+import { t } from './i18n.js';
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),'
   + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -124,7 +125,8 @@ export function openOverlay({ kind = 'modal', title, subtitle = '', body = '',
           <h2>${esc(title)}</h2>
           ${subtitle ? `<div class="sub">${esc(subtitle)}</div>` : ''}
         </div>
-        <button type="button" class="close" data-ovl-close aria-label="關閉">×</button>
+        <button type="button" class="close" data-ovl-close
+              aria-label="${esc(t('overlay.close.aria'))}">×</button>
       </div>
       <div class="ovl-body">${body}</div>
       ${foot ? `<div class="ovl-foot">${foot}</div>` : ''}
@@ -175,8 +177,12 @@ export function openOverlay({ kind = 'modal', title, subtitle = '', body = '',
  *
  *  `lines` 是**逐行原文**，一字不減地顯示。呼叫端負責內容，這裡不做摘要 ——
  *  「精簡」正是產品層摩擦最容易被誤刪的地方。 */
-export function confirmDialog({ title, lines = [], confirmText = '確定',
-                                cancelText = '取消', danger = false }) {
+export function confirmDialog({ title, lines = [], confirmText, cancelText,
+                                danger = false }) {
+  // ⚠️ 預設值不能寫在參數列 —— 那會在**模組載入時**求值，而那時 i18n
+  //    還沒載完（overlay.js 是葉子模組，比 initI18n 早）。
+  const yes = confirmText ?? t('confirm.default.yes');
+  const no = cancelText ?? t('confirm.default.no');
   return new Promise((resolve) => {
     let answered = false;
     const done = (value) => {
@@ -188,8 +194,9 @@ export function confirmDialog({ title, lines = [], confirmText = '確定',
       kind: 'small',
       title,
       body: `<p class="confirm-lines">${esc(lines.join('\n'))}</p>`,
-      foot: `<button type="button" class="ghost" data-act="no">${esc(cancelText)}</button>
-             <button type="button" class="${danger ? 'danger' : ''}" data-act="yes">${esc(confirmText)}</button>`,
+      foot: `<button type="button" class="ghost" data-act="no">${esc(no)}</button>
+             <button type="button" class="${danger ? 'danger' : ''}" data-act="yes">${
+               esc(yes)}</button>`,
       // 用 Esc 或點背板關掉 = 取消。**不可以當成確定** —— 破壞性動作的
       // 預設答案永遠是「不做」。
       onClose: () => done(false),

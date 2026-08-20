@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..services import deletion
 from .app import get_session
+from .errors import ApiError
 
 router = APIRouter(prefix="/api", tags=["deletion"])
 
@@ -21,12 +22,12 @@ def _require_confirm(confirm: bool, summary: deletion.DeletionSummary, what: str
     if confirm:
         return
     detail = (
-        f"這會刪掉 {what}：{summary.posts} 則貼文、{summary.media} 筆媒體記錄。"
-        " 確認後請帶 confirm=true。"
+        f"This deletes {what}: {summary.posts} posts, {summary.media} media records."
+        " Pass confirm=true once you are sure."
     )
     if summary.warnings:
         detail += " " + " ".join(summary.warnings)
-    raise HTTPException(400, detail)
+    raise ApiError("delete.confirm_required", detail, 400)
 
 
 @router.get("/accounts/{account_id}/deletion-preview")
@@ -36,7 +37,7 @@ def preview_account(
     try:
         return deletion.preview_account_deletion(session, account_id).as_dict()
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise ApiError("delete.not_found", str(exc), 404) from exc
 
 
 @router.delete("/accounts/{account_id}")
@@ -48,9 +49,9 @@ def remove_account(
     try:
         summary = deletion.preview_account_deletion(session, account_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise ApiError("delete.not_found", str(exc), 404) from exc
 
-    _require_confirm(confirm, summary, f"帳號 {summary.screen_name} 的全部資料")
+    _require_confirm(confirm, summary, f"everything for account {summary.screen_name}")
     return deletion.delete_account(session, account_id).as_dict()
 
 
@@ -63,9 +64,9 @@ def remove_post(
     try:
         summary = deletion.preview_post_deletion(session, post_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise ApiError("delete.not_found", str(exc), 404) from exc
 
-    _require_confirm(confirm, summary, f"貼文 #{post_id}")
+    _require_confirm(confirm, summary, f"post #{post_id}")
     return deletion.delete_post(session, post_id).as_dict()
 
 
@@ -78,4 +79,4 @@ def remove_media(media_id: int, session: Session = Depends(get_session)) -> dict
     try:
         return deletion.delete_media(session, media_id).as_dict()
     except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
+        raise ApiError("delete.not_found", str(exc), 404) from exc

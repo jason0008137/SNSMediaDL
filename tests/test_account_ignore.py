@@ -182,6 +182,8 @@ def test_bulk_refuses_more_than_the_sqlite_limit(client):
                     json={"ids": list(range(1, 902)), "is_ignored": True})
 
     assert r.status_code == 422
+    assert r.json()["code"] == "bulk.too_many_ids"
+    # 上限本身仍然要出現在訊息裡 —— 呼叫端得知道該切成多大一批。
     assert "900" in r.json()["detail"]
 
 

@@ -1,9 +1,39 @@
 // DOM 小工具與共用元件。
 
+import { fmt, t } from './i18n.js';
+
 export const $ = (id) => document.getElementById(id);
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ── (?) 說明鈕 ─────────────────────────────────────────
+//
+// **全站唯一的獨立說明入口符號。** 不新增第二套（資訊圖示、燈泡、括號 i）——
+// 兩套符號並存的
+// 意思是使用者每次都得先判斷「這兩個是不是同一件事」。
+//
+// ⚠️ 統一的是**獨立說明入口**，不是「所有說明都要有符號」。
+// 直接掛在控制項上的 `data-tip`（hover 控制項本身就會出現）是對的模式，
+// 不要為了「統一」給它們也配一顆 `?`。
+//
+// ⚠️ **什麼能收進來**：背景知識、原理、格式規則、低頻補充。
+// 約束、作用範圍、破壞性後果**一律留在畫面上** —— 那些是使用者做決定
+// 當下需要的東西，藏起來就等於沒有（見 js/tooltip.js 開頭）。
+
+/** 一顆 `?` 說明鈕的 HTML 字串。
+ *
+ *  ⚠️ 各 view **不要自己手寫這一串**。手寫的那幾顆遲早會漏掉 `type="button"`
+ *  （在 `<form>` 裡會變成送出鈕）或 `aria-label`（讀屏只唸得到「問號」）。
+ *
+ *  多行用 `
+` 就好 —— 這裡走 `dataset`，不是 HTML 屬性字面值，
+ *  不需要 `&#10;` 那一套實體。
+ */
+export function hint(text) {
+  return `<button type="button" class="hintbtn" aria-label="${esc(t('help.aria'))}"
+    data-tip="${esc(text)}">?</button>`;
+}
 
 // ── 五星評分元件 ───────────────────────────────────────
 // ⚠️ 這是「評分」，與 rating（sfw / r18 分級）是**兩件事**。
@@ -13,11 +43,11 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
 export function starsHtml(value, cls = '') {
   const stars = [1, 2, 3, 4, 5].map((n) =>
     `<button type="button" class="star${value && n <= value ? ' on' : ''}" data-n="${n}"
-             aria-label="${n} 星">★</button>`).join('');
+             aria-label="${esc(t('stars.n.aria', { n }))}">★</button>`).join('');
   // 原生 title 已全站淘汰（見 js/tooltip.js）：這一句是「怎麼清除評分」的
   // 唯一說明，掛在 title 上等於鍵盤與觸控使用者永遠看不到。
   return `<span class="stars ${cls}" data-stars="${value ?? ''}"
-                data-tip="點星星評分；再點同一顆可清除">${stars}</span>`;
+                data-tip="${esc(t('stars.tip'))}">${stars}</span>`;
 }
 
 export function paintStars(root, value) {
@@ -68,7 +98,9 @@ export const fmtBytes = (n) => {
   return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
 };
 
-export const fmtWhen = (iso) => (iso ? String(iso).slice(0, 10) : '—');
+// `fmtWhen()` 已刪除。它回的是 ISO 前 10 碼（`2026-08-14`），那是**一種語系的
+// 寫法**，不是中立格式 —— 換 locale 之後日英日三邊的日期順序不同，同一串數字
+// 讀起來是不同的日子。日期一律走 `i18n.js` 的 `fmt.date()`。
 
 // ── 讀不到檔案時，問出**為什麼** ─────────────────────
 //
@@ -79,18 +111,18 @@ export const fmtWhen = (iso) => (iso ? String(iso).slice(0, 10) : '—');
 // 各寫一份的結果是文案漂移 —— 而這幾句話正是使用者唯一能拿到的診斷：
 // 「檔案被刪了」與「那顆碟沒插」在畫面上長得一模一樣，措辭一旦不同步，
 // 就沒人知道哪一句才是真的。
+// ⚠️ 值是 **key 不是文字** —— 這張表在模組載入時就建好，那時 i18n
+// 還沒載完。查表拿到 key、要用的時候才 t()。
+//
+// ⚠️ 503 與 415 是**兩件事**：一個是「裝一下 ffmpeg 就好」，一個是
+// 「這個檔沒救」。混用的話使用者永遠不會去裝。
 const FILE_ERRORS = {
-  404: '讀不到原檔（404）—— 檔案被刪除，或那顆碟沒插。\n'
-     + 'DB 記的路徑是匯入當下記下的字串，沒有驗證過檔案還在不在。',
-  403: '這個檔案不在允許的媒體目錄內（403）—— 換過下載目錄的話，\n'
-     + '把舊目錄加進 config.toml 的 extra_media_roots。',
-  409: '這一筆還沒下載完成。',
-  415: '這個格式生不出縮圖。',
-  500: '原檔壞了（縮圖產不出來）。',
-  // ⚠️ 503 與 415 是**兩件事**：一個是「裝一下 ffmpeg 就好」，
-  // 一個是「這個檔沒救」。混用的話使用者永遠不會去裝。
-  503: '影片縮圖需要 ffmpeg，或縮圖排隊逾時。\n'
-     + '設定頁有偵測結果；圖片與 ugoira 動圖不受影響。',
+  404: 'fileerr.404',
+  403: 'fileerr.403',
+  409: 'fileerr.409',
+  415: 'fileerr.415',
+  500: 'fileerr.500',
+  503: 'fileerr.503',
 };
 
 /** 回一句可行動的原因。問不到就回 null —— **不要猜**。 */
@@ -102,10 +134,11 @@ export async function fileErrorText(mediaId, { thumb = false } = {}) {
     // 上面那幾句（尤其不能說「檔案被刪除」—— 它明明還在）。
     // 實際成因通常是瀏覽器解不了那個編碼，或檔案下載到一半就中斷了。
     if (r.ok) {
-      return '檔案讀得到（HTTP 200），但瀏覽器顯示不出來。\n'
-           + '可能是不支援的編碼，或檔案不完整。';
+      return t('fileerr.ok');
     }
-    return FILE_ERRORS[r.status] || `讀不到（HTTP ${r.status}）。`;
+    return FILE_ERRORS[r.status]
+      ? t(FILE_ERRORS[r.status])
+      : t('fileerr.other', { status: r.status });
   } catch {
     // 連 HEAD 都發不出去 —— 後端沒在跑，或網路斷了。這也是答案。
     return null;
@@ -174,6 +207,110 @@ export function autoClose(d) {
   });
 }
 
+// ── 整組不可用（不是「某個選項不可選」）─────────────────
+//
+// 創作者模式下 `/api/creators` 不吃任何篩選與排序 —— 但現況那些控制項仍然
+// 亮著、可點、改了什麼都不會發生。這一段是把那件事**誠實說出來**的機制，
+// 不是繞過：日後 API 支援了，把呼叫拿掉即可，沒有任何掩蓋要拆。
+//
+// ⚠️ **不用原生 `disabled`。** 原生 disabled 的元素在 Chrome 收不到
+// mouseover —— 而「說得出原因」正是這整段存在的理由，滑鼠停上去卻什麼都
+// 沒有的話就只剩「變灰了」。改用 `aria-disabled` + 退出 Tab 順序 + 自己擋
+// 掉互動，三件事一起做（少任何一件的症狀都是「看起來不能用但其實還能用」）。
+//
+// ⚠️ 原因走**兩條路**：`data-tip` 給滑鼠，常駐的 `aria-describedby` 給讀屏
+// （拿不到焦點的元素是用瀏覽模式讀過去的，等不到 focus 事件）。
+
+let offSeq = 0;
+
+/** 把原因掛成常駐的無障礙說明。`reason` 為空就拆掉。 */
+function setOffReason(el, reason) {
+  const id = el.dataset.offWhyId;
+  if (!reason) {
+    if (id) {
+      document.getElementById(id)?.remove();
+      delete el.dataset.offWhyId;
+      el.removeAttribute('aria-describedby');
+    }
+    return;
+  }
+  let span = id ? document.getElementById(id) : null;
+  if (!span) {
+    span = document.createElement('span');
+    span.className = 'sr-only';
+    span.id = `off-why-${++offSeq}`;
+    el.after(span);
+    el.dataset.offWhyId = span.id;
+  }
+  span.textContent = reason;
+  el.setAttribute('aria-describedby', span.id);
+}
+
+/** 滑鼠那條路。還原時把原本那句放回去（下拉本來就有自己的說明）。 */
+function setOffTip(el, reason) {
+  if (reason) {
+    if (el.dataset.tipWas === undefined) el.dataset.tipWas = el.dataset.tip ?? '';
+    el.dataset.tip = reason;
+  } else if (el.dataset.tipWas !== undefined) {
+    if (el.dataset.tipWas) el.dataset.tip = el.dataset.tipWas;
+    else delete el.dataset.tip;
+    delete el.dataset.tipWas;
+  }
+}
+
+function markOff(el, reason) {
+  if (reason) {
+    el.setAttribute('aria-disabled', 'true');
+    el.setAttribute('tabindex', '-1');
+  } else {
+    el.removeAttribute('aria-disabled');
+    el.removeAttribute('tabindex');
+  }
+  setOffReason(el, reason);
+  setOffTip(el, reason);
+}
+
+/** 攔掉一個已標記 off 的元素上的互動。只掛一次。 */
+function guardOff(el) {
+  if (el.dataset.offGuard) return;
+  el.dataset.offGuard = '1';
+  const block = (ev) => {
+    if (el.getAttribute('aria-disabled') !== 'true') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
+  // capture 階段擋在原生行為之前。冒泡階段來不及 —— 那時 <details>
+  // 已經開了、輸入框也已經吃到那個字。
+  el.addEventListener('click', block, true);
+  el.addEventListener('keydown', (ev) => {
+    if (el.getAttribute('aria-disabled') !== 'true') return;
+    // Tab 要放行，否則焦點會卡在這裡出不去。
+    if (ev.key !== 'Tab') block(ev);
+  }, true);
+}
+
+/** 讓一個 `<details>`（自製下拉、或「更多篩選」）整組不可用。
+ *
+ *  @param d      `<details>` 元素
+ *  @param reason 原因字串；`null` / `''` = 恢復
+ */
+export function setDetailsOff(d, reason) {
+  const sum = d.querySelector('summary');
+  if (reason) d.open = false;
+  d.classList.toggle('off', Boolean(reason));
+  markOff(sum, reason);
+  guardOff(sum);
+}
+
+/** 讓一個 button / input 整組不可用。
+ *
+ *  ⚠️ 輸入框另外要 `readOnly` —— 只擋 keydown 擋不掉貼上與輸入法。 */
+export function setFieldOff(el, reason) {
+  markOff(el, reason);
+  guardOff(el);
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') el.readOnly = Boolean(reason);
+}
+
 /** 建一個多選下拉。
  *
  *  @param host     容器元素（會被清空）
@@ -227,13 +364,15 @@ export function multiDrop(host, { label, values, onChange }) {
 
   function paint() {
     const list = [...picked];
-    const t = sum.querySelector('.ms-text');
+    // ⚠️ 這個區域變數以前叫 `t`，正好遮蔽 i18n 的 `t()` —— 在這個函式裡
+    // 呼叫 t('...') 會變成「對一個 DOM 元素做函式呼叫」。改名 `txt`。
+    const txt = sum.querySelector('.ms-text');
     // ⚠️ 收起來時**看不見選了哪些**，這是下拉本身的限制。
     // 補償的地方是條件標籤列（它把每個值逐一列出來），所以那一列
     // 在這個方案下必須顯示**全部**條件，不能只顯示「看不見的」。
-    if (!list.length) t.textContent = label;
-    else if (list.length === 1) t.textContent = list[0];
-    else t.textContent = `${list[0]}…（${list.length}）`;
+    if (!list.length) txt.textContent = label;
+    else if (list.length === 1) txt.textContent = list[0];
+    else txt.textContent = t('common.multi.summary', { first: list[0], n: fmt.num(list.length) });
     d.classList.toggle('ms-on', list.length > 0);
     for (const [v, cb] of boxes) {
       cb.checked = picked.has(v);
@@ -258,6 +397,9 @@ export function multiDrop(host, { label, values, onChange }) {
       else disabled.delete(value);
       paint();
     },
+    /** ⚠️ 與 `setDisabled` 是兩件事：那個是「這個**值**選不得」，
+     *  這個是「整組控制項現在不適用」。值**不清空** —— 切回去要原樣還在。 */
+    setOff(reason) { setDetailsOff(d, reason); },
   };
 }
 
@@ -281,8 +423,12 @@ export function mountDrops(root, specs) {
     const sel = key.startsWith('#') || key.startsWith('[') ? key : `#${key}`;
     const host = root.querySelector(sel);
     if (!host) {
-      throw new Error(`mountDrops：找不到佔位元素 ${sel} —— `
-        + '樣板改了但這裡沒跟著改，那個欄位會整個消失而且不會報錯。');
+      // ⚠️ 這一句**刻意不進語系檔**：它是開發者錯誤（樣板改了、這裡沒跟著改），
+      //    不是使用者要讀的文案。翻譯它只會讓 key 表多一條沒有人會看到的字。
+      // ⚠️ 訊息用英文：它會經由 main.js 的 boot-error 橫幅出現在**畫面上**，
+      //    而畫面可能是三個語系裡的任何一個。註解維持中文，訊息不行。
+      throw new Error(`mountDrops: placeholder ${sel} not found - `
+        + 'the template changed but this did not; that field disappears silently.');
     }
     out[key] = singleDrop(host, cfg);
   }
@@ -367,9 +513,9 @@ export function singleDrop(host, { label, values, value = '', emptyText, ariaLab
 
   function paint() {
     const hit = opts.find((o) => o.value === current);
-    const t = sum.querySelector('.ms-text');
+    const txt = sum.querySelector('.ms-text');   // 見 multiDrop：不要叫 t
     // 選了「不限」（value: ''）時顯示 label 本身，與 multiDrop 的空狀態一致
-    t.textContent = current && hit ? (hit.text ?? hit.value) : label;
+    txt.textContent = current && hit ? (hit.text ?? hit.value) : label;
     // filter chip 的填底語意是「從中性狀態收窄了」。沒有中性狀態的控制項
     // （排序鍵：任何一個值都同樣正當）不該永遠亮著 —— 那會讓使用者以為
     // 自己套了一個篩選條件。
@@ -377,7 +523,10 @@ export function singleDrop(host, { label, values, value = '', emptyText, ariaLab
     for (const [v, rb] of radios) rb.checked = v === current;
     // ⚠️ aria-label 會**取代**可見文字成為無障礙名稱，所以要把目前值也帶上 ——
     // 只寫「批次分級」的話，讀屏使用者聽不到現在選的是什麼。
-    if (ariaLabel) sum.setAttribute('aria-label', `${ariaLabel}：${t.textContent}`);
+    if (ariaLabel) {
+      sum.setAttribute('aria-label',
+        t('common.aria.value', { label: ariaLabel, value: txt.textContent }));
+    }
   }
 
   paint();
@@ -394,5 +543,7 @@ export function singleDrop(host, { label, values, value = '', emptyText, ariaLab
       if (current && !opts.some((o) => o.value === current)) current = '';
       paint();
     },
+    /** 整組不適用（例如創作者模式下的排序鍵）。值不清空。 */
+    setOff(reason) { setDetailsOff(d, reason); },
   };
 }

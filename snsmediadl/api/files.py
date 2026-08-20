@@ -16,13 +16,17 @@ import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
+# ⚠️ Starlette 的那一個。`ApiError` 繼承的是它 —— 抓 FastAPI 的那個子類會
+# 漏掉（兩者是兄弟不是父子），症狀是講得清清楚楚的 415 / 503 被蓋成 500。
+from starlette.exceptions import HTTPException
 from sqlalchemy.orm import Session
 
 from ..config import Config, find_ffmpeg
 from ..db.models import Media
 from .app import get_config, get_session
+from .errors import ApiError
 
 router = APIRouter(prefix="/api", tags=["files"])
 
@@ -45,7 +49,11 @@ def resolve_safe_path(local_path: str, roots: Iterable[Path]) -> Path:
         # is_relative_to 是 3.9+；不用字串前綴比對，那個會被 /out-evil 這種騙過
         if target.is_relative_to(resolved):
             return target
-    raise HTTPException(403, "檔案不在允許的媒體目錄內，拒絕提供")
+    raise ApiError(
+        "file.outside_root",
+        "This file is outside the allowed media directories.",
+        403,
+    )
 
 
 # 媒體檔的內容永遠不會變（改了就是另一個檔），所以可以讓瀏覽器無限期快取。
@@ -106,15 +114,19 @@ def _resolve_media_file(media_id: int, session: Session, cfg: Config) -> Path:
     """共用的「查記錄 → 檢查路徑 → 確認檔案在」流程。"""
     media = session.get(Media, media_id)
     if media is None:
-        raise HTTPException(404, "media not found")
+        raise ApiError("media.not_found", "No such media.", 404)
     if not media.local_path:
-        raise HTTPException(409, "尚未下載")
+        raise ApiError("media.not_downloaded", "This one has not been downloaded yet.", 409)
 
     path = resolve_safe_path(media.local_path, cfg.media_roots)
     if not path.exists():
         # 檔案被手動刪掉是常見情況 —— 回 404 讓 GUI 標示「檔案遺失」，
         # 不要讓整頁壞掉。
-        raise HTTPException(404, "檔案遺失")
+        raise ApiError(
+            "file.missing",
+            "The original file is gone (deleted, or that drive is not plugged in).",
+            404,
+        )
     return path
 
 
@@ -172,7 +184,11 @@ def _video_frame_bytes(cfg: Config, src: Path) -> bytes:
     if exe is None:
         # ⚠️ 503 而不是 415：檔案格式沒問題，是**我們少了依賴**。
         # 混用的話使用者分不出「裝一下 ffmpeg 就好」與「這個檔沒救」。
-        raise HTTPException(503, "影片縮圖需要 ffmpeg，但系統上找不到")
+        raise ApiError(
+            "thumb.ffmpeg_missing",
+            "Video thumbnails need ffmpeg, and it was not found on this system.",
+            503,
+        )
 
     try:
         data = _ffmpeg_frame(exe, src, VIDEO_SEEK_SECONDS)
@@ -181,10 +197,18 @@ def _video_frame_bytes(cfg: Config, src: Path) -> bytes:
             # 這是**業務邏輯**不是掩蓋：兩次都失敗仍然明確回 500。
             data = _ffmpeg_frame(exe, src, 0)
     except subprocess.TimeoutExpired as exc:
-        raise HTTPException(500, f"ffmpeg 逾時（{FFMPEG_TIMEOUT} 秒）") from exc
+        raise ApiError(
+            "thumb.ffmpeg_timeout",
+            f"ffmpeg timed out after {FFMPEG_TIMEOUT} s.",
+            500,
+        ) from exc
 
     if not data:
-        raise HTTPException(500, "ffmpeg 抽不出影格 —— 原檔可能壞了")
+        raise ApiError(
+            "thumb.no_frame",
+            "ffmpeg could not extract a frame - the original file may be broken.",
+            500,
+        )
     return data
 
 
@@ -197,10 +221,12 @@ def _ugoira_frame_bytes(src: Path) -> bytes:
         with zipfile.ZipFile(src) as zf:
             names = sorted(n for n in zf.namelist() if not n.endswith("/"))
             if not names:
-                raise HTTPException(500, "ugoira 的 zip 是空的")
+                raise ApiError("thumb.ugoira_empty", "The ugoira zip is empty.", 500)
             return zf.read(names[0])
     except zipfile.BadZipFile as exc:
-        raise HTTPException(500, f"ugoira 的 zip 讀不開：{exc}") from exc
+        raise ApiError(
+            "thumb.ugoira_unreadable", f"The ugoira zip cannot be opened: {exc}", 500,
+        ) from exc
 
 
 def _render_thumb(src: Path, dst: Path, *, data: bytes | None = None) -> None:
@@ -272,7 +298,7 @@ def get_media_thumb(
     if not (is_video or is_ugoira or suffix in THUMBABLE_SUFFIXES):
         # 415 而不是 404：檔案在，只是這種格式做不出縮圖。
         # 兩者混用的話，前端分不出「檔案不見了」與「這是不支援的格式」。
-        raise HTTPException(415, f"不支援為 {suffix} 生縮圖")
+        raise ApiError("thumb.unsupported", f"No thumbnail can be made for {suffix}.", 415)
 
     cache = _thumb_cache_path(cfg, media_id)
     if cache.exists():
@@ -285,7 +311,11 @@ def get_media_thumb(
         # 已經生好的縮圖不該去排隊。
         gate = _gate(cfg)
         if not gate.acquire(timeout=THUMB_QUEUE_TIMEOUT):
-            raise HTTPException(503, "縮圖排隊逾時，稍後再看")
+            raise ApiError(
+                "thumb.queue_timeout",
+                "The thumbnail queue timed out; try again in a moment.",
+                503,
+            )
         try:
             data = (_video_frame_bytes(cfg, path) if is_video
                     else _ugoira_frame_bytes(path))
@@ -309,4 +339,4 @@ def _render_thumb_or_500(
         raise            # 已經是講得清楚的狀態碼，不要蓋成 500
     except Exception as exc:  # noqa: BLE001
         log.warning("縮圖生成失敗 media#%s（%s）：%s", media_id, path, exc)
-        raise HTTPException(500, f"縮圖生成失敗：{exc}") from exc
+        raise ApiError("thumb.render_failed", f"Thumbnail rendering failed: {exc}", 500) from exc
