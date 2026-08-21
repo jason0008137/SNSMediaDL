@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Config, find_ffmpeg
 from ..db.models import Media
+from ..fspath import for_io
 from .app import get_config, get_session
 from .errors import ApiError
 
@@ -34,10 +35,14 @@ log = logging.getLogger("snsmediadl")
 
 
 def resolve_safe_path(local_path: str, roots: Iterable[Path]) -> Path:
-    """確認路徑真的落在其中一個允許的根目錄底下。都不在就拒絕。
+    r"""確認路徑真的落在其中一個允許的根目錄底下。都不在就拒絕。
 
     多個根目錄的理由見 `Config.extra_media_roots`：換過下載目錄之後，舊檔
     仍要看得到。白名單比對的性質沒變，只是白名單有多筆 —— 任一命中即通過。
+
+    ⚠️ **白名單比對用一般路徑，回傳的才是 `\\?\` 形狀**（見 `fspath`）。
+    兩者不可以顛倒：`Path(r"\\?\K:\a\b").is_relative_to(Path(r"K:\a"))` 是
+    `False`，把前綴加在比對之前，會讓每一個根目錄都對不上，症狀是全庫 403。
     """
     target = Path(local_path).resolve()
     for root in roots:
@@ -48,7 +53,9 @@ def resolve_safe_path(local_path: str, roots: Iterable[Path]) -> Path:
             continue
         # is_relative_to 是 3.9+；不用字串前綴比對，那個會被 /out-evil 這種騙過
         if target.is_relative_to(resolved):
-            return target
+            # 過了檢查才換成 I/O 形狀 —— 呼叫端拿到的東西一律可以直接碰磁碟，
+            # 不必自己記得「這條路徑要不要加前綴」。忘記加就是 606 筆假 404。
+            return for_io(target)
     raise ApiError(
         "file.outside_root",
         "This file is outside the allowed media directories.",
@@ -122,6 +129,11 @@ def _resolve_media_file(media_id: int, session: Session, cfg: Config) -> Path:
     if not path.exists():
         # 檔案被手動刪掉是常見情況 —— 回 404 讓 GUI 標示「檔案遺失」，
         # 不要讓整頁壞掉。
+        #
+        # ⚠️ `path` 已經是 `\\?\` 形狀（`resolve_safe_path` 保證），所以走到這裡
+        # 是**真的**不在了。2026-08-21 之前這裡對 606 筆超過 260 字元的路徑
+        # 一律回這個 404，而那些檔案全部好端端在磁碟上 —— 訊息裡的「被刪掉，
+        # 或那顆碟沒插」是捏造的診斷。長路徑怎麼處理見 `snsmediadl/fspath.py`。
         raise ApiError(
             "file.missing",
             "The original file is gone (deleted, or that drive is not plugged in).",

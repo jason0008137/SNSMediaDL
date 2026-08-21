@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import io
+import os
 import threading
 import time
 import zipfile
@@ -30,6 +31,7 @@ from snsmediadl.api import files as files_mod
 from snsmediadl.api.app import create_app, get_session
 from snsmediadl.db.enums import MediaStatus
 from snsmediadl.db.models import Account, Media, Post
+from snsmediadl.fspath import for_io
 
 
 @pytest.fixture(autouse=True)
@@ -481,3 +483,68 @@ def test_real_ffmpeg_on_a_corrupt_file_is_a_500(client, session, cfg, real_ffmpe
     mid = _media(session, cfg, "garbage.mp4", content=bytes(range(256)) * 40)
     r = client.get(f"/api/media/{mid}/thumb")
     assert r.status_code == 500
+
+
+# ── 長路徑（MAX_PATH）─────────────────────────────────
+#
+# 圖片那條路在 `tests/test_files.py` 驗過了。影片與 ugoira 是**另外兩條**：
+# 影片把路徑交給 ffmpeg 這個外部行程，ugoira 交給 `zipfile`。
+# 兩者都可能不吃 `\?\` 前綴，而那不是猜得出來的事，只能真的跑一次。
+
+LONG_PATH_ONLY = pytest.mark.skipif(os.name != "nt", reason="MAX_PATH 是 Windows 的事")
+
+
+def _deep_media(session, cfg, name: str, *, kind: str, content: bytes) -> int:
+    """跟 `_media` 一樣，但檔案放在一條 >260 字元的路徑上。"""
+    deep = cfg.output_root
+    while len(str(deep)) < 240:
+        deep = deep / ("d" * 40)
+    path = deep / name
+    assert len(str(path)) > 260, f"沒墊夠長：{len(str(path))}"
+
+    acct = Account(platform="x", platform_user_id=f"u_{name}", screen_name=name)
+    session.add(acct)
+    session.flush()
+    post = Post(platform="x", platform_post_id=f"p_{name}", account_id=acct.id)
+    session.add(post)
+    session.flush()
+
+    for_io(deep).mkdir(parents=True, exist_ok=True)
+    for_io(path).write_bytes(content)
+
+    m = Media(post_id=post.id, ordinal=0, kind=kind,
+              source_url="https://example.invalid/x", local_path=str(path),
+              status=MediaStatus.DONE.value)
+    session.add(m)
+    session.commit()
+    return m.id
+
+
+@LONG_PATH_ONLY
+def test_long_path_ugoira_thumb(client, session, cfg):
+    """`zipfile` 走的是 Python 自己的 open()，前綴應該通 —— 但要驗過才算數。"""
+    mid = _deep_media(session, cfg, "u" * 20 + ".zip",
+                      kind="ugoira", content=ugoira_zip())
+    r = client.get(f"/api/media/{mid}/thumb")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/webp"
+
+
+@LONG_PATH_ONLY
+@pytest.mark.slow
+def test_long_path_video_thumb_with_real_ffmpeg(client, session, cfg, real_ffmpeg,
+                                                tmp_path):
+    r"""⭐ ffmpeg 這個**外部行程**吃不吃 `\?\`。
+
+    這條紅了不可以退回一般路徑 —— 那等於長路徑的影片永遠生不出縮圖，
+    也就是甲段只修了一半。真的不吃的話得換作法（例如把位元組餵進 stdin），
+    並把結論寫進 TASKS 的執行記錄。
+    """
+    content = _make_mp4(real_ffmpeg, tmp_path / "src.mp4")
+    mid = _deep_media(session, cfg, "v" * 20 + ".mp4", kind="video", content=content)
+
+    r = client.get(f"/api/media/{mid}/thumb")
+    assert r.status_code == 200, r.text
+    im = Image.open(io.BytesIO(r.content))
+    # testsrc 是彩色測試圖 —— 單色代表根本沒解到影格
+    assert im.convert("RGB").getcolors(maxcolors=1) is None

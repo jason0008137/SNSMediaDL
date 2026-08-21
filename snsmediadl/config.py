@@ -13,6 +13,8 @@ try:  # Python 3.11+
 except ModuleNotFoundError:  # 3.10 走 tomli
     import tomli as tomllib  # type: ignore[no-redef]
 
+from .fspath import for_io
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.toml"
 
@@ -199,20 +201,22 @@ def ensure_output_root(root: Path) -> Path:
     刻意**不** fallback 到預設目錄 —— 使用者以為在寫 D 槽、檔案卻默默堆進
     專案資料夾，是最糟的失敗方式：等發現時已經抓了幾十 GB 到錯的地方。
     """
+    # 先絕對化：`for_io` 只吃絕對路徑，而 config.toml 裡寫相對路徑是合法的。
+    root = root.resolve()
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        for_io(root).mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise RuntimeError(f"下載目錄無法建立：{root} —— {exc}") from exc
 
     # mkdir 成功不等於寫得進去（唯讀掛載、ACL、磁碟滿）。實際寫一次才算數。
-    probe = root / ".snsmediadl-write-test"
+    probe = for_io(root / ".snsmediadl-write-test")
     try:
         probe.write_bytes(b"")
         probe.unlink()
     except OSError as exc:
         raise RuntimeError(f"下載目錄不可寫：{root} —— {exc}") from exc
 
-    return root.resolve()
+    return root
 
 
 # 型別是 `Path | None` 的設定項。

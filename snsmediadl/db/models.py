@@ -351,8 +351,13 @@ class IdentityHeal(Base):
     screen_name: Mapped[str] = mapped_column(String(200))
     placeholder_id: Mapped[str] = mapped_column(String(64))
     real_id: Mapped[str] = mapped_column(String(64))
-    # rename = 只有哨符列，改它的 id 就好（貼文一則都沒搬）
-    # merge  = 真 id 那列也在，把貼文搬過去再刪掉哨符列
+    # rename       = 只有哨符列，改它的 id 就好（貼文一則都沒搬）
+    # merge        = 真 id 那列也在，把貼文搬過去再刪掉哨符列
+    # rename_merge = **兩個哨符列之間**的合併（使用者在平台上改過 handle，
+    #                舊／新兩個資料夾各匯入成一列）。貼文本來就在本尊底下，
+    #                所以 moved_posts 是 0。這一種由離線的媒體庫盤點工具依掃描
+    #                證據寫入，不是自動治療。三者的差別見 `services/identity.py`
+    #                的模組 docstring。
     kind: Mapped[str] = mapped_column(String(16))
     moved_posts: Mapped[int] = mapped_column(Integer, default=0)
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

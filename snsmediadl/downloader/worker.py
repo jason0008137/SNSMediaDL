@@ -25,6 +25,7 @@ from ..adapters import MediaUrlRepair, get_adapter
 from ..config import Config
 from ..db.enums import MediaStatus
 from ..db.models import Account, Media, Post
+from ..fspath import for_io
 from ..naming import build_target_path, build_tokens, resolve_collision
 
 CHUNK = 64 * 1024
@@ -203,21 +204,25 @@ async def _mark_async(lock: asyncio.Lock, *args, **kwargs) -> None:
 
 def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
-    with path.open("rb") as fh:
+    with for_io(path).open("rb") as fh:
         while chunk := fh.read(CHUNK):
             h.update(chunk)
     return h.hexdigest()
 
 
 def _already_downloaded(item: WorkItem) -> bool:
-    """檔案還在且 hash 對得上 -> 不重抓。
+    r"""檔案還在且 hash 對得上 -> 不重抓。
 
     兩個條件缺一不可：只有路徑沒有 hash 時無法確認內容完整，寧可重抓。
+
+    ⚠️ `exists()` 走 `fspath.for_io` —— 沒有前綴的話，長路徑的既有檔案會被
+    當成「不見了」而重抓一次。那不會壞掉，只是**每次重跑都把同一批檔案再抓一遍**，
+    而增量下載是這個專案的預設行為，不是選項。
     """
     if not item.known_path or not item.known_hash:
         return False
     path = Path(item.known_path)
-    if not path.exists():
+    if not for_io(path).exists():
         return False
     return _hash_file(path) == item.known_hash
 
@@ -445,24 +450,27 @@ async def _stream_to_disk(
                 tokens=tokens,
                 group_by_account=cfg.group_by_account,
             )
-            target.parent.mkdir(parents=True, exist_ok=True)
+            for_io(target.parent).mkdir(parents=True, exist_ok=True)
             target = resolve_collision(target)
             part = target.with_suffix(target.suffix + ".part")
-            part.touch()
+            for_io(part).touch()
 
         digest = hashlib.sha256()
         size = 0
         try:
-            with part.open("wb") as fh:
+            with for_io(part).open("wb") as fh:
                 async for chunk in response.aiter_bytes(CHUNK):
                     fh.write(chunk)
                     digest.update(chunk)
                     size += len(chunk)
-            os.replace(part, target)
+            os.replace(for_io(part), for_io(target))
         except BaseException:
-            part.unlink(missing_ok=True)
+            for_io(part).unlink(missing_ok=True)
             raise
 
+    # ⚠️ 回傳**一般路徑**。呼叫端把它寫進 `media.local_path`，而 DB 裡永遠不放
+    # `\\?\` 前綴（理由見 `snsmediadl/fspath.py`）。`target` 從頭到尾沒被前綴污染，
+    # 前綴只出現在真的碰磁碟的那幾行。
     return target, digest.hexdigest(), size
 
 
@@ -484,7 +492,7 @@ async def run_worker(
     if not items:
         return stats
 
-    cfg.output_root.mkdir(parents=True, exist_ok=True)
+    for_io(cfg.output_root).mkdir(parents=True, exist_ok=True)
     name_lock = asyncio.Lock()
     db_lock = asyncio.Lock()
 

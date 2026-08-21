@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
+from .fspath import for_io
+
 TOKEN_RE = re.compile(r"%(\w+)%")
 
 # Windows 不允許的字元 + 控制字元
@@ -94,13 +96,19 @@ def render_filename(fmt: str, tokens: dict[str, str]) -> str:
 
 
 def resolve_collision(target: Path) -> Path:
-    """檔名已被佔用時加 _1 / _2。不覆寫既有檔案。"""
-    if not target.exists():
+    r"""檔名已被佔用時加 _1 / _2。不覆寫既有檔案。
+
+    ⚠️ `exists()` 走 `fspath.for_io`。少了前綴的話，超過 260 字元的目標會被
+    Windows 說成「不存在」—— 於是這支函式回報「沒有衝突」，接著寫入端
+    **直接覆蓋掉一個已經在的檔案**。這比看不到圖嚴重得多：使用者會少一張圖，
+    而且沒有任何訊息。回傳的仍是一般路徑（那是要存進 DB 的形狀）。
+    """
+    if not for_io(target).exists():
         return target
     stem, suffix = target.stem, target.suffix
     for i in range(1, 10_000):
         candidate = target.with_name(f"{stem}_{i}{suffix}")
-        if not candidate.exists():
+        if not for_io(candidate).exists():
             return candidate
     raise RuntimeError(f"檔名衝突無法解決：{target}")
 

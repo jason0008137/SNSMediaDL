@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 import pytest
 
+from snsmediadl.fspath import for_io
 from snsmediadl.naming import (
     build_target_path,
     build_tokens,
@@ -135,3 +137,31 @@ def test_malicious_screen_name_cannot_escape_output_root(tmp_path):
     p = build_target_path(
         output_root=tmp_path, fmt="%post_id%.%ext%", tokens=tokens)
     assert tmp_path in p.parents
+
+
+# ── 長路徑（MAX_PATH）─────────────────────────────────
+
+@pytest.mark.skipif(os.name != "nt", reason="MAX_PATH 是 Windows 的事")
+def test_collision_is_detected_on_a_long_path(tmp_path):
+    r"""⚠️ 這一條守的是**靜默覆蓋**，不是「看不到圖」。
+
+    沒有 `\?\` 前綴時，Windows 對超過 260 字元的既有檔案回「不存在」——
+    `resolve_collision` 於是回報「沒有衝突」，寫入端就直接蓋掉一個已經在的檔案。
+    使用者會少一張圖，而且完全沒有訊息。
+    """
+    deep = tmp_path
+    while len(str(deep)) < 240:
+        deep = deep / ("d" * 40)
+    target = deep / ("n" * 20 + ".jpg")
+    assert len(str(target)) > 260, f"沒墊夠長：{len(str(target))}"
+
+    for_io(deep).mkdir(parents=True, exist_ok=True)
+    assert resolve_collision(target) == target      # 還沒有人佔用
+
+    for_io(target).write_bytes(b"already-here")
+    assert not target.exists(), "沒有前綴時 Windows 說這個檔不存在 —— 這正是危險所在"
+
+    got = resolve_collision(target)
+    assert got != target, "長路徑的既有檔案被當成不存在，寫入端會覆蓋它"
+    assert got.name.endswith("_1.jpg")
+    assert for_io(target).read_bytes() == b"already-here"
