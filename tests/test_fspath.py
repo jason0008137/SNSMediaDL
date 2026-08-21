@@ -24,7 +24,7 @@ def as_windows(monkeypatch):
 # ────────────────────────────────── for_io
 
 def test_drive_letter_gets_prefix(as_windows):
-    assert str(fspath.for_io(r"K:\_Twitter_Pack\a.jpg")) == r"\\?\K:\_Twitter_Pack\a.jpg"
+    assert str(fspath.for_io(r"D:\media\pics\a.jpg")) == r"\\?\D:\media\pics\a.jpg"
 
 
 def test_already_prefixed_is_untouched(as_windows):
@@ -47,7 +47,7 @@ def test_relative_path_is_refused(as_windows):
 def test_rooted_but_driveless_is_refused(as_windows):
     r"""`\a\b` 指哪顆碟要看當下的工作目錄 —— 那正是不能默默接受的不確定性。"""
     with pytest.raises(ValueError, match="絕對路徑"):
-        fspath.for_io(r"\_Twitter_Pack\a.jpg")
+        fspath.for_io(r"\media\a.jpg")
 
 
 def test_forward_slash_drive_is_absolute(as_windows):
