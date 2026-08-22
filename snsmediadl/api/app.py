@@ -216,7 +216,7 @@ def create_app(
 
     from . import (
         creators, deletion, devtools, errors, fetch, files, ingest, logbuf, prefs,
-        query, tagging,
+        query, tagging, ugoira,
     )
 
     logbuf.install()
@@ -231,6 +231,7 @@ def create_app(
     app.include_router(tagging.router)
     app.include_router(prefs.router)
     app.include_router(files.router)
+    app.include_router(ugoira.router)
     app.include_router(devtools.router)
     app.include_router(deletion.router)
 
@@ -248,8 +249,8 @@ def create_app(
 
 
 # ⚠️ Python 3.12 之前的 `mimetypes` 不認得 `.mjs`，會回 `text/plain`，
-# 而瀏覽器**拒絕**把 `text/plain` 當 ES module 匯入。症狀是
-# `/dev/tests.html` 上三支測試全部「載入失敗 Failed to fetch dynamically
+# 而瀏覽器**拒絕**把 `text/plain` 當 ES module 匯入。症狀是網頁裡
+# 匯入 `.mjs` 的地方全部「載入失敗 Failed to fetch dynamically
 # imported module」，而檔案其實回 200 —— 看起來像檔案不見了。
 # 3.14 的機器上正常、3.10 的機器上壞掉，所以這件事必須明確宣告，不能靠
 # 直譯器版本。

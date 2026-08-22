@@ -3,7 +3,7 @@
 ## `sn:` 哨符是什麼
 
 匯入既有媒體庫時，多數檔案只帶得出**帳號名**，帶不出平台的數字 id
-（`scripts/import_media_inventory.py` 的 `_account_key`）。那時寫進
+（離線盤點工具只能從資料夾名推帳號）。那時寫進
 `platform_user_id` 的是 `sn:<screen_name>`，意思是「這個位置還沒有真正的身分」。
 
 哨符本身是對的 —— 真的沒有 id 就不該編一個。問題出在**別的地方把它當成真 id 用**：

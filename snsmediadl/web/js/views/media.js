@@ -19,6 +19,7 @@ import {
 } from '../enums.js';
 import { pushDismissable } from '../overlay.js';
 import { openViewer } from '../viewer.js';
+import { createUgoiraPlayer } from '../ugoira.js';
 
 // 安全模式的兩個控制項都在別處（header 與設定面板）。這裡只訂閱結果。
 // 人不在媒體頁時不必立刻重查 —— 但快取要作廢，否則切回來會看到一份
@@ -904,6 +905,38 @@ function videoHtml(m) {
   return `<video ${attrs}></video>${note}`;
 }
 
+/** ugoira 的預覽。
+ *
+ *  ⚠️ **不能走 `videoHtml()`** —— ugoira 是一包 zip 裝一堆 jpg，
+ *  `<video src="….zip">` 不會播，只會靜靜地失敗。改由 `ugoira.js` 用 canvas
+ *  逐格畫（後端 `api/ugoira.py` 逐格供應）。
+ *
+ *  這裡只放一個空的掛載點，畫面貼上去之後才建播放器 —— 詳情面板整段是
+ *  一次 `innerHTML`，元素在那之前還不存在。
+ *
+ *  太大的檔沿用影片那條線：先給縮圖（第一格）與說明，按下去進放大檢視器
+ *  才真的開始抓 —— 一開詳情就自動抓完 600 格不是預覽，是下載。 */
+function ugoiraHtml(m) {
+  if ((m.bytes || 0) > AUTOPLAY_MAX_BYTES) {
+    return `<img src="/api/media/${m.id}/thumb" alt="" id="dPreview" class="zoomable"
+                 tabindex="0" role="button" aria-label="${esc(t('detail.zoom.aria'))}">
+      <p class="note muted">${esc(t('detail.video.note', { size: fmtBytes(m.bytes) }))}</p>`;
+  }
+  return `<div id="dPreview" class="ugoira-host zoomable" tabindex="0" role="button"
+               aria-label="${esc(t('detail.zoom.aria'))}"></div>`;
+}
+
+/** 詳情面板上正在跑的 ugoira 播放器。
+ *
+ *  ⚠️ 一定要留著這個參照。面板關閉只是加 `hidden`，元素還在 DOM 裡 ——
+ *  沒有人去 `destroy()` 的話，rAF 與逐格預載會一直跑下去。 */
+let detailPlayer = null;
+
+function stopDetailPlayer() {
+  detailPlayer?.destroy();
+  detailPlayer = null;
+}
+
 /** 詳情面板在關閉堆疊上的登記。開著的時候不是 null。
  *
  *  ⚠️ 換張（siblings）會重新呼叫 `showDetail()`，**不可以重複登記** ——
@@ -930,13 +963,16 @@ export async function showDetail(mediaId) {
   // ⚠️ 預覽讀不到原檔時**不能只留一個空白框**。DB 記的 `local_path` 是匯入
   // 當下記下的字串，從沒驗證過檔案還在不在 —— 而 224 萬筆記錄指向三顆碟，
   // 「碟沒插」與「檔案被刪了」在畫面上長得一模一樣。至少要說讀不到。
+  // 換張會重新呼叫 showDetail()，上一張的播放器必須先停掉 ——
+  // 不停的話它會在背景繼續抓格，而它的 canvas 已經被 innerHTML 沖掉了。
+  stopDetailPlayer();
   const preview = m.status === 'done'
     ? (m.kind === 'photo'
         // tabindex + role：`<img>` 預設不可聚焦，於是「點圖放大」就只有滑鼠
         // 能用，而且關閉檢視器後焦點無處可回。兩件事同一個修法。
         ? `<img src="/api/media/${m.id}/file" alt="" id="dPreview" class="zoomable"
                 tabindex="0" role="button" aria-label="${esc(t('detail.zoom.aria'))}">`
-        : videoHtml(m))
+        : m.kind === 'ugoira' ? ugoiraHtml(m) : videoHtml(m))
     : `<p class="muted">${esc(t('detail.status', { status: m.status }))}${
       m.error ? `&ensp;${esc(m.error)}` : ''}</p>`;
 
@@ -997,6 +1033,27 @@ export async function showDetail(mediaId) {
       <dt>${esc(t('detail.kv.origpost'))}</dt><dd>${link}</dd>
     </dl>`;
 
+  // ugoira：畫面貼上去之後才建播放器（掛載點在那之前不存在）。
+  // 詳情面板**不給控制列** —— ugoira 語意上就是 GIF，自己循環播就好。
+  if (m.kind === 'ugoira' && m.status === 'done'
+      && $('dPreview')?.classList.contains('ugoira-host')) {
+    const host = $('dPreview');
+    detailPlayer = createUgoiraPlayer({
+      mediaId: m.id,
+      controls: false,
+      autoplay: true,
+      // ⚠️ 訊息用後端給的原因，不套用「讀不到檔案」那句 —— 缺幀資料時
+      // 檔案好端端在磁碟上，說成讀不到就是捏造診斷。
+      onError: (e) => {
+        const box = document.createElement('p');
+        box.className = 'missing-preview';
+        box.textContent = t('ugoira.failed', { msg: e.message });
+        host.replaceWith(box);
+      },
+    });
+    host.appendChild(detailPlayer.canvas);
+  }
+
   $('dPreview')?.addEventListener('error', async () => {
     const box = document.createElement('p');
     box.className = 'missing-preview';
@@ -1011,7 +1068,8 @@ export async function showDetail(mediaId) {
   // 「開詳情」，再加一個手勢會兩者打架。
   //
   // 影片不掛：它的整個表面都是原生控制列，點下去應該是播放／暫停。
-  if (m.kind === 'photo' && m.status === 'done') {
+  // ugoira 掛：它是自繪 canvas，沒有原生控制列可以打架。
+  if ((m.kind === 'photo' || m.kind === 'ugoira') && m.status === 'done') {
     const zoom = () => openViewer({
       media: m,
       siblings: sibs,
@@ -1132,6 +1190,8 @@ function closeDetail() {
   // 元素還在 DOM 裡）。
   const v = $('detailBody').querySelector('video');
   if (v) v.pause();
+  // ugoira 沒有 pause 可以按 —— 它是 rAF + 逐格 fetch，不停就會一直跑。
+  stopDetailPlayer();
 }
 $('closeDetail').addEventListener('click', closeDetail);
 

@@ -44,6 +44,7 @@ env/
 
 # ---- 本機 / 個人設定，絕不進 git ----
 # 這些含憑證檔路徑、電腦名稱、其他私人專案路徑
+.claude/settings.local.json
 **/settings.local.json
 **/.mcp.json
 **/mcp.json

@@ -1519,6 +1519,33 @@ label.chk input { width: auto; accent-color: var(--md-sys-color-primary); }
 body.viewer-open { overflow: hidden; }
 /* 詳情面板裡可放大的圖要看得出來可以點 */
 .detail img.zoomable { cursor: zoom-in; }
+.detail .ugoira-host.zoomable { cursor: zoom-in; }
+
+/* ── ugoira（pixiv 動圖）───────────────────────────────
+   zip 裝一堆 jpg，沒有任何原生元素吃得下，所以是自繪 canvas。
+   正因為是 canvas 而不是 <video>，它**沒有原生控制列會跟滾輪打架** ——
+   所以與圖片一樣可縮放平移（影片仍然不行，見上面那條規則）。 */
+.detail .ugoira-host {
+  width: 100%; border-radius: var(--md-sys-shape-corner-small); background: #000;
+  display: flex; align-items: center; justify-content: center;
+}
+.detail .ugoira-host canvas { width: 100%; height: auto; display: block; }
+.viewer-stage canvas.ugoira-canvas {
+  max-width: none; max-height: none;
+  transform-origin: center center;
+  cursor: grab; user-select: none;
+}
+.viewer-stage canvas.ugoira-canvas:active { cursor: grabbing; }
+/* 控制列住在 viewer-bar 裡，不在 stage 裡 —— stage 裡的東西會跟著縮放 */
+.ugoira-bar { display: flex; align-items: center; gap: 8px; }
+.ugoira-bar .ugoira-seek {
+  width: 180px; accent-color: var(--md-sys-color-primary); cursor: pointer;
+}
+/* 幀號是會跳動的數字，等寬才不會把後面的東西推來推去（同 .zoom） */
+.ugoira-bar .ugoira-count {
+  font-variant-numeric: tabular-nums; color: var(--md-sys-color-on-surface);
+}
+.ugoira-loop { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 
 /* ── 多選下拉（篩選）── */
 /* 值域是 2 / 4 / 7 個，收起來時看不見選了哪些 —— 這是下拉的固有限制。

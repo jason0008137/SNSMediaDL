@@ -6,6 +6,7 @@
 import { esc, fileErrorText, fmtBytes } from './dom.js';
 import { t } from './i18n.js';
 import { pushDismissable } from './overlay.js';
+import { createUgoiraPlayer } from './ugoira.js';
 
 // 縮放範圍。下限是「符合視窗」的一半（再小就沒有意義了），
 // 上限 8 倍 —— 再放大只是看內插出來的像素。
@@ -40,7 +41,8 @@ let current = null;
 /** 開啟檢視器。
  *
  *  `media`   detail API 回的 media 物件（要 id / kind / bytes）
- *  `siblings` 同貼文的其他張（`[{id}]`），用來左右換張
+ *  `siblings` 同貼文的其他張（`[{id, kind}]`），用來左右換張。
+ *            **kind 要帶**，否則換張時只能用試錯法猜型別
  *  `onSwitch` 換張時通知呼叫端（詳情面板要跟著換）*/
 export function openViewer({ media, siblings = [], onSwitch } = {}) {
   if (current) current.close();
@@ -70,19 +72,28 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   localStorage.setItem(HINT_SEEN_KEY, '1');
 
   const stage = el.querySelector('[data-act="stage"]');
+  const bar = el.querySelector('.viewer-bar');
   const dimsEl = el.querySelector('[data-role="dims"]');
   const zoomEl = el.querySelector('[data-role="zoom"]');
-  const ids = siblings.length ? siblings.map((s) => s.id) : [media.id];
-  let index = Math.max(0, ids.indexOf(media.id));
+  // ⚠️ **要留住 kind，不要只取 id。** 後端 `query.py` 的 siblings 本來就在回
+  // kind —— 舊版在這裡 `.map((s) => s.id)` 把它丟掉，於是換張時只能「先試
+  // `<img>`，失敗再換 `<video>`」：每看一次影片都先付一次失敗的原檔請求，
+  // 而 ugoira 是**兩種都失敗**，最後顯示「讀不到」。
+  const items = siblings.length
+    ? siblings.map((s) => ({ id: s.id, kind: s.kind }))
+    : [{ id: media.id, kind: media.kind }];
+  let index = Math.max(0, items.findIndex((s) => s.id === media.id));
 
   // 只有一張時**不顯示**換張按鈕（不是 disable）：這裡沒有「等一下就能用」
   // 的可能，disable 只會讓人一直想去按。
-  el.classList.toggle('single', ids.length <= 1);
+  el.classList.toggle('single', items.length <= 1);
 
   const handle = pushDismissable({ close: () => close() });
 
   function close() {
     handle.release();
+    // ugoira 是 rAF + 逐格 fetch，元素移除**不會**讓它停下來
+    destroyPlayer();
     // 視窗縮放的監聽掛在 window 上，不解掉的話每開一次就多一個
     // （而且它們會抓著已經移除的 DOM 節點不放）。
     window.removeEventListener('resize', computeFit);
@@ -97,7 +108,18 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   document.body.classList.add('viewer-open');
 
   // ── 縮放狀態 ────────────────────────────────────────
+  // `img` 是「被縮放的那個元素」，可能是 `<img>` 也可能是 ugoira 的
+  // `<canvas>` —— 兩者的原始尺寸屬性名不同，一律走這兩支取。
+  const natW = (n) => n?.naturalWidth ?? n?.width ?? 0;
+  const natH = (n) => n?.naturalHeight ?? n?.height ?? 0;
   let img = null;
+  let player = null;
+
+  function destroyPlayer() {
+    player?.destroy();
+    player = null;
+  }
+
   let scale = 1;        // 相對於「符合視窗」的倍率
   let fit = 1;          // 符合視窗時的實際縮放（原始像素 → 螢幕像素）
   let tx = 0;
@@ -113,9 +135,9 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   }
 
   function computeFit() {
-    if (!img || !img.naturalWidth) return;
+    if (!img || !natW(img)) return;
     const box = stage.getBoundingClientRect();
-    fit = Math.min(box.width / img.naturalWidth, box.height / img.naturalHeight, 1);
+    fit = Math.min(box.width / natW(img), box.height / natH(img), 1);
     scale = 1;
     tx = 0;
     ty = 0;
@@ -141,51 +163,88 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   }
 
   // ── 載入這一張 ──────────────────────────────────────
-  function load(mediaId) {
+  /** `item` 是 `{id, kind}`。kind 拿得到就直接分派三條路的其中一條 ——
+   *  **不再賭「先試圖片，失敗再試影片」**：那條路對 ugoira 是兩種都失敗，
+   *  而對影片是每次都先付一次註定失敗的原檔請求。 */
+  function load(item) {
     stage.innerHTML = '';
+    destroyPlayer();
     img = null;
     zoomEl.textContent = '';
     dimsEl.textContent = t('viewer.loading');
 
-    const playable = media.id === mediaId ? media.kind !== 'photo' : null;
-    // 換張時拿不到新的 kind（siblings 只有 id）—— 用 <img> 先試，
-    // 失敗再換成 <video>。**不猜**：兩種都試過才說讀不到。
-    const node = playable === true
-      ? videoNode(mediaId)
-      : document.createElement('img');
+    const kind = item.kind ?? (item.id === media.id ? media.kind : null);
+    if (kind === 'ugoira') loadUgoira(item.id);
+    else if (kind && kind !== 'photo') loadVideo(item.id);
+    else loadImage(item.id, kind);
+  }
 
-    if (node.tagName === 'IMG') {
-      node.src = `/api/media/${mediaId}/file`;
-      node.alt = '';
-      node.addEventListener('load', () => {
-        img = node;
-        dimsEl.textContent = `${node.naturalWidth} × ${node.naturalHeight}`
-          + (media.id === mediaId && media.bytes ? ` · ${fmtBytes(media.bytes)}` : '');
-        computeFit();
-      });
-      node.addEventListener('error', () => {
-        if (playable === false) { fail(mediaId); return; }
-        // 可能是影片（換張時不知道 kind）。換成播放器再試一次。
-        stage.innerHTML = '';
-        const v = videoNode(mediaId);
-        v.addEventListener('error', () => fail(mediaId));
-        stage.appendChild(v);
-        dimsEl.textContent = t('viewer.video');
-      });
-    } else {
-      dimsEl.textContent = t('viewer.video');
-      node.addEventListener('error', () => fail(mediaId));
-    }
+  function loadImage(mediaId, kind) {
+    const node = document.createElement('img');
+    node.src = `/api/media/${mediaId}/file`;
+    node.alt = '';
+    node.addEventListener('load', () => {
+      img = node;
+      dimsEl.textContent = `${node.naturalWidth} × ${node.naturalHeight}`
+        + (media.id === mediaId && media.bytes ? ` · ${fmtBytes(media.bytes)}` : '');
+      computeFit();
+    });
+    node.addEventListener('error', () => {
+      // kind 已知是 photo 就是真的讀不到；完全不知道 kind（舊呼叫端沒帶）
+      // 才退回舊行為，換成播放器再試一次。
+      if (kind) { fail(mediaId); return; }
+      stage.innerHTML = '';
+      loadVideo(mediaId);
+    });
     stage.appendChild(node);
   }
 
-  async function fail(mediaId) {
+  function loadVideo(mediaId) {
+    const v = videoNode(mediaId);
+    v.addEventListener('error', () => fail(mediaId));
+    dimsEl.textContent = t('viewer.video');
+    stage.appendChild(v);
+  }
+
+  /** ugoira：zip 裝一堆 jpg，沒有任何原生元素吃得下。canvas 逐格畫。
+   *
+   *  ⚠️ 這裡**給控制列**，與詳情面板不同。詳情面板是「順便看一眼」，
+   *  進到放大檢視器就是要細看 —— 逐格看是真需求。
+   *  控制列放進 viewer-bar，**不能包進 stage** —— stage 裡那個元素會被
+   *  縮放與平移，控制列跟著縮放就沒法按了。 */
+  function loadUgoira(mediaId) {
+    player = createUgoiraPlayer({
+      mediaId,
+      controls: true,
+      autoplay: true,
+      onReady: ({ width, height }) => {
+        img = player.canvas;
+        dimsEl.textContent = `${width} × ${height}`
+          + (media.id === mediaId && media.bytes ? ` · ${fmtBytes(media.bytes)}` : '');
+        computeFit();
+      },
+      // 後端說得出原因（缺幀資料 / 格數對不上），照它說的顯示。
+      onError: (e) => failWith(e.message),
+    });
+    stage.appendChild(player.canvas);
+    bar.insertBefore(player.bar, bar.querySelector('.spacer'));
+  }
+
+  /** 把 stage 換成一句話。回傳那個節點，讓呼叫端還能改寫它。 */
+  function failWith(msg) {
     const box = document.createElement('p');
     box.className = 'viewer-missing';
-    box.textContent = t('viewer.missing');
+    box.textContent = msg;
     stage.innerHTML = '';
     stage.appendChild(box);
     dimsEl.textContent = '—';
+    zoomEl.textContent = '';
+    img = null;
+    return box;
+  }
+
+  async function fail(mediaId) {
+    const box = failWith(t('viewer.missing'));
     // 原因去問後端，**不要在這裡編一個**（對照表與格線／詳情面板共用）
     const why = await fileErrorText(mediaId);
     if (why) box.textContent = why;
@@ -203,13 +262,13 @@ export function openViewer({ media, siblings = [], onSwitch } = {}) {
   }
 
   function go(step) {
-    if (ids.length <= 1) return;
-    index = (index + step + ids.length) % ids.length;
-    load(ids[index]);
-    onSwitch?.(ids[index]);
+    if (items.length <= 1) return;
+    index = (index + step + items.length) % items.length;
+    load(items[index]);
+    onSwitch?.(items[index].id);
   }
 
-  load(ids[index]);
+  load(items[index]);
 
   // ── 互動 ────────────────────────────────────────────
   // 拖曳狀態要在 click 監聽之前宣告 —— click 的判斷讀得到它們。

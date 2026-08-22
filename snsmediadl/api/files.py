@@ -117,7 +117,7 @@ def reset_thumb_gate() -> None:
         _video_gate = None
 
 
-def _resolve_media_file(media_id: int, session: Session, cfg: Config) -> Path:
+def resolve_media_file(media_id: int, session: Session, cfg: Config) -> Path:
     """共用的「查記錄 → 檢查路徑 → 確認檔案在」流程。"""
     media = session.get(Media, media_id)
     if media is None:
@@ -149,16 +149,16 @@ def _resolve_media_file(media_id: int, session: Session, cfg: Config) -> Path:
 #   415 = 這個格式生不出縮圖
 #   500 = 原檔壞了
 # 沒有 HEAD 的話這三種永遠都會被說成第一種，也就是**捏造診斷**。
-_FILE_METHODS = ["GET", "HEAD"]
+FILE_METHODS = ["GET", "HEAD"]
 
 
-@router.api_route("/media/{media_id}/file", methods=_FILE_METHODS)
+@router.api_route("/media/{media_id}/file", methods=FILE_METHODS)
 def get_media_file(
     media_id: int,
     session: Session = Depends(get_session),
     cfg: Config = Depends(get_config),
 ) -> FileResponse:
-    path = _resolve_media_file(media_id, session, cfg)
+    path = resolve_media_file(media_id, session, cfg)
     mime, _ = mimetypes.guess_type(path.name)
     return FileResponse(
         path,
@@ -270,7 +270,7 @@ def _render_thumb(src: Path, dst: Path, *, data: bytes | None = None) -> None:
         tmp.replace(dst)
 
 
-@router.api_route("/media/{media_id}/thumb", methods=_FILE_METHODS)
+@router.api_route("/media/{media_id}/thumb", methods=FILE_METHODS)
 def get_media_thumb(
     media_id: int,
     session: Session = Depends(get_session),
@@ -302,7 +302,7 @@ def get_media_thumb(
     - 500 原檔壞了／抽不出影格
     - 503 依賴缺失（沒裝 ffmpeg）或排隊逾時 —— 這兩種都是「等一下或裝一下就好」
     """
-    path = _resolve_media_file(media_id, session, cfg)
+    path = resolve_media_file(media_id, session, cfg)
     suffix = path.suffix.lower()
 
     is_video = suffix in VIDEO_SUFFIXES
